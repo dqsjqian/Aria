@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aria - 现代 C++20 MVVM 框架</title>
+<style>
+  :root {
+    --bg: #f8f9fa;
+    --fg: #212529;
+    --accent: #4361ee;
+    --card-bg: #ffffff;
+    --border: #dee2e6;
+    --muted: #6c757d;
+  }
+  body { font-family: -apple-system, 'SF Pro Text', 'PingFang SC', 'Noto Sans SC', sans-serif; background: var(--bg); color: var(--fg); max-width: 980px; margin: 0 auto; padding: 1.5em; line-height: 1.7; }
+  h1 { color: var(--accent); border-bottom: 2px solid var(--border); padding-bottom: .25em; }
+  h2 { color: var(--fg); margin-top: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: .2em; }
+  h3 { color: var(--fg); margin-top: 1.2em; }
+  h4 { color: var(--muted); margin-top: 1em; }
+  .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1.5em; margin-bottom: 1em; box-shadow: 0 2px 4px rgba(0,0,0,.1); }
+  code { background: #e9ecef; padding: 2px 4px; border-radius: 4px; font-family: 'SF Mono', Menlo, Consolas, monospace; }
+  pre { background: #1e1e2e; color: #e0e0e0; padding: 1em; border-radius: 8px; overflow-x: auto; }
+  pre code { background: none; color: inherit; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid var(--border); padding: .5em .75em; text-align: left; vertical-align: top; }
+  th { background: #e9ecef; }
+  blockquote { border-left: 4px solid var(--accent); margin: 1em 0; padding: .5em 1em; background: #eef1ff; color: var(--muted); }
+  a { color: var(--accent); }
+  .tag { display: inline-block; background: #e9ecef; padding: 2px 8px; border-radius: 12px; font-size: .85em; margin-right: 4px; }
+</style>
+</head>
+<body>
+
+<h1>Aria <code>v1.0.0</code></h1>
+<p><strong>现代 C++20 MVVM 框架 —— 跨平台、分层架构、协程优先。</strong><br>
+一套共享核心，覆盖 Windows / macOS / Linux / iOS / Android / Web。</p>
+<p>
+  <span class="tag">status: v1.0.0</span>
+  <span class="tag">C++20</span>
+  <span class="tag">MIT</span>
+</p>
+<p><a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文 (Markdown)</a> | <a href="README.html">English HTML</a></p>
+
+<div class="card">
+<h2>为什么做这个项目</h2>
+<p>现有的 C++ MVVM 方案要么捆绑一个庞大的 UI 框架（Qt 动辄 100+ MB），要么把你锁死在单一平台上，要么藏在宏后面让你摸不着头脑。<strong>aria</strong> 走相反的路：</p>
+<ul>
+<li>小巧的 <strong>仅头文件核心</strong>，底层是一套统一的 <strong>响应式依赖图引擎</strong>（push 染色 + pull 求值）。<code>Property&lt;T&gt;</code> / <code>Computed&lt;T&gt;</code> / <code>Effect</code> / <code>Command&lt;&gt;</code> / <code>ObservableList&lt;T&gt;</code> / <code>Validator&lt;T&gt;</code> 共享同一个引擎 —— <code>Computed</code> 自动跟踪依赖（不再需要显式依赖列表），<code>reactive::batch</code> / <code>reactive::untracked</code> 在必要时让你精确控制通知范围。</li>
+<li><strong>类型擦除 ABI 层</strong> —— 框架中非模板部分可以作为真正的共享库发布。<code>aria-abi</code> / <code>aria-runtime</code> / <code>aria-binding</code>（非模板导出）在主版本号内 ABI 稳定；模板层（<code>aria-core</code> / <code>aria-async</code>）仅源码兼容。</li>
+<li><strong>C++20 协程层</strong> —— <code>Task&lt;T&gt;</code>、执行器、<code>co_await schedule_on(pool)</code>，让异步代码写起来像同步代码一样自然。</li>
+<li>适配器抽象（<code>IViewAdapter</code>）—— Qt6、AppKit、UIKit、JNI/Compose、Emscripten/WebAssembly，任何 UI 工具包都能用同一套业务逻辑驱动视图。</li>
+</ul>
+</div>
+
+<div class="card">
+<h2>架构（10 个模块）</h2>
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                     应用层 (Application)                    │
+└───────────────────────────────┬─────────────────────────────┘
+        ┌──────────────────┬─────┴────────────┐
+        ▼                  ▼                  ▼
+  ┌───────────┐      ┌───────────┐      ┌───────────┐   (可选适配器，
+  │Qt6 适配器 │      │JNI 适配器 │      │HTTP 适配器│    按需启用；
+  │AppKit/UIKit│     │ (Android) │      │REST/SSE Web│
+  │           │      │           │      │WASM 计划中│
+  └─────┬─────┘      └─────┬─────┘      └─────┬─────┘
+        └──────────────────┴──────────────────┘
+                           ▼
+            ┌─────────────────────────────┐
+            │    aria-binding (SHARED)    │
+            │  BindingEngine + IViewAdapter│
+            └──────────────┬──────────────┘
+        ┌──────────────────┴──────────────────┐
+        ▼                                     ▼
+┌─────────────────┐                  ┌─────────────────┐
+│ aria-runtime    │                  │  aria-async     │
+│ (SHARED)        │                  │  (仅头文件)       │
+│ EventBus        │                  │  Task<T>        │
+│ Container       │                  │  Scheduler      │
+│ Dispatcher      │                  │  Executor       │
+│ Logger          │                  │  schedule_on    │
+└────────┬────────┘                  └────────┬────────┘
+         └────────────────┬───────────────────┘
+                          ▼
+            ┌─────────────────────────────┐
+            │   aria-core (仅头文件)       │
+            │  Property / Computed / Cmd  │
+            │  ObservableList / Validator │
+            └──────────────┬──────────────┘
+                           ▼
+            ┌─────────────────────────────┐
+            │    aria-abi (STATIC)        │
+            │  类型擦除 Signal/Slot        │
+            │  ABI 稳定，无模板             │
+            └─────────────────────────────┘</code></pre>
+<table>
+<tr><th>模块</th><th>类型</th><th>依赖</th><th>说明</th></tr>
+<tr><td><code>aria-abi</code></td><td><code>STATIC</code></td><td>无</td><td>类型擦除的信号/槽，无模板，<strong>ABI 稳定</strong>。</td></tr>
+<tr><td><code>aria-core</code></td><td>仅头文件</td><td>abi</td><td>全部模板：<code>Property</code>、<code>Computed</code>、<code>Command</code>、<code>ObservableList</code>、<code>Validator</code>。仅源码兼容（非 ABI 稳定）。</td></tr>
+<tr><td><code>aria-async</code></td><td>仅头文件</td><td>core</td><td>C++20 <code>Task&lt;T&gt;</code>、执行器。仅源码兼容。</td></tr>
+<tr><td><code>aria-runtime</code></td><td><code>SHARED</code></td><td>core, abi</td><td>EventBus / Container / Dispatcher / Logger —— 单例统一放在 <strong>一个</strong> 动态库中。<strong>ABI 稳定</strong>（非模板导出）。</td></tr>
+<tr><td><code>aria-binding</code></td><td><code>SHARED</code></td><td>core, runtime</td><td><code>BindingEngine</code>、<code>IViewAdapter</code>。<strong>ABI 稳定</strong>（非模板导出）。</td></tr>
+<tr><td>适配器</td><td><code>SHARED</code>/<code>STATIC</code></td><td>binding</td><td>Qt6 / AppKit / UIKit / JNI / WASM（按需启用）。</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>环境要求</h2>
+<ul>
+<li><strong>CMake</strong> &gt;= 3.20</li>
+<li><strong>完整支持 C++20 的编译器</strong>：
+  <ul>
+  <li>GCC &gt;= 12（Windows 下可走 MSYS2 UCRT64 工具链）</li>
+  <li>Clang &gt;= 15（macOS/iOS 上 AppleClang 15+ 即可）</li>
+  <li><strong>MSVC v143 / Visual Studio 2022</strong>（Windows，详见下文）</li>
+  </ul>
+</li>
+<li><em>(可选)</em> <strong>Qt6</strong> &gt;= 6.4（用于 Qt6 适配器和 GUI 示例）</li>
+</ul>
+<blockquote>
+<p><strong>Windows 同时支持 MSYS2 UCRT64（GCC）和 MSVC / Visual Studio 2022 两条工具链。</strong> 团队栈里有哪个就用哪个 —— 同一棵源码树都能编出完整框架 + 测试 + 适配器，不需要分支或 fork。</p>
+</blockquote>
+</div>
+
+<div class="card">
+<h2>快速开始</h2>
+<pre><code>git clone https://github.com/dqsjqian/aria.git
+cd aria
+cmake -B build
+cmake --build build -j
+ctest --test-dir build --output-on-failure</code></pre>
+<blockquote>
+<p>首次配置会通过内置的 <code>CPM.cmake</code> 拉取 <a href="https://github.com/doctest/doctest">doctest</a>。之后全部离线可用。</p>
+</blockquote>
+
+<h3>一键构建脚本</h3>
+<pre><code># macOS / Linux
+scripts/build.sh             # Release
+scripts/build.sh tests       # Release + 跑测试
+scripts/build.sh asan        # Debug + AddressSanitizer + UBSan
+scripts/build.sh tsan        # Debug + ThreadSanitizer
+scripts/build.sh clean
+
+# Windows —— MSYS2 UCRT64（GCC + Ninja）
+scripts\build.ps1            # Release
+scripts\build.ps1 tests
+scripts\build.ps1 asan
+
+# Windows —— MSVC / Visual Studio 2022
+scripts\build-msvc.ps1       # Release（使用 build/flavors/msvc/ 目录）
+scripts\build-msvc.ps1 tests
+scripts\build-msvc.ps1 debug
+scripts\build-msvc.ps1 asan  # /fsanitize=address（MSVC 不带 UBSan）</code></pre>
+
+<h3>Windows 工具链</h3>
+<p>aria 在 <code>scripts/</code> 下提供<strong>两个并行的构建脚本</strong>，分别对应 Windows 上两条主流工具链。它们写到不同的 build 目录、互相独立，不需要互相感知。</p>
+<table>
+<tr><th>工具链</th><th>脚本</th><th>构建目录</th><th>备注</th></tr>
+<tr><td><strong>MSYS2 UCRT64</strong>（GCC 14+ / Clang 18+）</td><td><code>scripts\build.ps1</code></td><td><code>build/</code></td><td>体积小（≈300 MB），大多数 CI 镜像已预装。脚本会从 <code>C:\msys64\ucrt64\bin</code> 等常见路径自动定位。</td></tr>
+<tr><td><strong>MSVC v143</strong>（VS 2022）</td><td><code>scripts\build-msvc.ps1</code></td><td><code>build/flavors/msvc/</code></td><td>通过 <code>vswhere</code> 自动定位 VS 安装；进入 CMake 之前会先清掉 MSYS2 留下的 <code>INCLUDE</code> / <code>LIB</code> / <code>CPATH</code> 等环境变量；使用 <code>Visual Studio 17 2022</code> 生成器。</td></tr>
+</table>
+<p>两条工具链可以来回切换、不需要 <code>clean</code>，build 目录互不影响。CI 每晚都会跑两条以确保不退化。</p>
+
+<h4>MSVC 一次性配置</h4>
+<pre><code># 1. 安装 Visual Studio 2022 Build Tools（或完整 IDE），勾选
+#    "Desktop development with C++" + "C++ CMake tools"。
+# 2. （可选）安装 Qt 6 的 msvc2022_64 组件，如果需要 Qt6 适配器 / Qt 示例。
+# 3. 任意 PowerShell 窗口里：
+scripts\build-msvc.ps1 tests</code></pre>
+
+<h4>MSYS2 一次性配置</h4>
+<pre><code># 1. 从 https://www.msys2.org 安装 MSYS2
+# 2. 打开 "MSYS2 UCRT64" 终端：
+pacman -Syu
+pacman -S --needed mingw-w64-ucrt-x86_64-toolchain `
+                   mingw-w64-ucrt-x86_64-cmake `
+                   mingw-w64-ucrt-x86_64-ninja git
+# 3. （可选）把 C:\msys64\ucrt64\bin 加入 PATH
+# 4. 从任意终端执行：
+scripts\build.ps1 tests</code></pre>
+<p>为什么两条都支持：aria 是协程重的 C++20 代码，libstdc++、libc++ 和 MSVC STL 都能干净处理。早期只支持 MSYS2 把 .NET / Visual Studio 生态的用户挡在门外，意义不大。现在 MSVC v143 与 macOS / Ubuntu / MSYS2 走的是<strong>同一条 release 闸门</strong>。</p>
+</div>
+
+<div class="card">
+<h2>在自己的项目中使用</h2>
+<h4>方式 A —— 先安装，再用 <code>find_package</code>（生产环境推荐）</h4>
+<pre><code># 在 aria 目录下：
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build build -j &amp;&amp; sudo cmake --install build</code></pre>
+<pre><code># 在你项目的 CMakeLists.txt 中：
+find_package(aria 1.0 REQUIRED)
+add_executable(my_app main.cpp)
+target_link_libraries(my_app PRIVATE aria::aria)
+# 也可以按需选择模块：aria::core / ::async / ::runtime / ::binding</code></pre>
+<h4>方式 B —— 直接嵌入（不安装）</h4>
+<pre><code>add_subdirectory(third_party/aria EXCLUDE_FROM_ALL)
+target_link_libraries(my_app PRIVATE aria::core aria::async)</code></pre>
+<p>即拷即用的模板在 <a href="templates/quickstart/"><code>templates/quickstart/</code></a>。</p>
+</div>
+
+<div class="card">
+<h2>示例项目</h2>
+<p>aria 提供覆盖<strong>每一个受支持 UI 工具包</strong>的可运行示例，外加几个无界面、专门压核心的控制台示例。</p>
+<h3>UI 展示示例 —— 每个工具包一个</h3>
+<table>
+<tr><th>#</th><th>项目</th><th>工具包</th><th>构建方式</th><th>演示内容</th></tr>
+<tr><td>1</td><td><strong>qt-showcase</strong></td><td>Qt6 (Widgets)</td><td>CMake（<code>ARIA_BUILD_QT6=ON</code>）</td><td><strong>总展厅 Demo</strong>：一个应用、九个 Tab，覆盖框架的每一个公开能力 —— 响应式 Property/Computed/Effect、Command、ObservableList + QAbstractListModel、Validator、<code>Task&lt;T&gt;</code> + 执行器、取消、重试、<code>when_all</code>、EventBus、DI Container、Dispatcher、导航、双向绑定。</td></tr>
+<tr><td>2</td><td><strong>macos-appkit-mvvm</strong></td><td>macOS AppKit (ObjC++)</td><td>Xcode</td><td>独立的 Xcode 项目，演示在 Objective-C++ 里使用 <code>aria</code>：自定义 <code>IViewAdapter</code> 绑定原生 <code>NSTextField</code>/<code>NSButton</code>，同一个 ViewModel 直接驱动 AppKit 控件。</td></tr>
+<tr><td>3</td><td><strong>ios-oc-uikit-mvvm</strong></td><td>iOS UIKit (ObjC++)</td><td>Xcode</td><td>iOS 端独立 Xcode 项目：自定义 <code>IViewAdapter</code> 绑定原生 <code>UILabel</code>/<code>UITextField</code>/<code>UIButton</code>（布局走 Masonry），同一个 ViewModel 在 iPhone/iPad 上原生跑起来。</td></tr>
+<tr><td>4</td><td><strong>web-mvvm</strong></td><td>Web（HTTP/REST/SSE）</td><td>CMake（<code>ARIA_BUILD_HTTP=ON</code>）</td><td>用 <code>HttpAdapter</code> 把一个 C++ ViewModel 暴露给浏览器 —— 状态经 SSE 推送、命令经 REST 触发、双向绑定，配套一个 vanilla-JS 客户端（<code>aria_client.js</code>）。可选 HTTPS。</td></tr>
+<tr><td>5</td><td><strong>android-jni-mvvm</strong></td><td>Android（JNI + Compose/View）</td><td>Gradle（NDK r26+）</td><td>Android Studio / Gradle 工程，通过 <code>aria-jni</code> 适配器从 Kotlin 驱动同一个 C++ ViewModel。</td></tr>
+</table>
+<h3>无界面 / 控制台示例</h3>
+<p><code>ARIA_BUILD_EXAMPLES=ON</code>（默认）时构建，无需 GUI：</p>
+<table>
+<tr><th>项目</th><th>演示内容</th></tr>
+<tr><td><strong>inspector-demo</strong></td><td>CLI 响应式图 flush 追踪器 —— 打印实时依赖图的 push/pull 轨迹（诊断 / <code>TraceSink</code>）。</td></tr>
+<tr><td><strong>plugin-property-demo</strong></td><td>跨 dylib 的 ABI 冒烟：宿主 exe + 插件共享库，仅通过稳定的非模板 <code>aria::IProperty</code> 接口跨 DSO 边界操作一个 <code>Property&lt;T&gt;</code>。以 <code>cross_dylib_abi_smoke</code> 测试运行。</td></tr>
+<tr><td><strong>todomvc</strong></td><td>无界面 TodoMVC：<code>ObservableList</code> + 两个实时 <code>FilteredList</code> 视图（active/completed）+ <code>Selection</code>，全部增量联动。以 <code>todomvc_smoke</code> 测试运行。</td></tr>
+</table>
+<p>构建并运行示例 1（Qt）：</p>
+<pre><code>cmake -S . -B build -DARIA_BUILD_QT6=ON
+cmake --build build -j
+./build/examples/1-qt-showcase/ex_qt_showcase</code></pre>
+<p>示例 4（web）需要 HTTP 适配器，运行说明见 <a href="examples/4-web-mvvm/"><code>examples/4-web-mvvm/README.md</code></a>：</p>
+<pre><code>cmake -S . -B build -DARIA_BUILD_HTTP=ON
+cmake --build build --target example_4_web_mvvm</code></pre>
+<p>无界面示例默认随 <code>ARIA_BUILD_EXAMPLES=ON</code> 构建，可用 <code>ctest</code>（<code>cross_dylib_abi_smoke</code>、<code>todomvc_smoke</code>）或直接从 <code>build/bin/</code> 运行。</p>
+<p>示例 2、3 <strong>不参与</strong> CMake 构建 —— 直接打开 Xcode 工程运行；示例 5 是 Android Studio / Gradle 工程（需 NDK r26+）：</p>
+<ul>
+<li><a href="examples/2-macos-appkit-mvvm/"><code>examples/2-macos-appkit-mvvm/mac-oc-mvvm.xcodeproj</code></a> —— macOS AppKit</li>
+<li><a href="examples/3-ios-oc-uikit-mvvm/"><code>examples/3-ios-oc-uikit-mvvm/ios-oc-mvvm.xcodeproj</code></a> —— iOS UIKit</li>
+<li><a href="examples/5-android-jni-mvvm/"><code>examples/5-android-jni-mvvm/</code></a> —— Android（Gradle）</li>
+</ul>
+
+<h3>构建选项</h3>
+<table>
+<tr><th>选项</th><th>默认值</th><th>说明</th></tr>
+<tr><td><code>ARIA_BUILD_TESTS</code></td><td>ON</td><td>构建单元测试并注册到 ctest。</td></tr>
+<tr><td><code>ARIA_BUILD_EXAMPLES</code></td><td>ON</td><td>构建所有示例（控制台 + 启用的 Qt6 示例）。</td></tr>
+<tr><td><code>ARIA_BUILD_BENCHMARK</code></td><td>ON</td><td>构建微基准测试。</td></tr>
+<tr><td><code>ARIA_BUILD_SHARED</code></td><td>ON</td><td>runtime/binding 编译为动态库。</td></tr>
+<tr><td><code>ARIA_BUILD_QT6</code></td><td>OFF</td><td>构建 Qt6 适配器和 GUI 示例（需要 <code>Qt6Widgets</code>）。</td></tr>
+<tr><td><code>ARIA_BUILD_APPKIT</code></td><td>OFF</td><td><strong>（已 production-grade）</strong> macOS AppKit 适配器作为一等 CMake 模块——以 <code>STATIC</code> + <code>.mm</code> 方式编译，导出 <code>aria::adapters::appkit</code>，完整通过 <code>adapter_conformance</code> 测试套件；需要 <code>APPLE</code> 平台。</td></tr>
+<tr><td><code>ARIA_BUILD_UIKIT</code></td><td>OFF</td><td><strong>（已 production-grade）</strong> iOS UIKit 适配器作为一等 CMake 模块——以 <code>STATIC</code> + <code>.mm</code> 方式编译，导出 <code>aria::adapters::uikit</code>，在 iPhone 17 Pro Max 模拟器跑通 25/25 in-app 一致性用例；需要 <code>APPLE</code> 平台。</td></tr>
+<tr><td><code>ARIA_BUILD_JNI</code></td><td>OFF</td><td>Android JNI 适配器，作为一等 CMake 模块——构建为 <code>STATIC</code>，提供 <code>aria::adapters::jni</code>，通过 JNI 反射调用实现与 Qt/AppKit/UIKit 相同的 <code>IViewAdapter</code> 契约。需要 Android NDK 工具链（<strong>NDK r26+</strong>）。</td></tr>
+<tr><td><code>ARIA_BUILD_WASM</code></td><td>OFF</td><td><em>(计划中)</em> WebAssembly 适配器。</td></tr>
+<tr><td><code>ARIA_ENABLE_ASAN</code></td><td>OFF</td><td>AddressSanitizer。</td></tr>
+<tr><td><code>ARIA_ENABLE_UBSAN</code></td><td>OFF</td><td>UndefinedBehaviorSanitizer。</td></tr>
+<tr><td><code>ARIA_ENABLE_TSAN</code></td><td>OFF</td><td>ThreadSanitizer。</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>Hello, world</h2>
+<pre><code>#include "aria/aria.hpp"
+using namespace aria;
+
+Property&lt;int&gt; count{0};
+
+// 不再需要显式依赖列表 —— Computed 首次求值时，
+// 内部读到的每一个 Property::get() 都会被自动追踪为依赖。
+Computed&lt;std::string&gt; label([&amp;]{
+    return "count = " + std::to_string(count.get());
+});
+
+Command&lt;&gt; increment([&amp;]{ count = count.get() + 1; });
+
+auto sub = label.bind([](const std::string&amp; s) { std::cout &lt;&lt; s &lt;&lt; '\n'; });
+
+increment();   // → "count = 1"
+increment();   // → "count = 2"</code></pre>
+</div>
+
+<div class="card">
+<h2>异步编程（C++20 协程）</h2>
+<pre><code>#include "aria/async/task.hpp"
+#include "aria/async/executor.hpp"
+using namespace aria::async;
+
+Task&lt;std::string&gt; fetch_user(int id) {
+    co_await schedule_on(network_pool);      // 跳到工作线程
+    auto raw = http::get("/users/" + std::to_string(id));
+    co_await schedule_on(main_dispatcher);   // 切回 UI 线程
+    co_return parse(raw);
+}</code></pre>
+</div>
+
+<div class="card">
+<h2>跨平台映射</h2>
+<table>
+<tr><th>平台</th><th>UI 宿主</th><th>适配器</th></tr>
+<tr><td>Windows</td><td>Qt6 / WinUI</td><td><code>aria-qt6</code> ✅ 可用（MSYS2 UCRT64 + MSVC 2022）</td></tr>
+<tr><td>macOS</td><td>AppKit / Qt6</td><td><code>aria-qt6</code> ✅ 可用；AppKit ✅ 可用（示例 2）</td></tr>
+<tr><td>Linux</td><td>Qt6 / GTK</td><td><code>aria-qt6</code> ✅ 可用</td></tr>
+<tr><td>iOS</td><td>UIKit / SwiftUI bridge</td><td>UIKit ✅ 可用（示例 3）；<code>aria-uikit</code> 模块化计划中</td></tr>
+<tr><td>Android</td><td>Compose / View</td><td><code>aria-jni</code> ✅ 就绪（NDK r26+）</td></tr>
+<tr><td><strong>Web（服务端驱动）</strong></td><td><strong>浏览器 HTML/JS</strong></td><td><strong><code>aria-http</code> ✅ 可用（REST + SSE；示例 4）</strong></td></tr>
+<tr><td>Web（浏览器内 C++）</td><td>DOM via WASM</td><td><code>aria-wasm</code> 计划中</td></tr>
+</table>
+<p>HTTP 适配器内置一个小型服务器（<code>HttpAdapter</code>），通过 JSON REST + Server-Sent-Events 协议把任意 ViewModel 暴露给浏览器，并附带一个 vanilla-JS SDK（<code>aria_client.js</code>）。服务端构建在仓库内置的单头文件 <strong>cpp-httplib</strong>（HTTP/1.1 + SSE）和 <strong>nlohmann::json</strong>（编解码）之上——两者都已提交到 <code>third_party/</code>，因此启用该适配器不引入任何新的外部构建依赖；线协议、view 注册、订阅分发与 SSE 扇出都由 aria 自己实现。它适合给桌面应用挂一个网页 UI、给无界面服务做前端、做本地调试看板等场景。WASM 适配器把 C++ 业务编进浏览器沙箱，解决的是另一类受限问题，仍在路线图上。详见 <a href="docs/rfc/0001-http-adapter.md">RFC 0001</a>。</p>
+<p><strong>当前版本</strong>已交付平台无关的核心、runtime、async 和 binding 层，全部通过单元测试。Qt6、AppKit、UIKit、JNI、HTTP 都已作为 CMake 一等可选适配器交付（受各自平台要求约束）。WASM 仍在路线图上；<code>IViewAdapter</code> 接口已稳定。</p>
+</div>
+
+<div class="card">
+<h2>测试状态</h2>
+<pre><code>$ ctest --test-dir build --output-on-failure
+Test project /…/aria/build
+    Start 1: abi_tests           ✅ Passed
+    Start 2: core_tests          ✅ Passed
+    Start 3: fuzz_tests          ✅ Passed
+    Start 4: async_tests         ✅ Passed
+    Start 5: runtime_tests       ✅ Passed
+    Start 6: binding_tests       ✅ Passed
+    Start 7: qt6_tests           ✅ Passed   (开启 ARIA_BUILD_QT6 时)
+    Start 8: appkit_conformance  ✅ Passed   (Apple 平台)
+    Start 9: appkit_table_source ✅ Passed   (Apple 平台)
+
+100% tests passed, 0 tests failed（按选项最多 9 个 suites）</code></pre>
+<p>75+ 个测试用例分布在以上 suite 中，涵盖 <a href="docs/reference/lifecycle.md"><code>docs/reference/lifecycle.md</code></a>、<a href="docs/reference/error-model.md"><code>docs/reference/error-model.md</code></a> 中所有生命周期 / 重入 / 异常安全契约的回归测试。源码树还包含一个跨 dylib 的 ABI 冒烟测试（<code>cross_dylib_abi_smoke</code>）和一个无界面 TodoMVC（<code>todomvc_smoke</code>）。</p>
+</div>
+
+<div class="card">
+<h2>性能基准（Apple M 系列, -O3 -DNDEBUG）</h2>
+<table>
+<tr><th>操作</th><th>纳秒/次</th></tr>
+<tr><td><code>Property&lt;int&gt;::get()</code></td><td>10.4</td></tr>
+<tr><td><code>Property&lt;int&gt;::set()</code> 无观察者</td><td>28.5</td></tr>
+<tr><td><code>Property&lt;int&gt;::set()</code> 1 个观察者</td><td>29.3</td></tr>
+<tr><td><code>Property&lt;int&gt;::set()</code> 10 个观察者</td><td>45.9</td></tr>
+<tr><td>订阅 + 自动取消订阅周期</td><td>54.9</td></tr>
+<tr><td>Computed 链 x5（set + 重新计算 + get）</td><td>289.1</td></tr>
+<tr><td><code>EventBus::publish</code>（1 个订阅者）</td><td>13.4</td></tr>
+<tr><td><code>Container::resolve&lt;Singleton&gt;</code></td><td>7.6</td></tr>
+<tr><td>10 次 set 包在 <code>reactive::batch</code> 中（只通知一次）</td><td>156.1</td></tr>
+<tr><td>批量更新加速比（对比逐次更新）</td><td><strong>1.91×</strong></td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>框架本体契约</h2>
+<p>Aria 承诺的所有非平庸行为都钉在一份带编号的契约文档里，每条契约都有一个稳定 ID（如 <code>L-13</code> / <code>E-22</code> / <code>LD-7</code> / <code>D-4</code> / <code>S-31</code>）——测试断言失败或 PR 评审可以直接指向权威描述。</p>
+<table>
+<tr><th>文档</th><th>前缀</th><th>范围</th></tr>
+<tr><td><a href="docs/reference/api-style.md"><code>docs/reference/api-style.md</code></a></td><td><code>S-N</code></td><td>命名、命名空间、错误与异步入口的风格约束</td></tr>
+<tr><td><a href="docs/reference/lifecycle.md"><code>docs/reference/lifecycle.md</code></a></td><td><code>L-N</code></td><td>线程、订阅、响应式 flush、view 销毁、异步 cancel/dtor 不变式</td></tr>
+<tr><td><a href="docs/reference/error-model.md"><code>docs/reference/error-model.md</code></a></td><td><code>E-N</code></td><td><code>aria::Error</code> / <code>ErrorKind</code> taxonomy 与各子系统错误面契约</td></tr>
+<tr><td><a href="docs/reference/list-diff-contract.md"><code>docs/reference/list-diff-contract.md</code></a></td><td><code>LD-N</code></td><td><code>Insert / Remove / Replace / Move / Reset / ItemChanged</code> 语义</td></tr>
+<tr><td><a href="docs/reference/diagnostics.md"><code>docs/reference/diagnostics.md</code></a></td><td><code>D-N</code></td><td><code>aria::TraceEvent</code> + <code>aria::TraceSink</code> 诊断协议</td></tr>
+<tr><td><a href="docs/reference/performance.md"><code>docs/reference/performance.md</code></a></td><td><code>PERF-N</code></td><td>每个公开 API 的复杂度上界与实测基线</td></tr>
+</table>
+<p>P0 硬地基 pass（详见 CHANGELOG）推平了上表所有契约；<code>modules/core/fuzz/</code> 下七个框架级 fuzzer 为 lifecycle 不变式提供压力验证（默认 50k 迭代 / fuzzer；nightly 设 <code>ARIA_FUZZ_ITERS=1000000</code> 拉高）。</p>
+</div>
+
+<div class="card">
+<h2>能力一览</h2>
+<table>
+<tr><th>能力</th><th>类型</th><th>位置</th></tr>
+<tr><td>响应式状态</td><td><code>Property&lt;T&gt;</code> / <code>Computed&lt;T&gt;</code> / <code>Effect</code></td><td><code>aria/reactive/reactive.hpp</code></td></tr>
+<tr><td>命令</td><td><code>Command&lt;Args...&gt;</code>（响应式 <code>can_execute</code>）</td><td><code>aria/command.hpp</code></td></tr>
+<tr><td>集合</td><td><code>ObservableList&lt;T&gt;</code> + 派生 <code>Filtered/Sorted/Mapped/Distinct/Grouped/Paged</code></td><td><code>aria/observable_list.hpp</code>, <code>aria/derived/*</code></td></tr>
+<tr><td>选择模型</td><td><code>Selection&lt;T&gt;</code> / <code>MultiSelection&lt;T&gt;</code>（SE-1..SE-5）</td><td><code>aria/selection.hpp</code></td></tr>
+<tr><td>校验</td><td><code>Validator&lt;T&gt;</code> / <code>FormValidator</code> / <code>ValidationState</code> + 异步规则</td><td><code>aria/validator.hpp</code>, <code>aria/binding/form.hpp</code>, <code>aria/async/async_validator.hpp</code></td></tr>
+<tr><td>异步</td><td><code>Task&lt;T&gt;</code> / <code>AsyncCommand</code> / <code>with_timeout</code> / <code>when_any</code> / <code>when_all</code> / <code>CancellationToken</code></td><td><code>aria/async/*</code></td></tr>
+<tr><td>数据拉取</td><td><code>AsyncResource&lt;T&gt;</code>（SWR + 去重）/ <code>Loadable&lt;T&gt;</code>（五态）</td><td><code>aria/async/async_resource.hpp</code>, <code>aria/loadable.hpp</code></td></tr>
+<tr><td>导航</td><td><code>Navigator</code>（<code>push</code>/<code>pop</code>/<code>push_for_result&lt;R&gt;</code>、路由模式）</td><td><code>aria/binding/navigation.hpp</code></td></tr>
+<tr><td>绑定</td><td><code>BindingEngine</code> / <code>IViewAdapter</code> / <code>IView</code> / <code>Converter</code> / <code>bind_view_lifetime</code></td><td><code>aria/binding/*</code></td></tr>
+<tr><td>诊断</td><td><code>TraceEvent</code> / <code>TraceSink</code> / <code>GraphInspector</code>（关闭时零开销）</td><td><code>aria/diagnostics.hpp</code></td></tr>
+</table>
+<p><strong>怎么学：</strong><a href="docs/index.md">文档索引</a> 串起各篇指南、<a href="docs/cookbook/README.md">Cookbook</a>（面向任务的实操菜谱）和契约参考。用 <code>cmake -B build -DARIA_BUILD_DOCS=ON &amp;&amp; cmake --build build --target aria_docs</code> 生成符号级 <strong>API 参考</strong>。</p>
+</div>
+
+<div class="card">
+<h2>路线图</h2>
+<p>Aria 不对外发版，主版本号永远停留在 <code>1.0.0</code>，也不维护版本演进史。<strong>待办（TODO）与已延后清单</strong>的唯一信息源在 <a href="docs/ROADMAP.md"><code>docs/ROADMAP.md</code></a>；当前能力的快照见 <a href="CHANGELOG.md"><code>CHANGELOG.md</code></a>。</p>
+
+<h2>贡献指南</h2>
+<p>欢迎贡献！涉及架构改动的改动请先开 Issue 讨论。</p>
+<ul>
+<li>代码风格由 <code>.clang-format</code> 和 <code>.clang-tidy</code> 统一管控。</li>
+<li>所有变更必须通过 <code>ctest --output-on-failure</code>。</li>
+<li>新功能需要在对应 <code>modules/*/tests/</code> 套件中补充测试。</li>
+</ul>
+<p>完整的构建/测试/分层指南见 <a href="CONTRIBUTING.md"><code>CONTRIBUTING.md</code></a>。</p>
+
+<h2>致谢</h2>
+<ul>
+<li><a href="https://github.com/doctest/doctest">doctest</a> —— 轻量级测试框架</li>
+<li><a href="https://github.com/cpm-cmake/CPM.cmake">CPM.cmake</a> —— CMake 依赖管理</li>
+</ul>
+
+<h2>许可证</h2>
+<p>MIT © 2026 aria contributors</p>
+</div>
+
+<div class="card">
+<h2>📖 其他格式</h2>
+<p>本文档还提供其他格式：</p>
+<ul>
+<li><a href="README.zh-CN.md">简体中文（Markdown）</a> —— 中文 Markdown 版本</li>
+<li><a href="README.md">English</a> —— 英文版本</li>
+<li><a href="README.html">English HTML</a> —— 英文 HTML 版本</li>
+</ul>
+<h3>快速访问脚本</h3>
+<pre><code># 打开中文 HTML 版本
+./scripts/open-readme.sh zh
+
+# 打开英文 HTML 版本
+./scripts/open-readme.sh          # 或：./scripts/open-readme.sh en
+
+# 同时打开两个版本
+./scripts/open-readme.sh all</code></pre>
+</div>
+
+</body>
+</html>

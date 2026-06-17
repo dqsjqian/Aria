@@ -1,0 +1,37 @@
+add_executable(test_core
+    test_main.cpp
+    test_property.cpp
+    test_computed.cpp
+    test_command.cpp
+    test_observable_list.cpp
+    test_filtered_list.cpp
+    test_sorted_list.cpp
+    test_mapped_list.cpp
+    test_derived_chain.cpp
+    test_validator.cpp
+    test_property_ops.cpp
+    test_selection.cpp
+    test_inspector.cpp
+    test_i_property.cpp
+    test_lifecycle_invariants.cpp
+    test_error_model.cpp
+    test_list_conformance.cpp
+    test_list_signal_mixin.cpp
+    test_diagnostics.cpp
+    test_loadable.cpp
+    test_distinct_list.cpp
+    test_paged_list.cpp
+    test_grouped_list.cpp
+    test_scheduler.cpp
+    test_function_ref.cpp
+    test_inplace_function.cpp
+    test_callback_boundary.cpp
+)
+target_link_libraries(test_core PRIVATE
+    aria::core
+    aria::async
+    aria::runtime
+    doctest::doctest
+    aria::warnings
+)
+add_test(NAME core_tests COMMAND test_core)

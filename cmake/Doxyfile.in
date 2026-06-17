@@ -1,0 +1,93 @@
+# Doxyfile.in — configured by CMake (ARIA_BUILD_DOCS=ON) into
+# ${CMAKE_BINARY_DIR}/Doxyfile. Generates the public API reference for
+# Aria (ROADMAP P1-F). Run via the `aria_docs` target:
+#
+#     cmake -B build -DARIA_BUILD_DOCS=ON
+#     cmake --build build --target aria_docs
+#     open build/docs/html/index.html
+#
+# Doxygen is invoked with WORKING_DIRECTORY = the project source root, so
+# all INPUT / EXCLUDE paths below are relative to that root.
+
+PROJECT_NAME           = "Aria"
+PROJECT_NUMBER         = "@PROJECT_VERSION@"
+PROJECT_BRIEF          = "Modern C++20 MVVM framework — reactive, coroutine-first, ABI-layered"
+OUTPUT_DIRECTORY       = @ARIA_DOCS_OUTPUT_DIR@
+
+# ── Inputs ───────────────────────────────────────────────────────────────
+# Public headers of every shipped module + the prose docs. Implementation
+# folders (detail/, src/, tests/, fuzz/) and vendored code are excluded so
+# the reference is the *public surface only*.
+INPUT                  = modules \
+                         docs \
+                         README.md
+USE_MDFILE_AS_MAINPAGE = README.md
+RECURSIVE              = YES
+FILE_PATTERNS          = *.hpp *.inl *.md
+EXTENSION_MAPPING      = inl=C++
+
+EXCLUDE_PATTERNS       = */detail/* \
+                         */tests/* \
+                         */fuzz/* \
+                         */src/* \
+                         */build/* \
+                         */third_party/*
+# Hide internal implementation namespaces from the reference even when a
+# public header pulls them in transitively.
+EXCLUDE_SYMBOLS        = aria::detail aria::detail::* \
+                         aria::reactive::detail aria::reactive::detail::* \
+                         aria::async::detail aria::async::detail::* \
+                         aria::binding::detail aria::binding::detail::*
+
+# ── Extraction policy: public, documented surface ─────────────────────────
+# Most Aria headers document with `//` blocks; turn those into Doxygen docs
+# so the reference is populated, but keep internals out via the excludes
+# above and by hiding private/static members.
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = NO
+EXTRACT_LOCAL_CLASSES  = NO
+HIDE_UNDOC_MEMBERS     = NO
+JAVADOC_AUTOBRIEF      = YES
+QT_AUTOBRIEF           = YES
+MULTILINE_CPP_IS_BRIEF = NO
+MARKDOWN_SUPPORT       = YES
+TOC_INCLUDE_HEADINGS   = 3
+
+# ── C++20 / preprocessor ───────────────────────────────────────────────────
+# Neutralise the export-macro decorations so the parser sees clean
+# declarations regardless of the build configuration.
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = YES
+PREDEFINED             = ARIA_CORE_API= \
+                         ARIA_ABI_API= \
+                         ARIA_RUNTIME_API= \
+                         ARIA_BINDING_API= \
+                         ARIA_PLUGIN_EXPORT= \
+                         "ARIA_NODISCARD=[[nodiscard]]" \
+                         __cplusplus=202002L
+
+# ── Output ─────────────────────────────────────────────────────────────────
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+GENERATE_XML           = NO
+HTML_OUTPUT            = html
+GENERATE_TREEVIEW      = YES
+DISABLE_INDEX          = NO
+SORT_MEMBER_DOCS       = NO
+SORT_BRIEF_DOCS        = NO
+
+# ── Diagrams (optional; only if Graphviz/dot is available) ─────────────────
+HAVE_DOT               = @ARIA_DOXYGEN_HAVE_DOT@
+DOT_IMAGE_FORMAT       = svg
+CALL_GRAPH             = NO
+CALLER_GRAPH           = NO
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = NO
+
+# ── Warnings ───────────────────────────────────────────────────────────────
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_NO_PARAMDOC       = NO
