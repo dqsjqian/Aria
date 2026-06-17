@@ -1,0 +1,107 @@
+# Build directories
+#   build/ covers all sub-dirs: ide/, flavors/, platforms/, examples/, dist/
+build/
+out/
+cmake-build-*/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+Makefile
+*.cmake
+!cmake/*.cmake
+
+# Compiled
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.lib
+*.exp
+*.pdb
+*.idb
+*.ilk
+
+# IDE
+.idea/
+# .vscode/ is generated per-platform by scripts/init-project.{sh,ps1}
+# (it contains absolute paths, Qt locations, etc. that differ by machine).
+# Run ./scripts/init-project.sh or scripts\init-project.ps1 after cloning.
+.vscode/
+.vs/
+*.user
+*.userosscache
+*.sln.docstates
+.cache/
+compile_commands.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+*.gcda
+*.gcno
+*.gcov
+coverage/
+*.profraw
+*.profdata
+
+# CPM cache
+cpm-cache/
+
+# Sanitizer outputs
+*.log
+asan.log.*
+ubsan.log.*
+
+# Documentation build artefacts
+docs/html/
+docs/latex/
+docs/xml/
+
+# macOS app bundles produced by Qt demos
+*.app/
+
+# Stray test binaries dropped at repo root (no extension on macOS/Linux)
+/ex_*
+!/examples/
+
+# Local agent / editor metadata
+.workbuddy/
+.aider*
+.claude/
+
+# Xcode user-specific data (per-developer state, should never be committed)
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+
+# Patch & swap files
+*.orig
+*.rej
+*.swp
+*.swo
+
+# ── Android / Gradle ──────────────────────────────────────────────────────────
+# Gradle cache (per-demo .gradle/ dirs)
+.gradle/
+# Gradle wrapper (auto-downloaded, not committed)
+gradle/wrapper/
+# Android Gradle Plugin CXX build cache (NDK .ninja_deps, .ninja_log, etc.)
+.cxx/
+# Android build output
+app/build/
+# Android SDK/NDK intermediate artefacts
+*.dex
+*.class
+*.apk
+# Android local SDK config (machine-specific, never commit)
+local.properties

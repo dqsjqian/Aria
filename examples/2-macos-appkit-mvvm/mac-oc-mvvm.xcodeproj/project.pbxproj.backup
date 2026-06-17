@@ -1,0 +1,399 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AA000001 /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = BB000001; };
+		AA000002 /* AppDelegate.mm in Sources */ = {isa = PBXBuildFile; fileRef = BB000003; };
+		AA000003 /* RootViewController.mm in Sources */ = {isa = PBXBuildFile; fileRef = BB000005; };
+		AA000004 /* FreePlaygroundController.mm in Sources */ = {isa = PBXBuildFile; fileRef = BB000007; };
+		AA000007 /* AppKitAdapter.mm in Sources */ = {isa = PBXBuildFile; fileRef = BB000020; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		BB000001 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		BB000002 /* AppDelegate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AppDelegate.h; sourceTree = "<group>"; };
+		BB000003 /* AppDelegate.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = AppDelegate.mm; sourceTree = "<group>"; };
+		BB000004 /* RootViewController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RootViewController.h; sourceTree = "<group>"; };
+		BB000005 /* RootViewController.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = RootViewController.mm; sourceTree = "<group>"; };
+		BB000006 /* FreePlaygroundController.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FreePlaygroundController.h; sourceTree = "<group>"; };
+		BB000007 /* FreePlaygroundController.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = FreePlaygroundController.mm; sourceTree = "<group>"; };
+		BB000008 /* MainViewModel.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = MainViewModel.hpp; sourceTree = "<group>"; };
+		BB000009 /* MainViewModel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MainViewModel.h; sourceTree = "<group>"; };
+		BB000010 /* DataModel.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = DataModel.hpp; sourceTree = "<group>"; };
+		BB000011 /* DataModel.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DataModel.h; sourceTree = "<group>"; };
+		BB000012 /* mac-oc-mvvm-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "mac-oc-mvvm-Info.plist"; sourceTree = "<group>"; };
+		BB000013 /* mac-oc-mvvm.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "mac-oc-mvvm.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB000019 /* AppKitAdapter.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = AppKitAdapter.hpp; sourceTree = "<group>"; };
+		BB000020 /* AppKitAdapter.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = AppKitAdapter.mm; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		CC000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		DD000001 /* mac-oc-mvvm */ = {
+			isa = PBXGroup;
+			children = (
+				DD000010 /* mac-oc-mvvm */,
+				DD000004 /* Products */,
+				DD000005 /* Frameworks */,
+			);
+			sourceTree = "<group>";
+		};
+		DD000010 /* mac-oc-mvvm */ = {
+			isa = PBXGroup;
+			children = (
+				DD000002 /* AppDelegate */,
+				DD000003 /* Business */,
+				DD000006 /* ViewModel */,
+				DD000007 /* Model */,
+				DD000011 /* Adapter */,
+				BB000012 /* mac-oc-mvvm-Info.plist */,
+			);
+			path = mac-oc-mvvm;
+			sourceTree = "<group>";
+		};
+		DD000002 /* AppDelegate */ = {
+			isa = PBXGroup;
+			children = (
+				BB000001 /* main.mm */,
+				BB000002 /* AppDelegate.h */,
+				BB000003 /* AppDelegate.mm */,
+			);
+			path = AppDelegate;
+			sourceTree = "<group>";
+		};
+		DD000003 /* Business */ = {
+			isa = PBXGroup;
+			children = (
+				DD000008 /* Root */,
+				DD000009 /* FreePlayground */,
+			);
+			path = Business;
+			sourceTree = "<group>";
+		};
+		DD000004 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				BB000013 /* mac-oc-mvvm.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		DD000005 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		DD000006 /* ViewModel */ = {
+			isa = PBXGroup;
+			children = (
+				BB000008 /* MainViewModel.hpp */,
+				BB000009 /* MainViewModel.h */,
+			);
+			path = ViewModel;
+			sourceTree = "<group>";
+		};
+		DD000007 /* Model */ = {
+			isa = PBXGroup;
+			children = (
+				BB000010 /* DataModel.hpp */,
+				BB000011 /* DataModel.h */,
+			);
+			path = Model;
+			sourceTree = "<group>";
+		};
+		DD000008 /* Root */ = {
+			isa = PBXGroup;
+			children = (
+				BB000004 /* RootViewController.h */,
+				BB000005 /* RootViewController.mm */,
+			);
+			path = Root;
+			sourceTree = "<group>";
+		};
+		DD000009 /* FreePlayground */ = {
+			isa = PBXGroup;
+			children = (
+				BB000006 /* FreePlaygroundController.h */,
+				BB000007 /* FreePlaygroundController.mm */,
+			);
+			path = FreePlayground;
+			sourceTree = "<group>";
+		};
+		DD000011 /* Adapter */ = {
+			isa = PBXGroup;
+			children = (
+				BB000019 /* AppKitAdapter.hpp */,
+				BB000020 /* AppKitAdapter.mm */,
+			);
+			path = Adapter;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		EE000001 /* mac-oc-mvvm */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FF000003 /* Build configuration list for PBXNativeTarget "mac-oc-mvvm" */;
+			buildPhases = (
+				CC000002 /* Sources */,
+				CC000001 /* Frameworks */,
+				CC000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "mac-oc-mvvm";
+			productName = "mac-oc-mvvm";
+			productReference = BB000013 /* mac-oc-mvvm.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		EE000000 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					EE000001 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = FF000002 /* Build configuration list for PBXProject "mac-oc-mvvm" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = DD000001;
+			productRefGroup = DD000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				EE000001 /* mac-oc-mvvm */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		CC000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		CC000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA000001 /* main.mm in Sources */,
+				AA000002 /* AppDelegate.mm in Sources */,
+				AA000003 /* RootViewController.mm in Sources */,
+				AA000004 /* FreePlaygroundController.mm in Sources */,
+				AA000007 /* AppKitAdapter.mm in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		FF000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/mac-oc-mvvm/AppDelegate",
+					"$(SRCROOT)/mac-oc-mvvm/Business/Root",
+					"$(SRCROOT)/mac-oc-mvvm/Business/FreePlayground",
+					"$(SRCROOT)/mac-oc-mvvm/ViewModel",
+					"$(SRCROOT)/mac-oc-mvvm/Model",
+					"$(SRCROOT)/mac-oc-mvvm/Adapter",
+					"$(SRCROOT)/../../modules/core/include",
+					"$(SRCROOT)/../../modules/abi/include",
+					"$(SRCROOT)/../../modules/binding/include",
+					"$(SRCROOT)/../../modules/runtime/include",
+					"$(SRCROOT)/../../modules/async/include",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../build/modules/abi",
+					"$(SRCROOT)/../../build/modules/binding",
+					"$(SRCROOT)/../../build/modules/runtime",
+				);
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		FF000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/mac-oc-mvvm/AppDelegate",
+					"$(SRCROOT)/mac-oc-mvvm/Business/Root",
+					"$(SRCROOT)/mac-oc-mvvm/Business/FreePlayground",
+					"$(SRCROOT)/mac-oc-mvvm/ViewModel",
+					"$(SRCROOT)/mac-oc-mvvm/Model",
+					"$(SRCROOT)/mac-oc-mvvm/Adapter",
+					"$(SRCROOT)/../../modules/core/include",
+					"$(SRCROOT)/../../modules/abi/include",
+					"$(SRCROOT)/../../modules/binding/include",
+					"$(SRCROOT)/../../modules/runtime/include",
+					"$(SRCROOT)/../../modules/async/include",
+				);
+				CLANG_CXX_LIBRARY = "libc++";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LIBRARY_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/../../build/modules/abi",
+					"$(SRCROOT)/../../build/modules/binding",
+					"$(SRCROOT)/../../build/modules/runtime",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		FF000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = "mac-oc-mvvm/mac-oc-mvvm-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"-laria_binding",
+					"-laria_runtime",
+					"-laria_abi",
+					"-framework",
+					Cocoa,
+					"-lc++",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.example.mac-oc-mvvm";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		FF000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = "mac-oc-mvvm/mac-oc-mvvm-Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"-laria_binding",
+					"-laria_runtime",
+					"-laria_abi",
+					"-framework",
+					Cocoa,
+					"-lc++",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.example.mac-oc-mvvm";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		FF000003 /* Build configuration list for PBXNativeTarget "mac-oc-mvvm" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FF000005 /* Debug */,
+				FF000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FF000002 /* Build configuration list for PBXProject "mac-oc-mvvm" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FF000001 /* Debug */,
+				FF000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = EE000000 /* Project object */;
+}

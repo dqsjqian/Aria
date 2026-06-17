@@ -1,0 +1,22 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+
+set(ARIA_BUILT_WITH_QT6 @ARIA_BUILD_QT6@)
+if(ARIA_BUILT_WITH_QT6)
+    find_dependency(Qt6 COMPONENTS Core Widgets)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/ariaTargets.cmake")
+
+# Convenience aggregate target — depends on everything users normally need.
+if(NOT TARGET aria::aria)
+    add_library(aria::aria INTERFACE IMPORTED)
+    set_target_properties(aria::aria PROPERTIES
+        INTERFACE_LINK_LIBRARIES
+            "aria::core;aria::async;aria::runtime;aria::binding"
+    )
+endif()
+
+check_required_components(aria)

@@ -1,0 +1,101 @@
+name: Nightly bench
+
+on:
+  schedule:
+    # 02:00 UTC every day. Pick a slot that doesn't compete with the
+    # ordinary CI rush hour.
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-bench
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: Bench + P99 ceiling check
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja
+        run: brew install ninja
+
+      - name: Configure (Release, no sanitizers)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARIA_BUILD_TESTS=OFF \
+            -DARIA_BUILD_EXAMPLES=OFF \
+            -DARIA_BUILD_BENCHMARK=ON \
+            -DARIA_ENABLE_ASAN=OFF \
+            -DARIA_ENABLE_UBSAN=OFF
+
+      - name: Build all bench binaries
+        # Keep this list in sync with `benches=(...)` in
+        # scripts/check-bench.sh and benchmark/CMakeLists.txt.
+        run: |
+          cmake --build build -j \
+            --target \
+              aria_bench_iproperty \
+              aria_bench_command \
+              aria_bench_async_command \
+              aria_bench_list \
+              aria_bench_derived_list
+
+      - name: Run benches and check P99 ceilings
+        # check-bench.sh does the whole job:
+        #   1. runs every aria_bench_* binary,
+        #   2. parses each "P …" row_pct line,
+        #   3. compares the P99 against benchmark/thresholds.json,
+        #   4. appends a Markdown summary table to
+        #      $GITHUB_STEP_SUMMARY (visible on the run page),
+        #   5. exits 1 if anything regressed past its ceiling.
+        # The script's own stdout is also tee'd to a log so the raw
+        # numbers ride along as a build artifact.
+        run: |
+          ./scripts/check-bench.sh build 2>&1 | tee bench-output.txt
+
+      - name: Upload bench output
+        # Always upload, even on failure — that way the regressed
+        # numbers are captured for offline diff against earlier runs.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-output-${{ github.run_id }}
+          path: bench-output.txt
+          retention-days: 30
+
+  # ────────────────────────────────────────────────────────────────────
+  # TSan nightly — ThreadSanitizer is heavy and noisy under racy CI
+  # runners; we keep it out of the per-PR pipeline and run it once a
+  # day instead. Failure is non-blocking for PRs but visible here.
+  # ────────────────────────────────────────────────────────────────────
+  tsan:
+    name: TSan (macOS)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja
+        run: brew install ninja
+
+      - name: Configure (TSan)
+        run: |
+          cmake -S . -B build-tsan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DARIA_ENABLE_TSAN=ON \
+            -DARIA_BUILD_TESTS=ON \
+            -DARIA_BUILD_EXAMPLES=OFF
+
+      - name: Build
+        run: cmake --build build-tsan -j
+
+      - name: Test
+        env:
+          # The TSan runtime takes a while to start each test exe; the
+          # default ctest timeout (1500s) is plenty, but we keep this
+          # explicit so a hang shows up as a TSan failure rather than
+          # an indefinite job.
+          TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
+        run: ctest --test-dir build-tsan --output-on-failure --timeout 600

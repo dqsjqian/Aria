@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+
+##############################################################################
+# Gradle wrapper script — downloads and executes Gradle
+##############################################################################
+
+set -e
+
+APP_HOME=$(cd "$(dirname "$0")" && pwd)
+CLASSPATH="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
+
+# Determine the Java command to use
+JAVACMD="java"
+if [ -n "$JAVA_HOME" ] ; then
+    JAVACMD="$JAVA_HOME/bin/java"
+fi
+
+exec "$JAVACMD" \
+    -Xmx512m -Xms64m \
+    -classpath "$CLASSPATH" \
+    org.gradle.wrapper.GradleWrapperMain \
+    "$@"

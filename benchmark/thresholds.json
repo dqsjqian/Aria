@@ -1,0 +1,32 @@
+{
+  "_comment": "Nightly benchmark P99 ceilings (nanoseconds). Keys under .metrics MUST match the metric label passed to row_pct() in benchmark/bench_*.cpp. CI's scripts/check-bench.sh parses bench stdout, picks the host-specific block under .hosts (or falls back to .metrics if the running host is not pinned), and fails the build when measured P99 exceeds the ceiling.",
+  "_unit": "nanoseconds",
+  "_jitter_policy": "Multiplier applied to the measured P99 baseline depends on absolute scale. Sub-100ns hot paths (Property::set, set_any) get x3.0 because a single scheduler hiccup or icache miss is a meaningful fraction of the budget. Mid-range 100ns-1us paths get x2.0. Heavy ops above 1us get x1.5 since absolute jitter is a smaller share. The goal is a noise-tolerant ceiling that still catches a real 30-50% regression.",
+  "_host_keys": "Host detection (lowercased OS-arch): 'macos-arm64', 'macos-x86_64', 'linux-x86_64', 'linux-aarch64', 'windows-x86_64', 'windows-aarch64'. Add a new key under .hosts when a CI runner with a materially different baseline comes online; until then the .metrics block is used as a generic fallback.",
+  "metrics": {
+    "Property<int>::set(i)": 80,
+    "IProperty::set_any(std::any{i})": 90,
+    "Property<int>::set() + 1 observer": 200,
+    "Computed chain x5 (auto-tracked)": 1300,
+    "AsyncCommand<int,int>::execute round-trip": 9300,
+    "ObservableList::push_back (no observers)": 900,
+    "FilteredList: source push_back (n=10k)": 41000,
+    "SortedList: source push_back random (n=10k)": 55000
+  },
+  "hosts": {
+    "macos-arm64": {
+      "_baseline_machine": "Apple M-series, macOS 14+, AppleClang 17+, Release",
+      "_baseline_note": "Ceilings = quiet-host P99 × ._jitter_policy multiplier. Captured 2026-06-09 on an idle M-series host (no other heavy processes). On a busy developer machine these numbers will trip — that is intentional: a noisy machine should not anchor the regression budget. Use `scripts/check-bench.sh --runs 5` to take best-of-N and cancel local jitter, or run on a CI-grade quiet host.",
+      "metrics": {
+        "Property<int>::set(i)": 80,
+        "IProperty::set_any(std::any{i})": 90,
+        "Property<int>::set() + 1 observer": 320,
+        "Computed chain x5 (auto-tracked)": 2000,
+        "AsyncCommand<int,int>::execute round-trip": 11000,
+        "ObservableList::push_back (no observers)": 900,
+        "FilteredList: source push_back (n=10k)": 41000,
+        "SortedList: source push_back random (n=10k)": 60000
+      }
+    }
+  }
+}

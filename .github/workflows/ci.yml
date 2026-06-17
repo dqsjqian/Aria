@@ -1,0 +1,344 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────
+  # macOS — AppleClang + Ninja, with sanitizer pass and Qt6 build
+  # ────────────────────────────────────────────────────────────────────
+  macos:
+    name: macOS (AppleClang)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja
+        run: brew install ninja
+
+      - name: Configure (Release)
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Configure (ASan + UBSan)
+        run: |
+          cmake -S . -B build-asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DARIA_ENABLE_ASAN=ON \
+            -DARIA_ENABLE_UBSAN=ON
+
+      - name: Build (sanitized)
+        run: cmake --build build-asan -j
+
+      - name: Test (sanitized)
+        run: ctest --test-dir build-asan --output-on-failure
+
+      - name: Install Qt6
+        run: brew install qt
+
+      - name: Configure (Qt6)
+        run: |
+          cmake -S . -B build-qt -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARIA_BUILD_QT6=ON \
+            -DCMAKE_PREFIX_PATH=$(brew --prefix qt)
+
+      - name: Build (Qt6)
+        run: cmake --build build-qt -j
+
+      - name: Test (Qt6)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build-qt --output-on-failure
+
+  # ────────────────────────────────────────────────────────────────────
+  # Ubuntu — gcc + clang matrix, plus Qt6 dev packages
+  # ────────────────────────────────────────────────────────────────────
+  ubuntu:
+    name: Ubuntu (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: gcc
+            cc: gcc-13
+            cxx: g++-13
+          - compiler: clang
+            cc: clang-18
+            cxx: clang++-18
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain + Qt6
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ninja-build ${{ matrix.cc }} ${{ matrix.cxx }} \
+            qt6-base-dev libqt6widgets6 \
+            libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev
+
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARIA_BUILD_QT6=ON
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Install (smoke test for find_package)
+        run: |
+          cmake --install build --prefix /tmp/aria-prefix
+          test -f /tmp/aria-prefix/lib/cmake/aria/ariaConfig.cmake
+
+  # ────────────────────────────────────────────────────────────────────
+  # Windows — MSYS2 UCRT64 + GCC + Ninja + Qt6 (no MSVC)
+  # ────────────────────────────────────────────────────────────────────
+  windows-msys2:
+    name: Windows (MSYS2 UCRT64)
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSYS2 UCRT64 + Qt6
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-qt6-base
+
+      - name: Show toolchain versions
+        run: |
+          g++ --version
+          cmake --version
+          ninja --version
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARIA_BUILD_QT6=ON
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Install (smoke test)
+        run: |
+          cmake --install build --prefix /tmp/aria-prefix
+          test -f /tmp/aria-prefix/lib/cmake/aria/ariaConfig.cmake
+
+  # ────────────────────────────────────────────────────────────────────
+  # Windows — native MSVC (Visual Studio 2022) + Qt6 binary install
+  # ----------------------------------------------------------------------------
+  # The MSYS2 job above covers GCC-on-Windows; this one covers the
+  # *real* MSVC toolchain that downstream consumers most often pair
+  # with. It runs on every PR — slower than MSYS2 but mandatory for
+  # ABI-stable claims on Windows.
+  # ────────────────────────────────────────────────────────────────────
+  windows-msvc:
+    name: Windows (MSVC 2022)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt6 (binary)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.2'
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+          cache: true
+
+      - name: Configure (MSVC, Release)
+        shell: pwsh
+        run: |
+          cmake -S . -B build `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DARIA_BUILD_QT6=ON
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release -j
+
+      - name: Test
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Install (smoke test for find_package)
+        shell: pwsh
+        run: |
+          cmake --install build --config Release --prefix "${env:TEMP}/aria-prefix"
+          if (-not (Test-Path "${env:TEMP}/aria-prefix/lib/cmake/aria/ariaConfig.cmake")) {
+            Write-Error "ariaConfig.cmake missing after install"
+            exit 1
+          }
+
+  # ────────────────────────────────────────────────────────────────────
+  # API reference (Doxygen) — builds the `aria_docs` target so a broken
+  # Doxyfile or a malformed doc comment fails CI rather than surfacing
+  # only when someone tries to publish the reference (ROADMAP P1-F).
+  # Non-blocking to the build matrix; runs on the cheap macOS runner.
+  # ────────────────────────────────────────────────────────────────────
+  docs:
+    name: API docs (Doxygen)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja + doxygen + graphviz
+        run: brew install ninja doxygen graphviz
+
+      - name: Configure (docs)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARIA_BUILD_DOCS=ON \
+            -DARIA_BUILD_TESTS=OFF \
+            -DARIA_BUILD_EXAMPLES=OFF \
+            -DARIA_BUILD_BENCHMARK=OFF
+
+      - name: Build API reference
+        run: cmake --build build --target aria_docs
+
+      - name: Sanity-check generated HTML
+        run: test -f build/docs/html/index.html
+
+      - name: Upload API reference artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aria-api-reference
+          path: build/docs/html
+
+  # ────────────────────────────────────────────────────────────────────
+  # Cross-dylib ABI smoke (ROADMAP P2-A) — explicit job that builds the
+  # examples (shared libs) and runs ONLY the ABI smoke + headless TodoMVC
+  # so an ABI regression is attributed clearly rather than buried in the
+  # full matrix. The same tests also run in the default build matrix
+  # (examples default ON), this job just makes the intent legible.
+  # ────────────────────────────────────────────────────────────────────
+  abi-smoke:
+    name: Cross-dylib ABI smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build g++-13
+
+      - name: Configure (shared libs + examples)
+        env:
+          CC: gcc-13
+          CXX: g++-13
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARIA_BUILD_SHARED=ON \
+            -DARIA_BUILD_EXAMPLES=ON \
+            -DARIA_BUILD_BENCHMARK=OFF
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Run ABI smoke + TodoMVC
+        run: ctest --test-dir build -R "cross_dylib_abi_smoke|todomvc_smoke" --output-on-failure
+
+  # ────────────────────────────────────────────────────────────────────
+  # clang-tidy gate — runs on macOS (cheapest runner with clang-tidy
+  # already shipped in Xcode). Lints the whole `aria/*.hpp` surface
+  # via the project's .clang-tidy file. WarningsAsErrors is empty in
+  # the config, so we promote to errors here via --warnings-as-errors.
+  # ────────────────────────────────────────────────────────────────────
+  clang-tidy:
+    name: clang-tidy gate
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja + clang-tidy
+        run: |
+          brew install ninja
+          # macOS ships clang-tidy via Xcode but it's old; use LLVM toolchain.
+          brew install llvm
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+
+      - name: Show clang-tidy version
+        run: clang-tidy --version
+
+      - name: Configure (compile_commands.json)
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Build (so generated headers/sources exist)
+        run: cmake --build build -j
+
+      - name: Run clang-tidy across modules/*/include
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          # Whole-project surface: every aria/*.hpp under each module's
+          # public include tree. Drives off compile_commands.json for
+          # consistent flags.
+          files=(modules/*/include/aria/**/*.hpp)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No aria headers found — sanity check failed."
+            exit 1
+          fi
+          echo "Linting ${#files[@]} headers"
+          # Run in batches of 25 so a single bad header doesn't block
+          # output from the rest.
+          batch=()
+          rc=0
+          for f in "${files[@]}"; do
+            batch+=("$f")
+            if [[ ${#batch[@]} -ge 25 ]]; then
+              clang-tidy -p build --warnings-as-errors='*' "${batch[@]}" || rc=1
+              batch=()
+            fi
+          done
+          if [[ ${#batch[@]} -gt 0 ]]; then
+            clang-tidy -p build --warnings-as-errors='*' "${batch[@]}" || rc=1
+          fi
+          exit $rc
