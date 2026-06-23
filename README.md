@@ -105,8 +105,8 @@ glue you to a single platform, or hide behind macros. **aria** is the opposite:
 ## Quick start
 
 ```bash
-git clone https://github.com/dqsjqian/aria.git
-cd aria
+git clone https://github.com/dqsjqian/Aria.git
+cd Aria
 cmake -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure
