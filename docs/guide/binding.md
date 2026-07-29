@@ -61,6 +61,43 @@ engine.bind_int_oneway(count, badge_view);
 engine.bind_double_oneway(progress, progress_bar);
 ```
 
+### bind_text_projected
+
+Render any `Property<T>` into a read-only text view through a `T -> std::string`
+projection. This is the lightweight one-way alternative to a full bidirectional
+`Converter` when the view never writes back (labels, status lines):
+
+```cpp
+aria::Property<int> unread{3};
+
+engine.bind_text_projected(unread, badge_label,
+    [](int n) { return std::to_string(n) + " new"; });
+// label shows "3 new"; re-renders whenever `unread` changes
+```
+
+### bind_optional_text
+
+Bind a `Property<std::optional<T>>` to a read-only text view. When the optional
+holds a value it is rendered through the projection; when it is `std::nullopt`
+the view shows `empty_text` (default: empty string):
+
+```cpp
+aria::Property<std::optional<std::string>> user{std::nullopt};
+
+engine.bind_optional_text(user, welcome_label,
+    [](const std::string& name) { return "Welcome, " + name; },
+    "(signed out)");
+// nullopt → "(signed out)"; user = "Alice" → "Welcome, Alice"
+```
+
+> **Async-agnostic by design.** Both helpers operate purely on `Property<T>`,
+> so the `binding` module stays decoupled from `aria-async`. They are the
+> idiomatic way to render an `AsyncCommand`'s observable properties —
+> `last_error_message` (a `Property<std::string>`) with `bind_text_projected`,
+> and `last_result` (a `Property<std::optional<R>>`) with `bind_optional_text` —
+> without teaching `BindingEngine` about coroutines. See
+> [View-Destroy Cancellation](../cookbook/07-view-destroy-cancellation.md).
+
 ---
 
 ## Two-Way Bindings (VM ↔ View)
@@ -208,6 +245,8 @@ See adapter guides for platform-specific implementations:
 |--------|-----------|-------|
 | `bind_text` | Two-way | `Property<string>` ↔ text input |
 | `bind_text_oneway` | VM→View | `Property<string>` → label |
+| `bind_text_projected` | VM→View | `Property<T>` → label via `T→string` |
+| `bind_optional_text` | VM→View | `Property<optional<T>>` → label (nullopt → empty_text) |
 | `bind_bool` | Two-way | `Property<bool>` ↔ checkbox |
 | `bind_int` | Two-way | `Property<int>` ↔ spin box |
 | `bind_double` | Two-way | `Property<double>` ↔ slider |
