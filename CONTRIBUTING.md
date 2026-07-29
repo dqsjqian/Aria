@@ -117,15 +117,17 @@ ARIA_FUZZ_ITERS=200000 ./build/bin/aria_fuzz
 
 ```
 adapters  →  binding  →  runtime
-                     ↘   ↙
-                     core  →  abi
-   async  →  core  →  abi
+                 │   ↘     ↙
+                 ↓    core  →  abi
+               async  →  core  →  abi
 ```
 
-- `binding` must NOT depend on `async` (they are siblings on top of
-  `core`/`runtime`). Async↔binding integration is wired by the consumer via
-  primitives like `BindingEngine::bind_view_lifetime`, never by a direct
-  include.
+- `binding` depends on `async` (for `ViewModelScope` / `Navigation`
+  cancellation), but `BindingEngine` and its `bind_*` methods stay
+  async-agnostic: they operate purely on `Property<T>` and never name an
+  `AsyncCommand` type. Wire the async→binding integration through primitives
+  like `BindingEngine::bind_view_lifetime`; do NOT add an `AsyncCommand`
+  parameter or overload to the engine itself.
 - `core` and `abi` have zero external dependencies.
 
 ## License

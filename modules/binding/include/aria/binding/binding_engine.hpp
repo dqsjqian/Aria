@@ -277,9 +277,9 @@ public:
     //   They operate purely on `Property<T>`, so they are completely
     //   async-agnostic: the same call binds an `AsyncCommand`'s
     //   `last_error_message` / `last_result` projections, a `Computed`'s
-    //   formatted output, or any other model-owned value — without the
-    //   `binding` module ever knowing `aria-async` exists (see the
-    //   `bind_view_lifetime` note on that deliberate decoupling).
+    //   formatted output, or any other model-owned value — without this
+    //   engine ever naming an `aria-async` type (see the `bind_view_lifetime`
+    //   note on that deliberate API-level decoupling).
     // ══════════════════════════════════════════════════════════════════
 
     /// Bind a read-only text view to `prop`, rendered through `project`
@@ -369,9 +369,11 @@ public:
     // the view down (the UI thread, by the IView contract).
     //
     // This is the async-agnostic primitive behind "view-destroy
-    // cancellation": the `binding` module deliberately does NOT depend on
-    // `aria-async`, so instead of teaching BindingEngine about
-    // `AsyncCommand`, callers wire the two together themselves —
+    // cancellation": `BindingEngine` deliberately never names an
+    // `AsyncCommand` type (it takes a plain `std::function<void()>`), so
+    // instead of teaching BindingEngine about `AsyncCommand`, callers wire
+    // the two together themselves — even though the `binding` module as a
+    // whole does link `aria-async` for `ViewModelScope` / `Navigation` —
     //
     //     AsyncCommand<void> load{ui, [](CancellationToken t) -> Task<void>{
     //         co_await fetch(t);              // cooperative cancel point

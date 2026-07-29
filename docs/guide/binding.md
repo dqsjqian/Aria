@@ -91,7 +91,8 @@ engine.bind_optional_text(user, welcome_label,
 ```
 
 > **Async-agnostic by design.** Both helpers operate purely on `Property<T>`,
-> so the `binding` module stays decoupled from `aria-async`. They are the
+> so `BindingEngine` stays decoupled from `aria-async` at the API level (the
+> engine never names an `AsyncCommand` type). They are the
 > idiomatic way to render an `AsyncCommand`'s observable properties —
 > `last_error_message` (a `Property<std::string>`) with `bind_text_projected`,
 > and `last_result` (a `Property<std::optional<R>>`) with `bind_optional_text` —

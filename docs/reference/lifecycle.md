@@ -789,13 +789,16 @@ engine.bind_view_lifetime(view, [&load]{
 engine.bind_view_lifetime(view, [&resource]{ resource.cancel(); });
 ```
 
-**Layering note**: `binding` deliberately does NOT depend on `aria-async`
-(they are siblings over `core`/`runtime`). So `bind_view_lifetime` is an
-async-agnostic primitive — the host wires the async side in one explicit
-line rather than the engine reaching into `AsyncCommand`. There is no
-"convenience overload" inside `binding`; an async-aware helper, if ever
-wanted, belongs to a layer that may depend on both (the app, or a future
-`aria-app` umbrella), never to `binding` itself. See ROADMAP P1-H.
+**Layering note**: `BindingEngine` itself is deliberately async-agnostic —
+`bind_view_lifetime` takes a plain `std::function<void()>` and the engine
+never reaches into `AsyncCommand`. (The `binding` module *does* link
+`aria-async`, because sibling facilities like `ViewModelScope` and
+`Navigation` need coroutine cancellation primitives; but the binding engine
+and its `bind_*` methods stay free of any async type.) So the host wires the
+async side in one explicit line rather than the engine reaching into
+`AsyncCommand`. There is no async-aware `bind_*` overload on the engine; if
+one were ever wanted it would belong to a layer above (the app, or a future
+`aria-app` umbrella), not to `BindingEngine`. See ROADMAP P1-H.
 
 ### L-39: Adapter platform_name and unsupported-widget diagnostics
 
