@@ -14,10 +14,12 @@ still-living page.
 
 `BindingEngine::bind_view_lifetime(view, on_destroy_cb)` runs
 `on_destroy_cb` exactly once, when the view is destroyed **or** the
-engine is cleared/destroyed — whichever comes first. It lives in the
-`binding` module, which deliberately does **not** depend on
-`aria-async`, so you wire the async side yourself in one explicit line
-(no hidden coupling).
+engine is cleared/destroyed — whichever comes first. It takes a plain
+`std::function<void()>`: the engine itself stays async-agnostic and never
+names an `AsyncCommand` type, so you wire the async side yourself in one
+explicit line (no hidden coupling) — even though the `binding` module as a
+whole does link `aria-async` for its `ViewModelScope` / `Navigation`
+facilities.
 
 ## Cancelling an AsyncCommand
 
