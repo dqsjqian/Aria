@@ -13,6 +13,8 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
@@ -259,6 +261,72 @@ public:
                         std::string_view{"binding.converter"},
                         std::current_exception());
                 }
+            }));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //   Projected one-way text bindings (read-only labels)
+    //
+    //   A read-only label rarely wants the full bidirectional `Converter`
+    //   machinery of `bind_text_converted` — it only ever renders VM→View
+    //   and never parses text back. These two helpers take a plain
+    //   projection functor `T -> std::string` and wire the one-way path,
+    //   collapsing the hand-written `prop.on_changed([lbl]{ ... })` +
+    //   initial-sync boilerplate that otherwise piles up in every view.
+    //
+    //   They operate purely on `Property<T>`, so they are completely
+    //   async-agnostic: the same call binds an `AsyncCommand`'s
+    //   `last_error_message` / `last_result` projections, a `Computed`'s
+    //   formatted output, or any other model-owned value — without the
+    //   `binding` module ever knowing `aria-async` exists (see the
+    //   `bind_view_lifetime` note on that deliberate decoupling).
+    // ══════════════════════════════════════════════════════════════════
+
+    /// Bind a read-only text view to `prop`, rendered through `project`
+    /// (`T -> std::string`). One-way (VM→View) only. The initial value is
+    /// synced inline on the calling (UI) thread; subsequent changes go
+    /// through the configured dispatch policy and are dropped safely if
+    /// the view is destroyed in flight.
+    template<typename T, typename Project>
+    void bind_text_projected(Property<T>& prop, IView& view, Project project) {
+        auto guard_alive = ensure_alive_token_(view);
+        adapter_->set_text(view, project(prop.get()));
+        add_view_sub_(view, prop.on_changed(
+            [this, adapter = adapter_, &view, project = std::move(project), guard_alive]
+            (const T& v) {
+                this->dispatch_to_view_(guard_alive,
+                    [adapter, &view, project, v]() {
+                        adapter->set_text(view, project(v));
+                    });
+            }));
+    }
+
+    /// Bind a read-only text view to a `Property<std::optional<T>>`.
+    /// When the optional holds a value it is rendered through `project`
+    /// (`const T& -> std::string`); when it is `std::nullopt` the view
+    /// shows `empty_text` (default: empty string). One-way (VM→View) only.
+    ///
+    /// This is the missing piece for `AsyncCommand::last_result`
+    /// (`Property<std::optional<R>>`): binding a result label used to
+    /// require a hand-written `on_changed` that unwrapped the optional.
+    template<typename T, typename Project>
+    void bind_optional_text(Property<std::optional<T>>& prop,
+                            IView& view,
+                            Project project,
+                            std::string empty_text = std::string{}) {
+        auto guard_alive = ensure_alive_token_(view);
+        auto render = [project = std::move(project), empty_text]
+                      (const std::optional<T>& opt) -> std::string {
+            return opt ? project(*opt) : empty_text;
+        };
+        adapter_->set_text(view, render(prop.get()));
+        add_view_sub_(view, prop.on_changed(
+            [this, adapter = adapter_, &view, render = std::move(render), guard_alive]
+            (const std::optional<T>& opt) {
+                this->dispatch_to_view_(guard_alive,
+                    [adapter, &view, render, opt]() {
+                        adapter->set_text(view, render(opt));
+                    });
             }));
     }
 

@@ -49,7 +49,6 @@ QWidget* build_view(LoginVm& vm, aria::binding::BindingEngine& be) {
     lay->addWidget(errLbl);
 
     auto* welcome = make_result();
-    welcome->setText("(未登录)");
     lay->addWidget(welcome);
 
     auto* activeLbl = make_sub();
@@ -58,6 +57,10 @@ QWidget* build_view(LoginVm& vm, aria::binding::BindingEngine& be) {
 
     QObject::connect(btn, &QPushButton::clicked, [&vm] { vm.submit(); });
 
+    // Button enabled/text mixes TWO properties (is_active && !is_executing)
+    // plus a label swap — that is genuinely a view-level composition of two
+    // VM states, so it stays hand-wired. (If it grew, the right home would
+    // be a `Computed<bool>` on the VM, not a binding helper.)
     auto refreshBtn = [btn, &vm] {
         const bool busy   = vm.login.is_executing.get();
         const bool active = vm.is_active().get();
@@ -72,16 +75,14 @@ QWidget* build_view(LoginVm& vm, aria::binding::BindingEngine& be) {
     }));
     activeLbl->setText(vm.is_active().get() ? "VM 状态: active ●" : "VM 状态: inactive ○");
 
-    s_subs.push_back(vm.login.is_executing.on_changed(
-        [spinner](bool busy) { spinner->setVisible(busy); }));
-
-    s_subs.push_back(vm.login.last_error_message.on_changed([errLbl](const std::string& e) {
-        errLbl->setText(e.empty() ? "" : QStringLiteral("✗ ") + QString::fromStdString(e));
-    }));
-    s_subs.push_back(vm.login.last_result.on_changed(
-        [welcome](const std::optional<LoginResult>& r) {
-            if (r) welcome->setText(QString::fromStdString(r->welcome));
-        }));
+    // Single-property VM→View projections — now one-liners via the new
+    // async-agnostic binders instead of hand-written on_changed subscriptions.
+    be.bind_visible(vm.login.is_executing, view_for(spinner));
+    be.bind_text_projected(vm.login.last_error_message, view_for(errLbl),
+        [](const std::string& e) { return e.empty() ? std::string{} : "✗ " + e; });
+    be.bind_optional_text(vm.login.last_result, view_for(welcome),
+        [](const LoginResult& r) { return r.welcome; },
+        "(未登录)");
 
     return w;
 }

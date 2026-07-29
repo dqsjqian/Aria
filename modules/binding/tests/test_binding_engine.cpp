@@ -632,3 +632,98 @@ TEST_CASE("BindingEngine::bind_view_lifetime ignores empty callback") {
     engine.bind_view_lifetime(view, {});
     CHECK(true);
 }
+
+// ── Projected one-way text bindings ─────────────────────────────────
+//  bind_text_projected / bind_optional_text are async-agnostic helpers
+//  for read-only labels (the common shape when rendering an
+//  AsyncCommand's last_error_message / last_result, or any Computed).
+
+TEST_CASE("BindingEngine::bind_text_projected syncs initial + on change") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+
+    Property<int> count(3);
+    FakeView label;
+    engine.bind_text_projected(count, label,
+        [](int n) { return "count=" + std::to_string(n); });
+
+    // Initial sync.
+    CHECK(label.text == "count=3");
+
+    // VM → View on change.
+    count = 7;
+    CHECK(label.text == "count=7");
+}
+
+TEST_CASE("BindingEngine::bind_text_projected is one-way (view edits ignored)") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+
+    Property<int> count(1);
+    FakeView label;
+    engine.bind_text_projected(count, label, [](int n) { return std::to_string(n); });
+    CHECK(label.text == "1");
+
+    // A stray view-side text change must NOT feed back into the model.
+    FakeAdapter::user_type(label, "999");
+    CHECK(count.get() == 1);
+}
+
+TEST_CASE("BindingEngine::bind_optional_text renders value vs empty_text") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+
+    Property<std::optional<std::string>> result(std::nullopt);
+    FakeView label;
+    engine.bind_optional_text(result, label,
+        [](const std::string& s) { return "welcome " + s; },
+        "(none)");
+
+    // nullopt → empty_text.
+    CHECK(label.text == "(none)");
+
+    // some → projected.
+    result = std::optional<std::string>{"Alice"};
+    CHECK(label.text == "welcome Alice");
+
+    // back to nullopt → empty_text again.
+    result = std::nullopt;
+    CHECK(label.text == "(none)");
+}
+
+TEST_CASE("BindingEngine::bind_optional_text default empty_text is empty string") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+
+    Property<std::optional<int>> maybe(std::nullopt);
+    FakeView label;
+    engine.bind_optional_text(maybe, label,
+        [](int n) { return std::to_string(n); });
+    CHECK(label.text.empty());
+
+    maybe = std::optional<int>{42};
+    CHECK(label.text == "42");
+}
+
+TEST_CASE("BindingEngine: projected bindings survive view destroy without UB") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+
+    Property<int>                    n(0);
+    Property<std::optional<int>>     opt(std::nullopt);
+    {
+        FakeView label_a;
+        FakeView label_b;
+        engine.bind_text_projected(n, label_a, [](int v) { return std::to_string(v); });
+        engine.bind_optional_text(opt, label_b, [](int v) { return std::to_string(v); });
+        n   = 5;
+        opt = std::optional<int>{9};
+        CHECK(label_a.text == "5");
+        CHECK(label_b.text == "9");
+        // labels go out of scope → IView::on_destroy releases bindings.
+    }
+    // Writes after the views died must be safe no-ops (ASan/UBSan guard).
+    n   = 123;
+    opt = std::optional<int>{456};
+    CHECK(true);
+}
