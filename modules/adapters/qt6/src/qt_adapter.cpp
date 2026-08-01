@@ -5,6 +5,7 @@
 
 #include <QAbstractButton>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -144,6 +145,8 @@ void QtAdapter::set_text(binding::IView& v, std::string_view text) {
     else if (auto* lb = qobject_cast<QLabel*>(o))    lb->setText(QString::fromUtf8(text.data(), int(text.size())));
     else if (auto* pe = qobject_cast<QPlainTextEdit*>(o)) pe->setPlainText(QString::fromUtf8(text.data(), int(text.size())));
     else if (auto* te = qobject_cast<QTextEdit*>(o)) te->setPlainText(QString::fromUtf8(text.data(), int(text.size())));
+    else if (auto* cb = qobject_cast<QComboBox*>(o)) cb->setCurrentText(QString::fromUtf8(text.data(), int(text.size())));
+    else if (auto* ab = qobject_cast<QAbstractButton*>(o)) ab->setText(QString::fromUtf8(text.data(), int(text.size())));
     else                                             warn_unsupported("set_text", o);
 }
 
@@ -154,6 +157,8 @@ std::string QtAdapter::get_text(binding::IView& v) {
     else if (auto* lb = qobject_cast<QLabel*>(o))    s = lb->text();
     else if (auto* pe = qobject_cast<QPlainTextEdit*>(o)) s = pe->toPlainText();
     else if (auto* te = qobject_cast<QTextEdit*>(o)) s = te->toPlainText();
+    else if (auto* cb = qobject_cast<QComboBox*>(o)) s = cb->currentText();
+    else if (auto* ab = qobject_cast<QAbstractButton*>(o)) s = ab->text();
     else                                           { warn_unsupported("get_text", o); return {}; }
     auto utf8 = s.toUtf8();
     return std::string(utf8.constData(), size_t(utf8.size()));
@@ -163,7 +168,7 @@ std::string QtAdapter::get_text(binding::IView& v) {
                                             std::function<void(std::string_view)> cb) {
     auto* o = obj_of(v); if (!o) return {};
     if (!qobject_cast<QLineEdit*>(o) && !qobject_cast<QPlainTextEdit*>(o) &&
-        !qobject_cast<QTextEdit*>(o)) {
+        !qobject_cast<QTextEdit*>(o) && !qobject_cast<QComboBox*>(o)) {
         warn_unsupported("on_text_changed", o);
         return {};
     }
@@ -175,6 +180,8 @@ std::string QtAdapter::get_text(binding::IView& v) {
         };
         if (auto* le = qobject_cast<QLineEdit*>(o))
             bridge.qt_conn = QObject::connect(le, &QLineEdit::textChanged, fwd);
+        else if (auto* cb = qobject_cast<QComboBox*>(o))
+            bridge.qt_conn = QObject::connect(cb, &QComboBox::currentTextChanged, fwd);
         else if (auto* pe = qobject_cast<QPlainTextEdit*>(o))
             bridge.qt_conn = QObject::connect(pe, &QPlainTextEdit::textChanged,
                 [pe, b = &bridge]{
