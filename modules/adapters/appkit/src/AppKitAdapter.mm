@@ -263,6 +263,10 @@ void AppKitAdapter::set_text(::aria::binding::IView& v, std::string_view text) {
                                           encoding:NSUTF8StringEncoding];
     if ([o isKindOfClass:[NSTextField class]]) {
         ((NSTextField*)o).stringValue = ns ?: @"";
+    } else if ([o isKindOfClass:[NSPopUpButton class]]) {
+        [((NSPopUpButton*)o) selectItemWithTitle:(ns ?: @"")];
+    } else if ([o isKindOfClass:[NSButton class]]) {
+        ((NSButton*)o).title = ns ?: @"";
     } else {
         warn_unsupported_("set_text", o);
     }
@@ -270,13 +274,19 @@ void AppKitAdapter::set_text(::aria::binding::IView& v, std::string_view text) {
 
 std::string AppKitAdapter::get_text(::aria::binding::IView& v) {
     NSView* o = native_of(v); if (!o) return {};
+    NSString* ns = nil;
     if ([o isKindOfClass:[NSTextField class]]) {
-        NSString* ns = ((NSTextField*)o).stringValue;
-        const char* utf8 = ns.UTF8String;
-        return utf8 ? std::string(utf8) : std::string{};
+        ns = ((NSTextField*)o).stringValue;
+    } else if ([o isKindOfClass:[NSPopUpButton class]]) {
+        ns = ((NSPopUpButton*)o).titleOfSelectedItem;
+    } else if ([o isKindOfClass:[NSButton class]]) {
+        ns = ((NSButton*)o).title;
+    } else {
+        warn_unsupported_("get_text", o);
+        return {};
     }
-    warn_unsupported_("get_text", o);
-    return {};
+    const char* utf8 = ns.UTF8String;
+    return utf8 ? std::string(utf8) : std::string{};
 }
 
 ::aria::Subscription AppKitAdapter::on_text_changed(::aria::binding::IView& v,

@@ -261,6 +261,7 @@ void UIKitAdapter::set_text(::aria::binding::IView& v, std::string_view text) {
     if ([o isKindOfClass:[UITextField class]])      ((UITextField*)o).text = ns ?: @"";
     else if ([o isKindOfClass:[UILabel class]])     ((UILabel*)o).text     = ns ?: @"";
     else if ([o isKindOfClass:[UITextView class]])  ((UITextView*)o).text  = ns ?: @"";
+    else if ([o isKindOfClass:[UIButton class]])    [((UIButton*)o) setTitle:(ns ?: @"") forState:UIControlStateNormal];
     else                                            warn_unsupported_("set_text", o);
 }
 
@@ -270,6 +271,7 @@ std::string UIKitAdapter::get_text(::aria::binding::IView& v) {
     if ([o isKindOfClass:[UITextField class]])      ns = ((UITextField*)o).text;
     else if ([o isKindOfClass:[UILabel class]])     ns = ((UILabel*)o).text;
     else if ([o isKindOfClass:[UITextView class]])  ns = ((UITextView*)o).text;
+    else if ([o isKindOfClass:[UIButton class]])    ns = [((UIButton*)o) titleForState:UIControlStateNormal];
     else                                          { warn_unsupported_("get_text", o); return {}; }
     if (!ns) return {};
     const char* utf8 = ns.UTF8String;
