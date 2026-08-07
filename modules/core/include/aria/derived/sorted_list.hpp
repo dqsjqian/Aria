@@ -66,6 +66,7 @@
 //   visible but before the lock is re-taken by a later event.
 
 #include "aria/inplace_function.hpp"
+#include "aria/list_source.hpp"
 #include "aria/observable_list.hpp"
 #include "aria/subscription.hpp"
 #include "aria/detail/list_signal_mixin.hpp"
@@ -82,10 +83,11 @@
 
 namespace aria {
 
-template<typename T>
+template<typename T, typename Source = ObservableList<T>>
+    requires ListSourceOf<Source, T>
 class SortedList
-    : public detail::ListSignalMixin<SortedList<T>, T> {
-    friend detail::ListSignalMixin<SortedList<T>, T>;
+    : public detail::ListSignalMixin<SortedList<T, Source>, T> {
+    friend detail::ListSignalMixin<SortedList<T, Source>, T>;
 
 public:
     using value_type = T;
@@ -95,7 +97,7 @@ public:
     using Comparator = aria::inplace_function<bool(const T&, const T&), 32>;
     using Signal     = detail::TypedSignal<ListChange<T>>;
 
-    SortedList(std::shared_ptr<ObservableList<T>> source,
+    SortedList(std::shared_ptr<Source> source,
                Comparator comparator)
         : source_(std::move(source)),
           signal_(std::make_shared<Signal>()),
@@ -116,7 +118,7 @@ public:
         // Subscribe on the source. The lambda holds only weak_ptrs.
         std::weak_ptr<SharedState>       weak_state  = state_;
         std::weak_ptr<Signal>            weak_signal = signal_;
-        std::weak_ptr<ObservableList<T>> weak_source{source_};
+        std::weak_ptr<Source> weak_source{source_};
         source_sub_ = source_->observe(
             [weak_state, weak_signal, weak_source](const ListChange<T>& ch) {
                 auto st  = weak_state.lock();
@@ -185,7 +187,7 @@ private:
         std::vector<std::shared_ptr<T>> items;
     };
 
-    std::shared_ptr<ObservableList<T>> source_;
+    std::shared_ptr<Source> source_;
     std::shared_ptr<Signal>            signal_;
     std::shared_ptr<SharedState>       state_;
     Subscription                       source_sub_;
@@ -219,7 +221,7 @@ private:
     // ── Translation: one source event -> zero or more derived events ──
     static void dispatch_source_change_(SharedState& st,
                                         Signal& sig,
-                                        ObservableList<T>& src,
+                                        Source& src,
                                         const ListChange<T>& ch) {
         switch (ch.kind) {
         case ListChangeKind::Insert:      handle_insert_(st, sig, src, ch);      return;
@@ -293,7 +295,7 @@ private:
     }
 
     static void handle_insert_(SharedState& st, Signal& sig,
-                               ObservableList<T>& src,
+                               Source& src,
                                const ListChange<T>& ch) {
         std::unique_lock lk(st.m);
         const std::size_t src_idx = ch.index;
@@ -355,7 +357,7 @@ private:
     }
 
     static void handle_replace_(SharedState& st, Signal& sig,
-                                ObservableList<T>& src,
+                                Source& src,
                                 const ListChange<T>& ch) {
         handle_slot_changed_(st, sig, src, ch,
                              /*new_ptr_from_src=*/true,
@@ -364,7 +366,7 @@ private:
     }
 
     static void handle_item_changed_(SharedState& st, Signal& sig,
-                                     ObservableList<T>& src,
+                                     Source& src,
                                      const ListChange<T>& ch) {
         handle_slot_changed_(st, sig, src, ch,
                              /*new_ptr_from_src=*/false,
@@ -383,7 +385,7 @@ private:
     ///       Replace    → Remove(d_old) + Insert(d_new)   (identity broke)
     ///       ItemChanged→ Move(d_old, d_new, item)        (same object)
     static void handle_slot_changed_(SharedState& st, Signal& sig,
-                                     ObservableList<T>& src,
+                                     Source& src,
                                      const ListChange<T>& ch,
                                      bool new_ptr_from_src,
                                      ListChangeKind same_slot_kind,
@@ -485,7 +487,7 @@ private:
     }
 
     static void handle_reset_(SharedState& st, Signal& sig,
-                              ObservableList<T>& src) {
+                              Source& src) {
         {
             std::unique_lock lk(st.m);
             rebuild_from_snapshot_unlocked_(st, src.snapshot());
@@ -502,5 +504,20 @@ private:
         }
     }
 };
+
+// ---------------------------------------------------------------------------
+//  Factory helper — deduces the source type so pipelines stay readable.
+//  See the note on `aria::filtered` in filtered_list.hpp.
+// ---------------------------------------------------------------------------
+template<typename Source,
+         typename Comparator,
+         typename T = list_source_value_t<Source>>
+    requires ListSourceOf<Source, T>
+[[nodiscard]] std::shared_ptr<SortedList<T, Source>>
+sorted(std::shared_ptr<Source> source, Comparator comparator) {
+    return std::make_shared<SortedList<T, Source>>(
+        std::move(source),
+        typename SortedList<T, Source>::Comparator{std::move(comparator)});
+}
 
 }  // namespace aria

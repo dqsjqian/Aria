@@ -53,6 +53,7 @@
 // Thread-safety and lifetime: same shape as FilteredList / SortedList.
 
 #include "aria/inplace_function.hpp"
+#include "aria/list_source.hpp"
 #include "aria/observable_list.hpp"
 #include "aria/subscription.hpp"
 #include "aria/detail/list_signal_mixin.hpp"
@@ -67,10 +68,14 @@
 
 namespace aria {
 
-template<typename Source, typename Target>
+template<typename Source, typename Target,
+         typename SourceList = ObservableList<Source>>
+    requires ListSourceOf<SourceList, Source>
 class MappedList
-    : public detail::ListSignalMixin<MappedList<Source, Target>, Target> {
-    friend detail::ListSignalMixin<MappedList<Source, Target>, Target>;
+    : public detail::ListSignalMixin<MappedList<Source, Target, SourceList>,
+                                     Target> {
+    friend detail::ListSignalMixin<MappedList<Source, Target, SourceList>,
+                                   Target>;
 
 public:
     /// Element type *of the derived list* — i.e. `Target`. This is
@@ -91,7 +96,7 @@ public:
     ///                (default), ItemChanged propagates as
     ///                `ItemChanged` on the existing Target and the
     ///                Target identity is preserved
-    MappedList(std::shared_ptr<ObservableList<Source>> source,
+    MappedList(std::shared_ptr<SourceList> source,
                Mapper mapper,
                bool remap_on_change = false)
         : source_(std::move(source)),
@@ -114,7 +119,7 @@ public:
         // Subscribe on source. Listener holds only weak_ptrs.
         std::weak_ptr<SharedState>            weak_state  = state_;
         std::weak_ptr<Signal>                 weak_signal = signal_;
-        std::weak_ptr<ObservableList<Source>> weak_source{source_};
+        std::weak_ptr<SourceList> weak_source{source_};
         source_sub_ = source_->observe(
             [weak_state, weak_signal, weak_source](const ListChange<Source>& ch) {
                 auto st  = weak_state.lock();
@@ -156,14 +161,14 @@ private:
         std::vector<std::shared_ptr<Target>> targets;
     };
 
-    std::shared_ptr<ObservableList<Source>> source_;
+    std::shared_ptr<SourceList> source_;
     std::shared_ptr<Signal>                 signal_;
     std::shared_ptr<SharedState>            state_;
     Subscription                            source_sub_;
 
     static void dispatch_source_change_(SharedState& st,
                                         Signal& sig,
-                                        ObservableList<Source>& src,
+                                        SourceList& src,
                                         const ListChange<Source>& ch) {
         switch (ch.kind) {
         case ListChangeKind::Insert:      handle_insert_(st, sig, src, ch);      return;
@@ -176,7 +181,7 @@ private:
     }
 
     static void handle_insert_(SharedState& st, Signal& sig,
-                               ObservableList<Source>& src,
+                               SourceList& src,
                                const ListChange<Source>& ch) {
         std::shared_ptr<Target> t;
         {
@@ -206,7 +211,7 @@ private:
     }
 
     static void handle_replace_(SharedState& st, Signal& sig,
-                                ObservableList<Source>& src,
+                                SourceList& src,
                                 const ListChange<Source>& ch) {
         std::shared_ptr<Target> t;
         {
@@ -224,7 +229,7 @@ private:
     }
 
     static void handle_item_changed_(SharedState& st, Signal& sig,
-                                     ObservableList<Source>& src,
+                                     SourceList& src,
                                      const ListChange<Source>& ch) {
         std::shared_ptr<Target> t;
         {
@@ -268,7 +273,7 @@ private:
     }
 
     static void handle_reset_(SharedState& st, Signal& sig,
-                              ObservableList<Source>& src) {
+                              SourceList& src) {
         {
             std::unique_lock lk(st.m);
             st.targets.clear();
@@ -281,5 +286,25 @@ private:
         sig.emit(ListChange<Target>{ListChangeKind::Reset, 0, nullptr, 0});
     }
 };
+
+// ---------------------------------------------------------------------------
+//  Factory helper — deduces the source type so pipelines stay readable.
+//  See the note on `aria::filtered` in filtered_list.hpp.
+// ---------------------------------------------------------------------------
+template<typename Target,
+         typename SourceList,
+         typename MapFn,
+         typename Source = list_source_value_t<SourceList>>
+    requires ListSourceOf<SourceList, Source>
+[[nodiscard]] std::shared_ptr<MappedList<Source, Target, SourceList>>
+mapped(std::shared_ptr<SourceList> source,
+       MapFn mapper,
+       bool remap_on_change = false) {
+    using Derived = MappedList<Source, Target, SourceList>;
+    return std::make_shared<Derived>(
+        std::move(source),
+        typename Derived::Mapper{std::move(mapper)},
+        remap_on_change);
+}
 
 }  // namespace aria

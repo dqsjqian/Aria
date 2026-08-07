@@ -59,6 +59,7 @@
 #pragma once
 
 #include "aria/inplace_function.hpp"
+#include "aria/list_source.hpp"
 #include "aria/observable_list.hpp"
 #include "aria/subscription.hpp"
 #include "aria/detail/list_signal_mixin.hpp"
@@ -83,10 +84,13 @@ struct Group {
     std::shared_ptr<ObservableList<T>> items;
 };
 
-template<typename T, typename Key = T>
+template<typename T, typename Key = T,
+         typename Source = ObservableList<T>>
+    requires ListSourceOf<Source, T>
 class GroupedList
-    : public detail::ListSignalMixin<GroupedList<T, Key>, Group<T, Key>> {
-    friend detail::ListSignalMixin<GroupedList<T, Key>, Group<T, Key>>;
+    : public detail::ListSignalMixin<GroupedList<T, Key, Source>,
+                                     Group<T, Key>> {
+    friend detail::ListSignalMixin<GroupedList<T, Key, Source>, Group<T, Key>>;
 
 public:
     using value_type = Group<T, Key>;
@@ -94,7 +98,7 @@ public:
     using KeyOf      = aria::inplace_function<Key(const T&), 32>;
     using Signal     = detail::TypedSignal<ListChange<Group<T, Key>>>;
 
-    GroupedList(std::shared_ptr<ObservableList<T>> source,
+    GroupedList(std::shared_ptr<Source> source,
                 KeyOf key_of = default_key_of_())
         : source_(std::move(source)),
           signal_(std::make_shared<Signal>()),
@@ -105,7 +109,7 @@ public:
 
         std::weak_ptr<SharedState>       weak_state  = state_;
         std::weak_ptr<Signal>            weak_signal = signal_;
-        std::weak_ptr<ObservableList<T>> weak_source{source_};
+        std::weak_ptr<Source> weak_source{source_};
         source_sub_ = source_->observe(
             [weak_state, weak_signal, weak_source](const ListChange<T>& ch) {
                 auto st  = weak_state.lock();
@@ -164,7 +168,7 @@ private:
         std::unordered_map<const T*, Key>                      item_key;
     };
 
-    std::shared_ptr<ObservableList<T>> source_;
+    std::shared_ptr<Source> source_;
     std::shared_ptr<Signal>            signal_;
     std::shared_ptr<SharedState>       state_;
     Subscription                       source_sub_;
@@ -203,7 +207,7 @@ private:
     }
 
     static void handle_source_change_(SharedState& st, Signal& sig,
-                                      ObservableList<T>& src,
+                                      Source& src,
                                       const ListChange<T>& ch) {
         switch (ch.kind) {
         case ListChangeKind::Insert:      handle_insert_(st, sig, src, ch);       return;
@@ -216,7 +220,7 @@ private:
     }
 
     static void handle_insert_(SharedState& st, Signal& sig,
-                               ObservableList<T>& src, const ListChange<T>& ch) {
+                               Source& src, const ListChange<T>& ch) {
         // Need the live shared_ptr<T>; pull from source by index.
         auto sp_ = src.at(ch.index);
         const Key k = st.key_of(*sp_);
@@ -272,7 +276,7 @@ private:
     /// O(N_source) walk; not on the hot path because Insert at the
     /// tail (the common case) takes the fast path above.
     static std::size_t outer_pos_for_new_group_(SharedState& st,
-                                                ObservableList<T>& src,
+                                                Source& src,
                                                 std::size_t source_idx) {
         std::unordered_map<Key, bool> seen;
         const std::size_t bound =
@@ -331,7 +335,7 @@ private:
     }
 
     static void handle_replace_(SharedState& st, Signal& sig,
-                                ObservableList<T>& src,
+                                Source& src,
                                 const ListChange<T>& ch) {
         // Treat as Remove(old) + Insert(new) on the affected
         // groups. The outer list may emit 0, 1 or 2 events.
@@ -346,7 +350,7 @@ private:
     }
 
     static void handle_item_changed_(SharedState& st, Signal& sig,
-                                     ObservableList<T>& src,
+                                     Source& src,
                                      const ListChange<T>& ch) {
         // PGR-6: detect key change.
         if (ch.item == nullptr) return;
@@ -383,5 +387,21 @@ private:
             ListChangeKind::Reset, 0, nullptr, 0});
     }
 };
+
+// ---------------------------------------------------------------------------
+//  Factory helper — deduces the source type so pipelines stay readable.
+//  See the note on `aria::filtered` in filtered_list.hpp.
+// ---------------------------------------------------------------------------
+template<typename Key,
+         typename Source,
+         typename KeyFn,
+         typename T = list_source_value_t<Source>>
+    requires ListSourceOf<Source, T>
+[[nodiscard]] std::shared_ptr<GroupedList<T, Key, Source>>
+grouped(std::shared_ptr<Source> source, KeyFn key_of) {
+    using Derived = GroupedList<T, Key, Source>;
+    return std::make_shared<Derived>(
+        std::move(source), typename Derived::KeyOf{std::move(key_of)});
+}
 
 }  // namespace aria

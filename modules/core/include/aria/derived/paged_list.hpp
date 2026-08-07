@@ -33,6 +33,7 @@
 // ============================================================================
 #pragma once
 
+#include "aria/list_source.hpp"
 #include "aria/observable_list.hpp"
 #include "aria/property.hpp"
 #include "aria/subscription.hpp"
@@ -50,10 +51,11 @@
 
 namespace aria {
 
-template<typename T>
+template<typename T, typename Source = ObservableList<T>>
+    requires ListSourceOf<Source, T>
 class PagedList
-    : public detail::ListSignalMixin<PagedList<T>, T> {
-    friend detail::ListSignalMixin<PagedList<T>, T>;
+    : public detail::ListSignalMixin<PagedList<T, Source>, T> {
+    friend detail::ListSignalMixin<PagedList<T, Source>, T>;
 
 public:
     using value_type = T;
@@ -62,7 +64,7 @@ public:
     /// Construct a PagedList. Both page_index (0-based) and
     /// page_size are bound to public Properties; observers can drive
     /// the window from any UI element.
-    PagedList(std::shared_ptr<ObservableList<T>> source,
+    PagedList(std::shared_ptr<Source> source,
               std::size_t initial_page_size,
               std::size_t initial_page_index = 0)
         : page_size_prop_{initial_page_size == 0 ? std::size_t{1}
@@ -74,7 +76,7 @@ public:
     {
         rebuild_window_();
 
-        std::weak_ptr<ObservableList<T>> weak_source{source_};
+        std::weak_ptr<Source> weak_source{source_};
         source_sub_ = source_->observe(
             [this, weak_source](const ListChange<T>& ch) {
                 if (!weak_source.lock()) return;
@@ -149,7 +151,7 @@ private:
     Property<std::size_t>              page_size_prop_;
     Property<std::size_t>              page_index_prop_;
 
-    std::shared_ptr<ObservableList<T>> source_;
+    std::shared_ptr<Source> source_;
     std::shared_ptr<Signal>            signal_;
     std::shared_ptr<SharedState>       state_;
 
@@ -447,5 +449,19 @@ private:
         }
     }
 };
+
+// ---------------------------------------------------------------------------
+//  Factory helper — deduces the source type so pipelines stay readable.
+//  See the note on `aria::filtered` in filtered_list.hpp.
+// ---------------------------------------------------------------------------
+template<typename Source, typename T = list_source_value_t<Source>>
+    requires ListSourceOf<Source, T>
+[[nodiscard]] std::shared_ptr<PagedList<T, Source>>
+paged(std::shared_ptr<Source> source,
+      std::size_t page_size,
+      std::size_t page_index = 0) {
+    return std::make_shared<PagedList<T, Source>>(
+        std::move(source), page_size, page_index);
+}
 
 }  // namespace aria

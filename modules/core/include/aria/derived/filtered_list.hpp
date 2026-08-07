@@ -58,14 +58,24 @@
 // the source emission and the FilteredList observer.
 //
 // Lifetime:
-// - FilteredList holds a strong shared_ptr<ObservableList<T>>, so the
-//   source is guaranteed to outlive the derived view.
+// - FilteredList holds a strong shared_ptr to its source, so the source is
+//   guaranteed to outlive the derived view. This holds transitively when
+//   sources are chained: each link keeps the one below it alive.
 // - The source listener captures a weak_ptr<SharedState> and a
 //   weak_ptr<Signal>; destroying the FilteredList mid-emission
 //   degrades the listener to a no-op and the Subscription RAII
 //   releases the connection cleanly.
+//
+// Chaining:
+// - The source type is a template parameter defaulting to
+//   `ObservableList<T>` and constrained to `ListSourceOf<Source, T>`. Any
+//   type satisfying that concept works, which is what makes
+//   `FilteredList -> SortedList -> PagedList` pipelines possible. Prefer the
+//   `filtered()` helper at the bottom of this file so the source type does
+//   not have to be spelled out.
 
 #include "aria/inplace_function.hpp"
+#include "aria/list_source.hpp"
 #include "aria/observable_list.hpp"
 #include "aria/subscription.hpp"
 #include "aria/detail/list_signal_mixin.hpp"
@@ -82,10 +92,11 @@
 
 namespace aria {
 
-template<typename T>
+template<typename T, typename Source = ObservableList<T>>
+    requires ListSourceOf<Source, T>
 class FilteredList
-    : public detail::ListSignalMixin<FilteredList<T>, T> {
-    friend detail::ListSignalMixin<FilteredList<T>, T>;
+    : public detail::ListSignalMixin<FilteredList<T, Source>, T> {
+    friend detail::ListSignalMixin<FilteredList<T, Source>, T>;
 
 public:
     using value_type = T;
@@ -95,7 +106,7 @@ public:
     using Predicate  = aria::inplace_function<bool(const T&), 32>;
     using Signal     = detail::TypedSignal<ListChange<T>>;
 
-    FilteredList(std::shared_ptr<ObservableList<T>> source,
+    FilteredList(std::shared_ptr<Source> source,
                  Predicate predicate)
         : source_(std::move(source)),
           signal_(std::make_shared<Signal>()),
@@ -125,7 +136,7 @@ public:
         // flight is safe — the lock() attempt returns nullptr.
         std::weak_ptr<SharedState> weak_state  = state_;
         std::weak_ptr<Signal>      weak_signal = signal_;
-        std::weak_ptr<ObservableList<T>> weak_source{source_};
+        std::weak_ptr<Source> weak_source{source_};
         source_sub_ = source_->observe(
             [weak_state, weak_signal, weak_source](const ListChange<T>& ch) {
                 auto st  = weak_state.lock();
@@ -278,7 +289,7 @@ private:
         std::vector<std::shared_ptr<T>>           items;
     };
 
-    std::shared_ptr<ObservableList<T>> source_;
+    std::shared_ptr<Source> source_;
     std::shared_ptr<Signal>            signal_;
     std::shared_ptr<SharedState>       state_;
     Subscription                       source_sub_;
@@ -286,7 +297,7 @@ private:
     // ── Translation: one source event -> zero or one derived events ───
     static void dispatch_source_change_(SharedState& st,
                                         Signal& sig,
-                                        ObservableList<T>& src,
+                                        Source& src,
                                         const ListChange<T>& ch) {
         switch (ch.kind) {
         case ListChangeKind::Insert:      handle_insert_(st, sig, src, ch);      return;
@@ -299,7 +310,7 @@ private:
     }
 
     static void handle_insert_(SharedState& st, Signal& sig,
-                               ObservableList<T>& src,
+                               Source& src,
                                const ListChange<T>& ch) {
         std::unique_lock lk(st.m);
         const std::size_t src_idx = ch.index;
@@ -385,7 +396,7 @@ private:
     /// shared_ptr from the source. Out→in still always emits Insert,
     /// in→out still always emits Remove.
     static void handle_membership_transition_(SharedState& st, Signal& sig,
-                                              ObservableList<T>& src,
+                                              Source& src,
                                               const ListChange<T>& ch,
                                               ListChangeKind kind_for_in_in,
                                               bool refresh_value) {
@@ -437,7 +448,7 @@ private:
     }
 
     static void handle_replace_(SharedState& st, Signal& sig,
-                                ObservableList<T>& src,
+                                Source& src,
                                 const ListChange<T>& ch) {
         handle_membership_transition_(st, sig, src, ch,
                                       ListChangeKind::Replace,
@@ -445,7 +456,7 @@ private:
     }
 
     static void handle_item_changed_(SharedState& st, Signal& sig,
-                                     ObservableList<T>& src,
+                                     Source& src,
                                      const ListChange<T>& ch) {
         handle_membership_transition_(st, sig, src, ch,
                                       ListChangeKind::ItemChanged,
@@ -554,5 +565,32 @@ private:
         }
     }
 };
+
+// ---------------------------------------------------------------------------
+//  Factory helper — deduces the source type so pipelines stay readable.
+//
+//  Without it, chaining forces the caller to spell out every layer:
+//
+//    auto f = std::make_shared<FilteredList<Task>>(src, pred);
+//    auto s = std::make_shared<SortedList<Task, FilteredList<Task>>>(f, cmp);
+//
+//  With it:
+//
+//    auto f = aria::filtered(src, pred);
+//    auto s = aria::sorted(f, cmp);
+//
+//  Returns shared_ptr because every derived list takes its source as one, so
+//  the result is immediately usable as the next link in the chain.
+// ---------------------------------------------------------------------------
+template<typename Source,
+         typename Predicate,
+         typename T = list_source_value_t<Source>>
+    requires ListSourceOf<Source, T>
+[[nodiscard]] std::shared_ptr<FilteredList<T, Source>>
+filtered(std::shared_ptr<Source> source, Predicate predicate) {
+    return std::make_shared<FilteredList<T, Source>>(
+        std::move(source),
+        typename FilteredList<T, Source>::Predicate{std::move(predicate)});
+}
 
 }  // namespace aria
