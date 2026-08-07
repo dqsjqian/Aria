@@ -10,6 +10,58 @@ project(aria
     LANGUAGES CXX
 )
 
+# ── Build-tree location guard ────────────────────────────────────────────────
+#
+# `build/` is a CONTAINER for build trees, not a build tree itself. The layout
+# is documented at the top of scripts/build.sh:
+#
+#   build/ide/                IDE workspace
+#   build/flavors/<name>/     command-line + CI flavors, and the isolated
+#                             per-demo trees created by examples/<demo>/scripts/
+#                             (qt-demo / web-demo / their -msvc variants)
+#   build/platforms/<name>/   cross-compilation targets
+#   build/examples/<name>/    MIRROR of this build's add_subdirectory examples
+#                             — never configure a standalone tree there (the
+#                             run scripts used to, which collided with the
+#                             mirror and recompiled the framework per demo)
+#   build/dist/               release artefacts (shared across flavors)
+#
+# Configuring straight into `build/` defeats two things that layout buys:
+# `rm -rf build/flavors/x` can no longer isolate a single tree, and the root
+# cache collides with whatever the previous `-B build` configured (Release vs
+# Debug vs sanitizers), producing confusing stale-cache failures.
+#
+# This has been an actual accident, not a hypothetical one: the workflows
+# configured eight jobs straight into `build/`, and a hand-made sibling tree
+# once got its compiled binaries committed. A comment in a shell script cannot
+# prevent that; a hard failure can.
+#
+# In-source builds trip the same check, since CMAKE_BINARY_DIR then equals
+# CMAKE_SOURCE_DIR.
+option(ARIA_ALLOW_BUILD_ROOT "Permit configuring directly into build/ (not recommended)" OFF)
+if(NOT ARIA_ALLOW_BUILD_ROOT)
+    if(CMAKE_BINARY_DIR STREQUAL "${CMAKE_SOURCE_DIR}/build"
+       OR CMAKE_BINARY_DIR STREQUAL CMAKE_SOURCE_DIR)
+        message(FATAL_ERROR
+            "\n"
+            "Refusing to configure into '${CMAKE_BINARY_DIR}'.\n"
+            "\n"
+            "build/ is the container for build trees, not a build tree.\n"
+            "Pick a subdirectory so caches stay isolated:\n"
+            "\n"
+            "    cmake -S . -B build/flavors/debug -DCMAKE_BUILD_TYPE=Debug\n"
+            "\n"
+            "Or let the build script choose for you:\n"
+            "\n"
+            "    scripts/build.sh            ->  build/flavors/release\n"
+            "    scripts/build.sh debug      ->  build/flavors/debug\n"
+            "    scripts/build.sh asan       ->  build/flavors/asan\n"
+            "\n"
+            "See the layout map at the top of scripts/build.sh.\n"
+            "Escape hatch (not recommended): -DARIA_ALLOW_BUILD_ROOT=ON\n")
+    endif()
+endif()
+
 # ── Project meta ─────────────────────────────────────────────────────────────
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
