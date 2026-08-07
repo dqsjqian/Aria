@@ -99,3 +99,43 @@ jobs:
           # an indefinite job.
           TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
         run: ctest --test-dir build-tsan --output-on-failure --timeout 600
+
+  # ────────────────────────────────────────────────────────────────────
+  # Fuzz nightly — the lifecycle.md coverage table (L-13/17/20/31/32/36/37)
+  # states a target of 1M iterations per fuzzer. `ctest` only ever ran them
+  # at the 50k developer default, so that number was aspirational: nothing
+  # in CI executed the run the docs describe. This job is that run.
+  #
+  # Sanitizers are on, because the whole point of the high iteration count
+  # is to give ASan/UBSan enough interleavings to trip on. Kept nightly:
+  # 1M x 8 fuzzers under ASan is far too slow for the per-PR pipeline.
+  # ────────────────────────────────────────────────────────────────────
+  fuzz:
+    name: Fuzz 1M iters (ASan + UBSan)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ninja
+        run: brew install ninja
+
+      - name: Configure (ASan + UBSan)
+        run: |
+          cmake -S . -B build-fuzz -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DARIA_ENABLE_ASAN=ON \
+            -DARIA_ENABLE_UBSAN=ON \
+            -DARIA_BUILD_TESTS=ON \
+            -DARIA_BUILD_EXAMPLES=OFF \
+            -DARIA_BUILD_BENCHMARK=OFF
+
+      - name: Build fuzzers
+        run: cmake --build build-fuzz --target aria_fuzz -j
+
+      - name: Run fuzzers at the documented 1M iterations
+        env:
+          # Matches the per-fuzzer target in docs/reference/lifecycle.md.
+          ARIA_FUZZ_ITERS: "1000000"
+          ASAN_OPTIONS: "detect_leaks=1:abort_on_error=1"
+          UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1"
+        run: ./build-fuzz/bin/aria_fuzz --no-skipped-summary
