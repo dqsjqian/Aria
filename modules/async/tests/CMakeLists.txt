@@ -12,6 +12,7 @@ add_executable(test_async
     test_channel.cpp
     test_virtual_time.cpp
     test_timeout.cpp
+    test_retry.cpp
     test_async_resource.cpp
     test_async_validator.cpp
     test_async_diagnostics.cpp

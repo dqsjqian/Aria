@@ -18,7 +18,10 @@
 //   }
 //
 // `send` suspends if the buffer is full; `recv` suspends if it is empty.
-// `close()` wakes all pending receivers with std::nullopt.
+// `close()` wakes ALL pending waiters: receivers observe `std::nullopt`
+// (end of stream) and parked senders are released with their pending value
+// dropped. The destructor calls `close()` so no waiter can outlive the
+// channel.
 //
 // All resumes happen *outside* the internal mutex to avoid recursive locks.
 
@@ -43,6 +46,26 @@ public:
     Channel& operator=(const Channel&) = delete;
     Channel(Channel&&) = delete;
     Channel& operator=(Channel&&) = delete;
+
+    /// Releases every still-parked sender / receiver.
+    ///
+    /// Destroying a channel that still has waiters would otherwise leak one
+    /// coroutine frame per waiter: nothing else holds those handles, so they
+    /// could never be resumed or destroyed. `close()` is idempotent and
+    /// resumes outside the lock, so calling it here is safe even when the
+    /// user already closed the channel explicitly.
+    ///
+    /// NOTE: the resumed coroutines run during this destructor. They must
+    /// not touch the channel again — after `closed_ = true` every `send` /
+    /// `recv` fast-path is a no-op, which is exactly what the woken frames
+    /// observe as they unwind.
+    ~Channel() {
+        try {
+            close();
+        } catch (...) {
+            // Resuming a waiter must not throw out of a destructor.
+        }
+    }
 
     // ── send ──────────────────────────────────────────────────
     auto send(T value) {
@@ -174,7 +197,15 @@ public:
         return Awaiter{this, std::nullopt};
     }
 
-    /// Mark the channel closed. Any pending recv() awaiters wake up with empty.
+    /// Mark the channel closed and release EVERY parked coroutine.
+    ///
+    /// Receivers wake up and observe an empty `optional` (end of stream).
+    /// Senders parked on a full buffer are woken too and their pending
+    /// values are dropped — matching `send()`'s own "channel already
+    /// closed → drop the value and continue" behaviour. Waking only the
+    /// receivers (the original implementation) left every blocked sender
+    /// suspended forever, leaking one coroutine frame each and hanging any
+    /// producer that was waiting for buffer space at close time.
     void close() {
         std::vector<std::coroutine_handle<>> to_wake;
         {
@@ -183,6 +214,10 @@ public:
             while (!recv_waiters_.empty()) {
                 to_wake.push_back(recv_waiters_.front());
                 recv_waiters_.pop_front();
+            }
+            while (!send_waiters_.empty()) {
+                to_wake.push_back(send_waiters_.front().handle);
+                send_waiters_.pop_front();   // pending value dropped
             }
         }
         for (auto h : to_wake) h.resume();
