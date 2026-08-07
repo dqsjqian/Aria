@@ -572,11 +572,11 @@ $Tasks = @"
 
 # -- launch.json ---------------------------------------------------------------
 # Demo1 (Qt) Windows: examples/1-qt-showcase/scripts/run.ps1 builds into
-# build/examples/1-qt-showcase/bin/ex_qt_showcase.exe (per-demo isolated cache).
-$ProgramRel = "`${workspaceFolder}/build/examples/1-qt-showcase/bin/ex_qt_showcase.exe"
-$LaunchCwd = "`${workspaceFolder}/build/examples/1-qt-showcase/bin"
+# build/flavors/qt-demo/bin/ex_qt_showcase.exe (per-demo isolated cache).
+$ProgramRel = "`${workspaceFolder}/build/flavors/qt-demo/bin/ex_qt_showcase.exe"
+$LaunchCwd = "`${workspaceFolder}/build/flavors/qt-demo/bin"
 # Launch PATH: demo1's bin (DLLs) + MSYS2 (runtime) + system PATH
-$LaunchPath = "`${workspaceFolder}\\build\\examples\\1-qt-showcase\\bin;$PathEnvEsc"
+$LaunchPath = "`${workspaceFolder}\\build\\flavors\\qt-demo\\bin;$PathEnvEsc"
 
 $Launch = @"
 {

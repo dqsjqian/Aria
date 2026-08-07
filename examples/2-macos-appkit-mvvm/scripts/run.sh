@@ -116,6 +116,20 @@ if [[ $need_build -eq 0 ]]; then
     [[ "$cached_target" != "$DEPLOY_TARGET" ]] && need_build=1
 fi
 
+# 任何 Aria 框架源码比 dylib 新，也必须重建——否则改过 binding/runtime 的
+# 头文件或实现（例如把某个析构从隐式改成显式，新增导出符号）后，Xcode 链接
+# 旧 dylib 会直接报 undefined symbol。光检查"文件存在 + 部署目标"抓不住这个。
+if [[ $need_build -eq 0 ]]; then
+    newest_src="$(find "${ARIA_ROOT}/modules" \
+        -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.mm' \) \
+        -not -path '*/tests/*' -not -path '*/fuzz/*' \
+        -exec stat -f '%m' {} + 2>/dev/null | sort -rn | head -1)"
+    newest_lib="$(stat -f '%m' "${BUILD_DIR}/bin/libaria_binding.dylib" 2>/dev/null)"
+    if [[ -n "$newest_src" && -n "$newest_lib" && "$newest_src" -gt "$newest_lib" ]]; then
+        need_build=1
+    fi
+fi
+
 if [[ $need_build -eq 1 ]]; then
     cyan "[1/4] 构建 Aria 核心库 (部署目标 macOS ${DEPLOY_TARGET})…"
     cmake -S "${ARIA_ROOT}" -B "${BUILD_DIR}" \
