@@ -47,6 +47,7 @@
 #pragma once
 
 #include "aria/inplace_function.hpp"
+#include "aria/list_source.hpp"
 #include "aria/observable_list.hpp"
 #include "aria/subscription.hpp"
 #include "aria/detail/list_signal_mixin.hpp"
@@ -63,10 +64,12 @@
 
 namespace aria {
 
-template<typename T, typename Key = T>
+template<typename T, typename Key = T,
+         typename Source = ObservableList<T>>
+    requires ListSourceOf<Source, T>
 class DistinctList
-    : public detail::ListSignalMixin<DistinctList<T, Key>, T> {
-    friend detail::ListSignalMixin<DistinctList<T, Key>, T>;
+    : public detail::ListSignalMixin<DistinctList<T, Key, Source>, T> {
+    friend detail::ListSignalMixin<DistinctList<T, Key, Source>, T>;
 
 public:
     using value_type = T;
@@ -77,7 +80,7 @@ public:
     /// Construct a DistinctList. The default `key_of` projects T to
     /// itself, which works as long as T is hashable + equality-
     /// comparable. Provide a custom extractor for richer T.
-    DistinctList(std::shared_ptr<ObservableList<T>> source,
+    DistinctList(std::shared_ptr<Source> source,
                  KeyOf key_of = default_key_of_())
         : source_(std::move(source)),
           signal_(std::make_shared<Signal>()),
@@ -88,7 +91,7 @@ public:
 
         std::weak_ptr<SharedState>       weak_state  = state_;
         std::weak_ptr<Signal>            weak_signal = signal_;
-        std::weak_ptr<ObservableList<T>> weak_source{source_};
+        std::weak_ptr<Source> weak_source{source_};
         source_sub_ = source_->observe(
             [weak_state, weak_signal, weak_source](const ListChange<T>& ch) {
                 auto st  = weak_state.lock();
@@ -177,7 +180,7 @@ private:
         SlotId                                   next_slot_id{1};
     };
 
-    std::shared_ptr<ObservableList<T>> source_;
+    std::shared_ptr<Source> source_;
     std::shared_ptr<Signal>            signal_;
     std::shared_ptr<SharedState>       state_;
     Subscription                       source_sub_;
@@ -238,7 +241,7 @@ private:
     /// the implementation easy to audit; the cost is on par with
     /// FilteredList's projection map (LD-2 / FL-3).
     static std::size_t derived_pos_for_new_rep_(SharedState& st,
-                                                ObservableList<T>& src,
+                                                Source& src,
                                                 std::size_t source_idx) {
         // Count: how many visible representatives sit at source
         // positions strictly before source_idx? That count IS the
@@ -373,7 +376,7 @@ private:
     static constexpr SlotId kSlotIdStep = 1024;
 
     static void handle_source_change_(SharedState& st, Signal& sig,
-                                      ObservableList<T>& src,
+                                      Source& src,
                                       const ListChange<T>& ch) {
         switch (ch.kind) {
         case ListChangeKind::Insert:      handle_insert_(st, sig, src, ch);  return;
@@ -386,7 +389,7 @@ private:
     }
 
     static void handle_insert_(SharedState& st, Signal& sig,
-                               ObservableList<T>& src,
+                               Source& src,
                                const ListChange<T>& ch) {
         auto sp_ = src.at(ch.index);
         const Key k = st.key_of(*sp_);
@@ -498,7 +501,7 @@ private:
     }
 
     static void handle_replace_(SharedState& st, Signal& sig,
-                                ObservableList<T>& src,
+                                Source& src,
                                 const ListChange<T>& ch) {
         // Decompose into Remove(old)+Insert(new) at the same source
         // index. The two halves already enforce PD-2 + PD-3.
@@ -638,5 +641,21 @@ private:
         sig.emit(ListChange<T>{ListChangeKind::Reset, 0, nullptr, 0});
     }
 };
+
+// ---------------------------------------------------------------------------
+//  Factory helper — deduces the source type so pipelines stay readable.
+//  See the note on `aria::filtered` in filtered_list.hpp.
+// ---------------------------------------------------------------------------
+template<typename Key,
+         typename Source,
+         typename KeyFn,
+         typename T = list_source_value_t<Source>>
+    requires ListSourceOf<Source, T>
+[[nodiscard]] std::shared_ptr<DistinctList<T, Key, Source>>
+distinct(std::shared_ptr<Source> source, KeyFn key_of) {
+    using Derived = DistinctList<T, Key, Source>;
+    return std::make_shared<Derived>(
+        std::move(source), typename Derived::KeyOf{std::move(key_of)});
+}
 
 }  // namespace aria

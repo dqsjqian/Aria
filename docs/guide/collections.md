@@ -258,6 +258,38 @@ Mutations to `source` propagate through `active` → `sorted` automatically.
 
 ---
 
+## Composing Derived Views
+
+Every derived view is itself a valid source for another, so views chain. Use
+the factory helpers — they deduce the source type, which otherwise has to be
+written out in full (`SortedList<Row, FilteredList<Row>>` and worse):
+
+```cpp
+auto evens  = aria::filtered(tasks,  [](const Task& t) { return !t.done; });
+auto unique = aria::distinct<int>(evens, [](const Task& t) { return t.group_id; });
+auto asc    = aria::sorted(unique,   [](const Task& a, const Task& b) {
+    return a.due < b.due;
+});
+auto page   = aria::paged(asc, /*page_size=*/20);
+```
+
+Mutating `tasks` propagates all the way to `page`, each stage applying its own
+transformation. Lifetime is transitive too: each stage holds a strong
+reference to its source, so keeping `page` keeps the whole pipeline alive and
+the intermediate handles can go out of scope.
+
+`mapped<Target>()` changes the element type mid-pipeline:
+
+```cpp
+auto rows = aria::mapped<RowViewModel>(asc, [](const Task& t) {
+    return std::make_shared<RowViewModel>(t);
+});
+```
+
+Full semantics: `docs/reference/list-diff-contract.md` D-41.
+
+---
+
 ## See Also
 
 - [Reactive Core →](reactive-core.md) — `Property` and `Computed` that power list observations

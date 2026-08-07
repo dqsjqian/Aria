@@ -281,6 +281,47 @@ honours D-1 ... D-32. Adapters MUST NOT specialise on the concrete
 source type — every built-in derived list guarantees the same
 contract.
 
+### D-41: derived lists compose
+
+Every derived list takes its source as a template parameter constrained to
+`ListSourceOf<Source, T>`, defaulting to `ObservableList<T>`:
+
+```cpp
+template<typename T, typename Source = ObservableList<T>>
+    requires ListSourceOf<Source, T>
+class FilteredList { ... };
+```
+
+That means a derived list is itself a legal source for another one, so
+pipelines are expressible:
+
+```cpp
+auto evens  = aria::filtered(src,   [](const Row& r) { return r.v % 2 == 0; });
+auto unique = aria::distinct<int>(evens, [](const Row& r) { return r.v; });
+auto asc    = aria::sorted(unique,  [](auto& a, auto& b) { return a.v < b.v; });
+auto page= aria::paged(asc, /*page_size=*/20);
+```
+
+Guarantees:
+
+1. **Propagation is transitive** — a mutation on the root list reaches the
+   far end of the chain, with each stage applying its own transformation and
+   emitting per D-1/D-2/D-11 as usual.
+2. **Lifetime is transitive** — each stage holds a strong `shared_ptr` to its
+   source, so holding the last stage keeps the whole chain alive. Intermediate
+   handles may be dropped.
+3. **No behavioural change for single-level use.** The default source type
+   means existing spellings (`FilteredList<Row> f{src, pred};`) are unaffected.
+
+Prefer the `filtered()` / `sorted()` / `paged()` / `mapped<Target>()` /
+`distinct<Key>()` / `grouped<Key>()` factory helpers: they deduce the source
+type, so the chain does not have to be spelled out
+(`SortedList<Row, FilteredList<Row>>` and so on).
+
+Ordering caveat: composing stages that each re-order (for example
+`sorted -> sorted`) is legal but pointless — the last stage wins. Compose
+stages that do different jobs.
+
 ---
 
 ## 6. Conformance suite — self-validation kit for any list impl

@@ -4,7 +4,8 @@ add_executable(test_core
     test_computed.cpp
     test_command.cpp
     test_observable_list.cpp
-    test_filtered_list.cpp
+        test_filtered_list.cpp
+    test_derived_chaining.cpp
     test_sorted_list.cpp
     test_mapped_list.cpp
     test_derived_chain.cpp
