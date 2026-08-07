@@ -13,6 +13,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -448,6 +449,165 @@ public:
             index_of_.clear();
         }
         emit_(ListChange<T>{ListChangeKind::Reset, 0, nullptr, 0}, 0);
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //   reconcile — "here is the new list, work out the difference"
+    // ══════════════════════════════════════════════════════════════════
+
+    /// Bring the list in line with `next`, emitting the minimal edit stream
+    /// instead of a Reset.
+    ///
+    /// Every other mutator is *imperative*: the caller states the operation
+    /// (`insert`, `remove_at`, `move`) and the list reports it. But the
+    /// common shape for server-backed data is declarative — you are handed a
+    /// whole new array and have no idea which rows moved. Without this, the
+    /// only options were:
+    ///
+    ///   * `clear()` + `insert_range(...)`, which emits Reset. Per D-12
+    ///     observers must then wipe their mirror, so the UI loses selection,
+    ///     scroll position, expansion state and row animations — even when
+    ///     99% of the rows are unchanged. `Selection::bind_to` clears on
+    ///     Reset, so a polling refresh drops the user's selection on every
+    ///     tick.
+    ///   * hand-rolling a diff and calling the imperative API, which means
+    ///     the caller has to track the intermediate coordinate system that
+    ///     `move(from, to)` operates in — exactly the reasoning that was
+    ///     getting `FilteredList::set_predicate` wrong.
+    ///
+    /// Identity is decided by `key_of` (defaulting to the `shared_ptr`'s
+    /// raw pointer). Pass a real key when the server returns fresh objects
+    /// for the same logical rows, otherwise every element looks new and the
+    /// diff degenerates.
+    ///
+    /// Emissions follow the D-11 "as observed" rule, because the work is
+    /// delegated to the ordinary mutators — no new event semantics are
+    /// introduced:
+    ///
+    ///   * an element whose key disappeared    → `Remove`
+    ///   * a key that was not present before   → `Insert`
+    ///   * a surviving key whose handle changed→ `Replace`
+    ///   * a surviving key that changed order  → `Move`
+    ///
+    /// The whole reconcile runs under `emit_seq_`, so observers see one
+    /// uninterrupted, correctly ordered batch even if another thread is
+    /// writing. Wrap the call in `reactive::batch` if downstream Computed
+    /// values should recompute once at the end.
+    ///
+    /// Returns the number of events emitted (0 when already in sync).
+    ///
+    /// Complexity: O(n) expected. Note this is a *sequence* reconcile, not a
+    /// minimum-edit-distance diff: it removes and inserts by key, then
+    /// settles order with at most one Move per out-of-place element. That is
+    /// deliberate — Myers would occasionally emit one fewer Move at the cost
+    /// of O(ND) time and a much harder correctness argument, and UI list
+    /// adapters animate Move identically either way.
+    /// Default identity for `reconcile`: the element's own address. Correct
+    /// when the caller reuses handles, useless when the source hands you
+    /// freshly-allocated objects for the same logical rows — pass your own
+    /// `key_of` in that case.
+    struct AddressIdentity {
+        const void* operator()(const T& v) const noexcept {
+            return static_cast<const void*>(&v);
+        }
+    };
+
+    template <typename KeyFn = AddressIdentity>
+    std::size_t reconcile(std::vector<std::shared_ptr<T>> next,
+                          KeyFn key_of = KeyFn{}) {
+        using Key = std::decay_t<std::invoke_result_t<KeyFn, const T&>>;
+
+        // One lock for the entire batch: `emit_seq_` is recursive, so the
+        // mutators we call below re-enter it without deadlocking, and no
+        // other writer can interleave its events into the middle of ours.
+        std::lock_guard<std::recursive_mutex> seq(emit_seq_);
+
+        // Reject duplicate keys up front: the algorithm assumes keys
+        // identify at most one row, and silently mis-diffing is worse than
+        // a loud, cheap Reset.
+        std::unordered_map<Key, std::size_t> want;
+        want.reserve(next.size());
+        for (std::size_t i = 0; i < next.size(); ++i) {
+            if (!next[i]) continue;
+            if (!want.emplace(key_of(*next[i]), i).second) {
+                // Duplicate key — fall back to the honest wholesale replace.
+                clear();
+                std::size_t events = 1;
+                for (auto& item : next) {
+                    if (!item) continue;
+                    push_back(item);
+                    ++events;
+                }
+                return events;
+            }
+        }
+
+        std::size_t events = 0;
+
+        // ── Phase 1: drop everything whose key is gone ──────────────────
+        // Walk backwards so each removal cannot disturb the indices of the
+        // elements still to be examined.
+        {
+            auto cur = snapshot();
+            for (std::size_t i = cur.size(); i-- > 0;) {
+                if (!cur[i]) continue;
+                if (want.find(key_of(*cur[i])) == want.end()) {
+                    remove_at(i);
+                    ++events;
+                }
+            }
+        }
+
+        // ── Phase 2: settle survivors, then position newcomers ──────────
+        // After phase 1 the list holds exactly the surviving keys, in their
+        // old relative order. Walk the target order and, for each position,
+        // make sure the right element is sitting there.
+        for (std::size_t target = 0; target < next.size(); ++target) {
+            const auto& wanted = next[target];
+            if (!wanted) continue;
+            const Key wanted_key = key_of(*wanted);
+
+            // Where is this key right now? (Linear scan from `target`: every
+            // position before it is already settled.)
+            auto cur = snapshot();
+            std::size_t found = cur.size();
+            for (std::size_t i = target; i < cur.size(); ++i) {
+                if (cur[i] && key_of(*cur[i]) == wanted_key) {
+                    found = i;
+                    break;
+                }
+            }
+
+            if (found == cur.size()) {
+                // New key: insert it where it belongs.
+                insert(std::min(target, cur.size()), wanted);
+                ++events;
+                continue;
+            }
+
+            if (found != target) {
+                move(found, target);
+                ++events;
+                // Re-read: the move shifted the region we are walking.
+                cur = snapshot();
+            }
+
+            // Same key, different handle → the row's identity survived but
+            // its contents were replaced.
+            if (target < cur.size() && cur[target] != wanted) {
+                replace_at(target, wanted);
+                ++events;
+            }
+        }
+
+        // ── Phase 3: trim anything left past the end────────────────────
+        // Only reachable when `next` contained null handles we skipped.
+        while (size() > next.size()) {
+            remove_at(size() - 1);
+            ++events;
+        }
+
+        return events;
     }
 
     /// O(1) membership / position query by raw pointer.

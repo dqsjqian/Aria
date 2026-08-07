@@ -54,6 +54,41 @@ tasks.remove_all([](const std::shared_ptr<Task>& t) {
 });
 ```
 
+### Syncing With a Fresh Snapshot (`reconcile`)
+
+The mutators above are imperative — you name the operation. But when data
+arrives from a server you usually get a whole new array with no indication of
+what changed. `reconcile` works out the difference for you:
+
+```cpp
+// Rows are the same logical row iff their id matches, even though the
+// server hands us freshly allocated objects every refresh.
+struct ById {
+    int operator()(const Task& t) const noexcept { return t.id; }
+};
+
+std::vector<std::shared_ptr<Task>> fresh = fetch_tasks();
+tasks.reconcile(std::move(fresh), ById{});
+```
+
+This emits the minimal edit stream — `Insert` / `Remove` / `Replace` /
+`Move` — rather than a `Reset`. That distinction matters: on `Reset`
+observers must discard their mirror, so the view loses selection, scroll
+position, expansion state and row animations. A poll loop built on
+`clear()` + `insert_range` throws all of that away on every tick, even when
+nothing actually changed. `Selection` also clears itself on `Reset`, so a
+refresh would silently drop whatever the user had selected.
+
+Pass a real `key_of` whenever the source allocates new objects for the same
+logical rows; the default identity is the object's address, which is only
+useful if you reuse handles. Reconciling an already-matching list emits
+nothing and returns 0.
+
+Wrap the call in `reactive::batch` if downstream `Computed` values should
+recompute once at the end rather than per event.
+
+Full semantics: `docs/reference/list-diff-contract.md` D-14.
+
 ### Observe Changes
 
 ```cpp
