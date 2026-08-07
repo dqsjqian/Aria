@@ -30,7 +30,7 @@ aria::runtime::set_main_dispatcher(dispatcher);
 
 aria::adapters::qt6::QtAdapter adapter;
 aria::binding::BindingEngine engine(adapter,
-    aria::binding::DispatchPolicy::SmartMarshal);
+    aria::binding::BindingEngine::DispatchPolicy::SmartMarshal);
 ```
 
 ---
@@ -229,7 +229,7 @@ public:
         aria::runtime::set_main_dispatcher(disp);
 
         engine_ = std::make_unique<aria::binding::BindingEngine>(
-            adapter_, aria::binding::DispatchPolicy::SmartMarshal);
+            adapter_, aria::binding::BindingEngine::DispatchPolicy::SmartMarshal);
 
         // Wire up
         engine_->bind_text(vm_.query,

@@ -250,7 +250,7 @@ framework-provided conformance suite. The suite is templated on
 `<ListSource L>` and translates every mechanically verifiable fact
 from D-1 ... D-32 into doctest test cases.
 
-- Adapter tests call `aria::testing::run_list_conformance<L>(factory)`
+- Adapter tests call `aria::testing::run_list_source_conformance<L>(factory)`
   to run every case automatically.
 - `factory` is a `() -> shared_ptr<L>` callable that produces a fresh
   empty `L` on each call.
