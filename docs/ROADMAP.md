@@ -143,9 +143,16 @@ Trigger: real pain from process-wide services — for example parallel
 in-process tests interfering with each other, multiple independent app
 roots in one process, or teardown isolation bugs.
 
-Until then, `Container::global()`, `EventBus::global()`, dispatcher, and
-logger are acceptable as standalone services. If this lands, it must be a
-thin owner of existing services, not a new application framework.
+Until then, `EventBus::global()`, the main dispatcher, and the logger are
+acceptable as standalone services. If this lands, it must be a thin owner of
+existing services, not a new application framework.
+
+Note on the trigger: `Container` is **not** one of the process-wide services.
+It has no `global()` accessor — every `Container` is explicitly instantiated
+and owned by its caller — so the "parallel in-process tests interfering"
+scenario cannot arise through it. The real shared state is
+`EventBus::global()` and `set_main_dispatcher`, both of which rely on tests
+calling `clear()` for isolation today.
 
 ### ObservableList slot identity
 

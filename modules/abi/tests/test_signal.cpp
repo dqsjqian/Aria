@@ -4,6 +4,7 @@
 #include "aria/abi/signal.hpp"
 #include "aria/abi/version.hpp"
 #include <atomic>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -148,4 +149,23 @@ TEST_CASE("Signal: moved-from instance is a safe no-op (B6)") {
 TEST_CASE("Version constants are sane") {
     CHECK(version_major == 1);
     CHECK(abi_version == 1);
+}
+
+// ---------------------------------------------------------------------------
+//  The compile-time constants above describe the headers this TU was built
+//  against; structurally they can never reveal a mismatch with the library
+//  actually linked in. `runtime_abi_version()` / `runtime_version_string()`
+//  are compiled into the library, so comparing the two detects exactly that.
+//
+//  Before these existed, `ARIA_ABI_VERSION` had no reader anywhere in the
+//  project, which left the ABI-compatibility promise in
+//  docs/architecture.md unenforceable by construction.
+// ---------------------------------------------------------------------------
+TEST_CASE("Runtime ABI version agrees with the headers") {
+    CHECK(runtime_abi_version() == abi_version);
+    CHECK(abi_matches_headers());
+
+    REQUIRE(runtime_version_string() != nullptr);
+    CHECK(std::string_view{runtime_version_string()} ==
+          std::string_view{version_string});
 }

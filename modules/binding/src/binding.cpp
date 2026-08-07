@@ -27,6 +27,13 @@ BindingEngine::BindingEngine(std::shared_ptr<IViewAdapter> adapter,
       dispatcher_(std::move(ui_dispatcher)),
       policy_(policy) {}
 
+// Out-of-line on purpose: keeps the destructors of the private container
+// members from being expanded inline in every consumer TU, which would make
+// their layout part of the effective ABI. See the declaration in
+// binding_engine.hpp for the full rationale. The body is empty — member
+// destructors do all the work, they just run inside the library now.
+BindingEngine::~BindingEngine() = default;
+
 // ── Text ──────────────────────────────────────────────────────────────────
 void BindingEngine::bind_text_oneway(Property<std::string>& prop, IView& view) {
     bind_scalar_oneway_<std::string>(prop, view, &IViewAdapter::set_text);

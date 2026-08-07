@@ -378,10 +378,31 @@ major version) without recompiling, provided:
   `aria-binding` header has changed layout.
 * No symbol previously exported has been removed.
 
-The CI matrix runs an `abi-dump` job on tagged releases to enforce
-this. Source-only modules (`aria-core`, `aria-async`,
-`aria-adapters-*`) are exempt — their symbols recompile inside each
-consumer.
+How this is checked today
+------------------------
+
+There is **no** `abi-dump` job. An earlier revision of this document claimed
+one existed on tagged releases; it never did, and `scripts/` contains no such
+tool. What CI actually runs is the `abi-smoke` job: it builds with
+`ARIA_BUILD_SHARED=ON` and executes `cross_dylib_abi_smoke`, which exercises
+`IProperty<T>` across a real dylib boundary. That catches gross breakage
+(missing symbols, vtable mismatch on the smoked interfaces) but does not
+diff exported symbol sets between releases.
+
+For the runtime half, `aria::abi::runtime_abi_version()` and
+`runtime_version_string()` are compiled into the library, so a host that
+loads aria dynamically can assert agreement with its headers at startup via
+`aria::abi::abi_matches_headers()`. That is the enforceable part; a genuine
+symbol-set diff on tagged releases remains unimplemented, and the guarantee
+above should be read as a maintenance intent rather than a verified property.
+
+The layout guarantee also assumes a consumer built with the same compiler and
+standard library as the library itself — `IViewAdapter`'s virtual signatures
+pass `std::string` and `std::function` by value, so a mixed-stdlib link is
+outside the promise regardless of ABI version.
+
+Source-only modules (`aria-core`, `aria-async`, `aria-adapters-*`) are exempt
+— their symbols recompile inside each consumer.
 
 ### When you SHOULD care
 

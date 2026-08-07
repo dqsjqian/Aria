@@ -218,8 +218,16 @@ observable.
 
 ### E-25: Container / DI — same protocol as Navigator
 
-The DI container throws `std::invalid_argument` or
-`std::runtime_error`; semantics identical to E-24.
+`Container::resolve<I>()` throws `std::runtime_error` when `I` was never
+registered. Semantics are identical to E-24: resolution happens
+synchronously in user code, so a missing registration is reported to the
+caller immediately rather than deferred.
+
+There is no `std::invalid_argument` path — the container accepts no
+user-supplied values it could reject, only type keys. (`std::any_cast`
+inside `resolve` can in principle raise `std::bad_any_cast` if the same
+`type_index` is registered from two DSOs with incompatible types, but that
+is a build-configuration fault rather than a documented API outcome.)
 
 ### E-26: BindingEngine — **no Property-shaped error surface today**
 
