@@ -23,7 +23,7 @@ jobs:
 
       - name: Configure (Release, no sanitizers)
         run: |
-          cmake -S . -B build -G Ninja \
+          cmake -S . -B build/flavors/bench -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_TESTS=OFF \
             -DARIA_BUILD_EXAMPLES=OFF \
@@ -35,7 +35,7 @@ jobs:
         # Keep this list in sync with `benches=(...)` in
         # scripts/check-bench.sh and benchmark/CMakeLists.txt.
         run: |
-          cmake --build build -j \
+          cmake --build build/flavors/bench -j \
             --target \
               aria_bench_iproperty \
               aria_bench_command \
@@ -52,9 +52,9 @@ jobs:
         #      $GITHUB_STEP_SUMMARY (visible on the run page),
         #   5. exits 1 if anything regressed past its ceiling.
         # The script's own stdout is also tee'd to a log so the raw
-        # numbers ride along as a build artifact.
+        # numbers ride along as a build/flavors/bench artifact.
         run: |
-          ./scripts/check-bench.sh build 2>&1 | tee bench-output.txt
+          ./scripts/check-bench.sh build/flavors/bench 2>&1 | tee bench-output.txt
 
       - name: Upload bench output
         # Always upload, even on failure — that way the regressed
@@ -82,14 +82,14 @@ jobs:
 
       - name: Configure (TSan)
         run: |
-          cmake -S . -B build-tsan -G Ninja \
+          cmake -S . -B build/flavors/tsan -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DARIA_ENABLE_TSAN=ON \
             -DARIA_BUILD_TESTS=ON \
             -DARIA_BUILD_EXAMPLES=OFF
 
       - name: Build
-        run: cmake --build build-tsan -j
+        run: cmake --build build/flavors/tsan -j
 
       - name: Test
         env:
@@ -98,7 +98,7 @@ jobs:
           # explicit so a hang shows up as a TSan failure rather than
           # an indefinite job.
           TSAN_OPTIONS: "halt_on_error=1:second_deadlock_stack=1"
-        run: ctest --test-dir build-tsan --output-on-failure --timeout 600
+        run: ctest --test-dir build/flavors/tsan --output-on-failure --timeout 600
 
   # ────────────────────────────────────────────────────────────────────
   # Fuzz nightly — the lifecycle.md coverage table (L-13/17/20/31/32/36/37)
@@ -121,7 +121,7 @@ jobs:
 
       - name: Configure (ASan + UBSan)
         run: |
-          cmake -S . -B build-fuzz -G Ninja \
+          cmake -S . -B build/flavors/fuzz -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DARIA_ENABLE_ASAN=ON \
             -DARIA_ENABLE_UBSAN=ON \
@@ -130,7 +130,7 @@ jobs:
             -DARIA_BUILD_BENCHMARK=OFF
 
       - name: Build fuzzers
-        run: cmake --build build-fuzz --target aria_fuzz -j
+        run: cmake --build build/flavors/fuzz --target aria_fuzz -j
 
       - name: Run fuzzers at the documented 1M iterations
         env:
@@ -138,4 +138,4 @@ jobs:
           ARIA_FUZZ_ITERS: "1000000"
           ASAN_OPTIONS: "detect_leaks=1:abort_on_error=1"
           UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1"
-        run: ./build-fuzz/bin/aria_fuzz --no-skipped-summary
+        run: ./build/flavors/fuzz/bin/aria_fuzz --no-skipped-summary

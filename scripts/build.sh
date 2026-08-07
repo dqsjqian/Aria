@@ -38,7 +38,17 @@ JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/de
 #     │     ├── debug/          scripts/build.sh debug
 #     │     ├── asan/           scripts/build.sh asan    (ASan + UBSan)
 #     │     ├── tsan/           scripts/build.sh tsan
-#     │     └── tsan-gate/      scripts/build.sh tsan-gate
+#     │     ├── tsan-gate/      scripts/build.sh tsan-gate
+#     │     │
+#     │     │── CI-only flavors (created by .github/workflows, not
+#     │     │      by this script; listed so the layout stays the single
+#     │     │      source of truth for where build trees may appear) ──
+#     │     ├── qt/             CI: Qt6-enabled build
+#     │     ├── docs/           CI: Doxygen reference
+#     │     ├── abi-smoke/      CI: shared-lib cross-dylib ABI smoke
+#     │     ├── tidy/           CI: clang-tidy gate
+#     │     ├── bench/          nightly: benchmark + P99 ceiling check
+#     │     └── fuzz/           nightly: fuzzers at 1M iterations
 #     ├── platforms/            cross-compilation targets
 #     │     └── android/       scripts/build.sh android (NDK cross-build)
 #     ├── examples/             per-demo isolated cmake caches
