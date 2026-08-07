@@ -148,6 +148,48 @@ does NOT necessarily mirror upstream events 1:1:
 
 Derived-list specifics: see D-30.
 
+### D-14: `reconcile` produces a normal event stream, never new semantics
+
+`ObservableList<T>::reconcile(next, key_of)` brings the list in line with a
+whole new sequence. It introduces **no new event kind and no new index rule**:
+it drives the ordinary mutators, so every emission already obeys D-1, D-2 and
+the D-11 "as observed" index rule.
+
+Why it exists: every other mutator is imperative (the caller names the
+operation), but server-backed data arrives declaratively — a whole new array,
+with no indication of what moved. The alternatives were `clear()` +
+`insert_range`, which emits Reset and therefore costs the observer its
+selection, scroll position and row animations (D-12), or a hand-rolled diff in
+user code, which forces the caller to track the intermediate coordinate system
+`move(from, to)` operates in.
+
+Guarantees:
+
+1. **Identity** is decided by `key_of` (default: the element's address).
+   Elements with equal keys are the same logical row across reconciles.
+2. **Event mapping**:
+   - key present before, absent after → `Remove`
+   - key absent before, present after → `Insert`
+   - key survives, handle differs → `Replace`
+   - key survives, position differs → `Move` (never `Remove` + `Insert`,
+     so DE5-conformant adapters keep their row animation)
+   - key survives, handle and position identical → **no event**
+3. **Atomicity of the batch**: the whole reconcile holds `emit_seq_`, so
+   observers see one uninterrupted, correctly ordered run of events even if
+   another thread is writing. Wrap the call in `reactive::batch` if
+   downstream `Computed` values should recompute once at the end.
+4. **No spurious Reset**: a reconcile emits `Reset` in exactly one case —
+   `next` contains duplicate keys, which the keyed algorithm cannot
+   represent. It then degrades to a clean rebuild rather than mis-diffing.
+   An in-sync reconcile emits nothing and returns 0.
+5. **Return value** is the number of events emitted.
+
+Complexity is O(n) expected. This is a *sequence* reconcile, not a
+minimum-edit-distance diff: it removes and inserts by key, then settles order
+with at most one Move per out-of-place element. Myers would occasionally emit
+one fewer Move, at the cost of O(ND) time and a substantially harder
+correctness argument — and list adapters animate Move identically either way.
+
 ---
 
 ## 3. Re-entrancy semantics

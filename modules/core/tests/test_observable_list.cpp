@@ -517,3 +517,246 @@ TEST_CASE("ObservableList::items() snapshot is stable across later mutation") {
     CHECK(range.size() == 1);           // snapshot unaffected
     CHECK(list.size() == 2);            // live list reflects it
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// reconcile — declarative "here is the new list"
+//
+// The point of reconcile is that observers can follow it incrementally, so
+// every case below rebuilds a mirror from the event stream alone and then
+// asserts the mirror equals the list. A correct final list with a lying
+// event stream is still a bug: the UI follows the events, not the list.
+// ═══════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// Keyed identity: rows are the same logical row iff their `id` matches, even
+// when the source hands us freshly allocated objects. This is the realistic
+// server-refresh shape.
+struct ById {
+    int operator()(const Item& i) const noexcept { return i.id; }
+};
+
+// Incremental observer per D-11 (see test_filtered_list.cpp for the same
+// helper applied to derived lists).
+struct ListMirror {
+    std::vector<const Item*> items;
+    Subscription             sub;
+    std::size_t              resets = 0;
+
+    explicit ListMirror(ObservableList<Item>& list) {
+        for (std::size_t i = 0; i < list.size(); ++i) items.push_back(list.at(i).get());
+        sub = list.observe([this](const ListChange<Item>& ch) {
+            switch (ch.kind) {
+                case ListChangeKind::Insert:
+                    REQUIRE(ch.index <= items.size());
+                    items.insert(items.begin() + static_cast<std::ptrdiff_t>(ch.index),
+                                 ch.item);
+                    break;
+                case ListChangeKind::Remove:
+                    REQUIRE(ch.index < items.size());
+                    items.erase(items.begin() + static_cast<std::ptrdiff_t>(ch.index));
+                    break;
+                case ListChangeKind::Replace:
+                    REQUIRE(ch.index < items.size());
+                    items[ch.index] = ch.item;
+                    break;
+                case ListChangeKind::Move: {
+                    REQUIRE(ch.from_index < items.size());
+                    REQUIRE(ch.index < items.size());
+                    const Item* moved = items[ch.from_index];
+                    items.erase(items.begin() +
+                                static_cast<std::ptrdiff_t>(ch.from_index));
+                    items.insert(items.begin() +
+                                 static_cast<std::ptrdiff_t>(ch.index), moved);
+                    break;
+                }
+                case ListChangeKind::Reset:
+                    items.clear();
+                    ++resets;
+                    break;
+                default:
+                    break;
+            }
+        });
+    }
+
+    void check_matches(ObservableList<Item>& list) const {
+        CHECK(items.size() == list.size());
+        const std::size_t n = std::min(items.size(), list.size());
+        for (std::size_t i = 0; i < n; ++i) CHECK(items[i] == list.at(i).get());
+    }
+};
+
+std::vector<std::shared_ptr<Item>> rows(std::initializer_list<int> ids) {
+    std::vector<std::shared_ptr<Item>> v;
+    for (int id : ids) v.push_back(std::make_shared<Item>(id));
+    return v;
+}
+
+std::vector<int> ids_of(ObservableList<Item>& list) {
+    std::vector<int> out;
+    for (std::size_t i = 0; i < list.size(); ++i) out.push_back(list.at(i)->id);
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("ObservableList::reconcile: no-op when already in sync") {
+    ObservableList<Item> list;
+    auto initial = rows({1, 2, 3});
+    for (auto& r : initial) list.push_back(r);
+
+    ListMirror mirror{list};
+    // Same handles, same order.
+    const std::size_t events = list.reconcile(initial, ById{});
+
+    CHECK(events == 0);
+    CHECK(mirror.resets == 0);
+    CHECK(ids_of(list) == std::vector<int>{1, 2, 3});
+    mirror.check_matches(list);
+}
+
+TEST_CASE("ObservableList::reconcile: pure append emits Insert, never Reset") {
+    ObservableList<Item> list;
+    for (auto& r : rows({1, 2})) list.push_back(r);
+
+    ListMirror mirror{list};
+    list.reconcile(rows({1, 2, 3, 4}), ById{});
+
+    CHECK(mirror.resets == 0);
+    CHECK(ids_of(list) == std::vector<int>{1, 2, 3, 4});
+    mirror.check_matches(list);
+}
+
+TEST_CASE("ObservableList::reconcile: removals in the middle") {
+    ObservableList<Item> list;
+    for (auto& r : rows({1, 2, 3, 4, 5})) list.push_back(r);
+
+    ListMirror mirror{list};
+    list.reconcile(rows({1, 3, 5}), ById{});
+
+    CHECK(mirror.resets == 0);
+    CHECK(ids_of(list) == std::vector<int>{1, 3, 5});
+    mirror.check_matches(list);
+}
+
+TEST_CASE("ObservableList::reconcile: reordering emits Move, not Remove+Insert") {
+    ObservableList<Item> list;
+    auto initial = rows({1, 2, 3});
+    for (auto& r : initial) list.push_back(r);
+
+    ListMirror mirror{list};
+
+    // Reverse the order, reusing the SAME handles so nothing is Replace.
+    std::vector<std::shared_ptr<Item>> reversed{initial[2], initial[1], initial[0]};
+    list.reconcile(reversed, ById{});
+
+    CHECK(mirror.resets == 0);
+    CHECK(ids_of(list) == std::vector<int>{3, 2, 1});
+    mirror.check_matches(list);
+
+    // A reorder must not have dropped or re-created any row: the handles are
+    // the originals.
+    CHECK(list.at(0) == initial[2]);
+    CHECK(list.at(2) == initial[0]);
+}
+
+TEST_CASE("ObservableList::reconcile: same key with a new handle emits Replace") {
+    ObservableList<Item> list;
+    auto initial = rows({1, 2});
+    for (auto& r : initial) list.push_back(r);
+
+    ListMirror mirror{list};
+
+    // Row 2 arrives as a brand-new object with the same id — the realistic
+    // "server re-sent this row" case.
+    auto refreshed = rows({1, 2});
+    std::vector<std::shared_ptr<Item>> next{initial[0], refreshed[1]};
+    list.reconcile(next, ById{});
+
+    CHECK(mirror.resets == 0);
+    CHECK(list.at(0) == initial[0]);      // untouched
+    CHECK(list.at(1) == refreshed[1]);    // swapped in
+    mirror.check_matches(list);
+}
+
+TEST_CASE("ObservableList::reconcile: wholesale server refresh keeps identity") {
+    ObservableList<Item> list;
+    for (auto& r : rows({1, 2, 3})) list.push_back(r);
+
+    ListMirror mirror{list};
+
+    // Every object is new, but the ids overlap: with a keyed identity this
+    // must NOT become a Reset, which is the entire reason reconcile exists.
+    list.reconcile(rows({2, 3, 4}), ById{});
+
+    CHECK(mirror.resets == 0);
+    CHECK(ids_of(list) == std::vector<int>{2, 3, 4});
+    mirror.check_matches(list);
+}
+
+TEST_CASE("ObservableList::reconcile: to and from empty") {
+    ObservableList<Item> list;
+    for (auto& r : rows({1, 2, 3})) list.push_back(r);
+
+    ListMirror mirror{list};
+
+    list.reconcile({}, ById{});
+    CHECK(list.empty());
+    mirror.check_matches(list);
+
+    list.reconcile(rows({7, 8}), ById{});
+    CHECK(ids_of(list) == std::vector<int>{7, 8});
+    mirror.check_matches(list);
+}
+
+TEST_CASE("ObservableList::reconcile: default identity uses handle address") {
+    ObservableList<Item> list;
+    auto initial = rows({1, 2, 3});
+    for (auto& r : initial) list.push_back(r);
+
+    ListMirror mirror{list};
+
+    // No key function: identity is the object address, so reusing handles in
+    // a new order is still recognised as a reorder.
+    std::vector<std::shared_ptr<Item>> reordered{initial[1], initial[2], initial[0]};
+    list.reconcile(reordered);
+
+    CHECK(mirror.resets == 0);
+    CHECK(ids_of(list) == std::vector<int>{2, 3, 1});
+    mirror.check_matches(list);
+}
+
+TEST_CASE("ObservableList::reconcile: duplicate keys fall back to a clean rebuild") {
+    ObservableList<Item> list;
+    for (auto& r : rows({1, 2})) list.push_back(r);
+
+    ListMirror mirror{list};
+
+    // Two rows claiming the same id: the keyed algorithm cannot express this,
+    // so reconcile must degrade loudly (one Reset) rather than mis-diff.
+    list.reconcile(rows({5, 5, 6}), ById{});
+
+    CHECK(mirror.resets == 1);
+    CHECK(ids_of(list) == std::vector<int>{5, 5, 6});
+    mirror.check_matches(list);
+}
+
+TEST_CASE("ObservableList::reconcile: complex churn stays consistent") {
+    ObservableList<Item> list;
+    for (auto& r : rows({1, 2, 3, 4, 5, 6})) list.push_back(r);
+
+    ListMirror mirror{list};
+
+    // Simultaneous removal, insertion and reordering.
+    list.reconcile(rows({6, 1, 9, 3, 7}), ById{});
+    CHECK(mirror.resets == 0);
+    CHECK(ids_of(list) == std::vector<int>{6, 1, 9, 3, 7});
+    mirror.check_matches(list);
+
+    // And again from the new state.
+    list.reconcile(rows({3, 7, 6, 1, 9}), ById{});
+    CHECK(mirror.resets == 0);
+    CHECK(ids_of(list) == std::vector<int>{3, 7, 6, 1, 9});
+    mirror.check_matches(list);
+}
