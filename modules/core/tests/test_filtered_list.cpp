@@ -361,6 +361,183 @@ TEST_CASE("FilteredList: set_predicate emits Insert for newly-in items") {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// set_predicate: D-11 "as observed" index compliance
+//
+// The cases above assert only how MANY events fire. That is not enough:
+// an observer rebuilds its mirror from the (kind, index) pairs, so a
+// correct event count with wrong indices still corrupts every UI bound to
+// the list — and silently, because no later event repairs it.
+//
+// `Mirror` below is exactly the incremental observer D-11 promises to
+// support: apply each event to a local vector at the index carried by that
+// event. After the dust settles the mirror must equal the derived list. If
+// it does not, the emitted stream was lying.
+//
+// Regression: set_predicate used to emit Remove with the OLD derived index
+// and Insert with the NEW one. For [A,B,C] all-passing, narrowing to "only
+// C" emitted Remove(0), Remove(1) — mirror [A,B,C] -> [B,C] -> [B] while
+// the real list is [C].
+// ═══════════════════════════════════════════════════════════════════════
+
+namespace {
+
+// Incremental observer per D-11: index is "as observed at that emit".
+template<typename T>
+struct Mirror {
+    std::vector<const T*> items;
+    Subscription          sub;
+
+    explicit Mirror(FilteredList<T>& fl) {
+        // Seed from the current state, then track events.
+        for (std::size_t i = 0; i < fl.size(); ++i) items.push_back(fl.at(i).get());
+        sub = fl.observe([this](const ListChange<T>& ch) {
+            switch (ch.kind) {
+                case ListChangeKind::Insert:
+                    REQUIRE(ch.index <= items.size());
+                    items.insert(items.begin() + static_cast<std::ptrdiff_t>(ch.index),
+                                 ch.item);
+                    break;
+                case ListChangeKind::Remove:
+                    REQUIRE(ch.index < items.size());
+                    items.erase(items.begin() + static_cast<std::ptrdiff_t>(ch.index));
+                    break;
+                case ListChangeKind::Replace:
+                    REQUIRE(ch.index < items.size());
+                    items[ch.index] = ch.item;
+                    break;
+                case ListChangeKind::Move: {
+                    REQUIRE(ch.from_index < items.size());
+                    REQUIRE(ch.index < items.size());
+                    const T* moved = items[ch.from_index];
+                    items.erase(items.begin() +
+                                static_cast<std::ptrdiff_t>(ch.from_index));
+                    items.insert(items.begin() +
+                                 static_cast<std::ptrdiff_t>(ch.index), moved);
+                    break;
+                }
+                case ListChangeKind::Reset:
+                    items.clear();
+                    break;
+                default:
+                    break;  // ItemChanged etc. carry no structural meaning
+            }
+        });
+    }
+
+    // Compare the mirror against the authoritative derived list.
+    void check_matches(FilteredList<T>& fl) const {
+        CHECK(items.size() == fl.size());
+        const std::size_t n = std::min(items.size(), fl.size());
+        for (std::size_t i = 0; i < n; ++i) {
+            CHECK(items[i] == fl.at(i).get());
+        }
+    }
+};
+
+}  // namespace
+
+TEST_CASE("FilteredList: set_predicate narrowing keeps observer mirror exact") {
+    auto src = std::make_shared<ObservableList<Plain>>();
+    for (int v : {1, 2, 3}) src->push_back(std::make_shared<Plain>(Plain{v}));
+
+    FilteredList<Plain> fl{src, [](const Plain&) { return true; }};
+    REQUIRE(fl.size() == 3);
+
+    Mirror<Plain>   mirror{fl};
+    EventLog<Plain> log{fl};
+
+    // Keep only 3 — the first two elements drop out.
+    fl.set_predicate([](const Plain& p) { return p.value == 3; });
+
+    REQUIRE(fl.size() == 1);
+    CHECK(fl.at(0)->value == 3);
+
+    // Correct D-11 stream is Remove(0), Remove(0): after the first removal
+    // the observer's mirror is [B,C], so C's predecessor is again at 0.
+    REQUIRE(log.events.size() == 2);
+    CHECK(log.events[0].kind == ListChangeKind::Remove);
+    CHECK(log.events[0].index == 0);
+    CHECK(log.events[1].kind == ListChangeKind::Remove);
+    CHECK(log.events[1].index == 0);  // pre-fix: 1
+
+    mirror.check_matches(fl);
+}
+
+TEST_CASE("FilteredList: set_predicate widening keeps observer mirror exact") {
+    auto src = std::make_shared<ObservableList<Plain>>();
+    for (int v : {1, -2, -3, 4}) src->push_back(std::make_shared<Plain>(Plain{v}));
+
+    FilteredList<Plain> fl{src, [](const Plain& p) { return p.value > 0; }};
+    REQUIRE(fl.size() == 2);  // [1, 4]
+
+    Mirror<Plain>   mirror{fl};
+    EventLog<Plain> log{fl};
+
+    fl.set_predicate([](const Plain&) { return true; });
+
+    REQUIRE(fl.size() == 4);
+    // -2 is admitted at mirror position 1, then -3 at position 2.
+    REQUIRE(log.events.size() == 2);
+    CHECK(log.events[0].kind == ListChangeKind::Insert);
+    CHECK(log.events[0].index == 1);
+    CHECK(log.events[1].kind == ListChangeKind::Insert);
+    CHECK(log.events[1].index == 2);
+
+    mirror.check_matches(fl);
+}
+
+TEST_CASE("FilteredList: set_predicate mixed in/out keeps observer mirror exact") {
+    // Interleave so removals and insertions alternate: the two coordinate
+    // systems diverge immediately if indices are computed from the wrong
+    // mapping.
+    auto src = std::make_shared<ObservableList<Plain>>();
+    for (int v : {1, 2, 3, 4, 5, 6}) src->push_back(std::make_shared<Plain>(Plain{v}));
+
+    // Start: keep odds -> [1, 3, 5]
+    FilteredList<Plain> fl{src, [](const Plain& p) { return p.value % 2 == 1; }};
+    REQUIRE(fl.size() == 3);
+
+    Mirror<Plain> mirror{fl};
+
+    // Flip to evens -> [2, 4, 6]: every element changes membership.
+    fl.set_predicate([](const Plain& p) { return p.value % 2 == 0; });
+
+    REQUIRE(fl.size() == 3);
+    CHECK(fl.at(0)->value == 2);
+    CHECK(fl.at(1)->value == 4);
+    CHECK(fl.at(2)->value == 6);
+
+    mirror.check_matches(fl);
+}
+
+TEST_CASE("FilteredList: repeated set_predicate keeps observer mirror exact") {
+    auto src = std::make_shared<ObservableList<Plain>>();
+    for (int v : {5, 1, 4, 2, 3}) src->push_back(std::make_shared<Plain>(Plain{v}));
+
+    FilteredList<Plain> fl{src, [](const Plain&) { return true; }};
+    Mirror<Plain>       mirror{fl};
+
+    // Walk through a series of unrelated predicates; the mirror must track
+    // the derived list after every single one.
+    fl.set_predicate([](const Plain& p) { return p.value >= 3; });
+    mirror.check_matches(fl);
+
+    fl.set_predicate([](const Plain& p) { return p.value <= 2; });
+    mirror.check_matches(fl);
+
+    fl.set_predicate([](const Plain& p) { return p.value != 4; });
+    mirror.check_matches(fl);
+
+    fl.set_predicate([](const Plain&) { return false; });
+    mirror.check_matches(fl);
+    CHECK(fl.size() == 0);
+
+    fl.set_predicate([](const Plain&) { return true; });
+    mirror.check_matches(fl);
+    CHECK(fl.size() == 5);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // Lifetime: FilteredList outlives without dangling; source outlives derived
 // ═══════════════════════════════════════════════════════════════════════
 

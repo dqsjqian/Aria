@@ -3,6 +3,7 @@
 #include "aria/selection.hpp"
 #include "aria/observable_list.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 
@@ -93,6 +94,97 @@ TEST_CASE("Selection: repositioning (move) keeps selection") {
 
     list.move(2, 0);            // c moves to front
     CHECK(sel.is_selected(c));  // still selected
+}
+
+// ── SE-3: Replace at the selected slot ──────────────────────────────────────
+//
+// The header promises "a Replace at the selected element's slot drops it
+// (the logical element changed identity)". That never worked: the handler
+// compared `ch.item` against the selection, but per the list-diff contract
+// (D-2) a Replace event carries a pointer to the NEW element, so the test
+// could never match. Replace was silently treated as "keep the selection",
+// leaving the selection pointing at an element no longer in the list.
+
+TEST_CASE("Selection: Replace at the selected slot drops the selection") {
+    ObservableList<Row> list;
+    auto a = std::make_shared<Row>(1);
+    auto b = std::make_shared<Row>(2);
+    list.push_back(a);
+    list.push_back(b);
+
+    Selection<Row> sel;
+    sel.bind_to(list);
+    sel.select(b);
+    REQUIRE(sel.is_selected(b));
+
+    // Evict `b` by replacing its slot with a different element.
+    list.replace_at(1, std::make_shared<Row>(22));
+
+    CHECK_FALSE(sel.is_selected(b));        // pre-fix: still selected
+    CHECK(sel.selected().peek() == nullptr);
+    CHECK_FALSE(list.contains(b.get()));    // really gone from the list
+}
+
+TEST_CASE("Selection: Replace at another slot keeps the selection") {
+    ObservableList<Row> list;
+    auto a = std::make_shared<Row>(1);
+    auto b = std::make_shared<Row>(2);
+    list.push_back(a);
+    list.push_back(b);
+
+    Selection<Row> sel;
+    sel.bind_to(list);
+    sel.select(b);
+
+    // Replace a DIFFERENT slot — the selection must survive.
+    list.replace_at(0, std::make_shared<Row>(11));
+
+    CHECK(sel.is_selected(b));
+}
+
+TEST_CASE("Selection: replacing a slot with the selected element keeps it") {
+    ObservableList<Row> list;
+    auto a = std::make_shared<Row>(1);
+    auto b = std::make_shared<Row>(2);
+    list.push_back(a);
+    list.push_back(b);
+
+    Selection<Row> sel;
+    sel.bind_to(list);
+    sel.select(b);
+
+    // Replace slot 0 with the very element that is selected: `b` remains a
+    // member, so the selection must be preserved.
+    list.replace_at(0, b);
+
+    CHECK(sel.is_selected(b));
+    CHECK(list.contains(b.get()));
+}
+
+TEST_CASE("MultiSelection: Replace drops only the displaced element") {
+    ObservableList<Row> list;
+    auto a = std::make_shared<Row>(1);
+    auto b = std::make_shared<Row>(2);
+    auto c = std::make_shared<Row>(3);
+    list.push_back(a);
+    list.push_back(b);
+    list.push_back(c);
+
+    MultiSelection<Row> sel;
+    sel.bind_to(list);
+    sel.add(a);
+    sel.add(b);
+    sel.add(c);
+    REQUIRE(sel.size() == 3);
+
+    // Evict `b`; `a` and `c` are untouched.
+    list.replace_at(1, std::make_shared<Row>(22));
+
+    auto vals = sel.values();
+    CHECK(vals.size() == 2);  // pre-fix: 3
+    CHECK(std::find(vals.begin(), vals.end(), a) != vals.end());
+    CHECK(std::find(vals.begin(), vals.end(), c) != vals.end());
+    CHECK(std::find(vals.begin(), vals.end(), b) == vals.end());
 }
 
 // ── SE-2 / SE-5: multi selection ─────────────────────────────────────────────

@@ -196,6 +196,26 @@ public:
             new_d2s.reserve(snap.size());
             new_items.reserve(snap.size());
 
+            // Emission indices must follow D-11 "as observed": each event's
+            // index reflects the derived list as the OBSERVER sees it at the
+            // moment of that emit, not the pre-change or post-change layout.
+            //
+            // We therefore walk the source in order and maintain
+            // `observed_pos` — the index, in the observer's incrementally
+            // rebuilt mirror, of the next element that survives. Items that
+            // stay in advance it; a Remove leaves it alone (the mirror just
+            // shrank at that spot); an Insert lands at it and advances it.
+            //
+            // Getting this wrong is not a cosmetic bug. The previous version
+            // emitted Remove with the OLD derived index and Insert with the
+            // NEW one, mixing two coordinate systems: for source [A,B,C] all
+            // passing, with a new predicate that keeps only C, it emitted
+            // Remove(0), Remove(1) — walking the observer's mirror
+            // [A,B,C] -> [B,C] -> [B], while the real state is [C]. The
+            // mirror was then permanently wrong with no event to repair it.
+            // The correct stream here is Remove(0), Remove(0).
+            std::size_t observed_pos = 0;
+
             for (std::size_t i = 0; i < snap.size(); ++i) {
                 const bool was_in = (i < state_->source_to_derived.size())
                                     && state_->source_to_derived[i].has_value();
@@ -208,16 +228,26 @@ public:
                 }
 
                 if (was_in && !is_in) {
+                    // Dropped out: the observer removes at `observed_pos`,
+                    // and everything after it shifts down — so
+                    // `observed_pos` stays put for the next candidate.
                     emissions.push_back({
                         ListChangeKind::Remove,
-                        *state_->source_to_derived[i],
+                        observed_pos,
                         snap[i].get()});
                 } else if (!was_in && is_in) {
+                    // Newly admitted: lands at `observed_pos` in the mirror.
                     emissions.push_back({
                         ListChangeKind::Insert,
-                        *new_s2d[i],
+                        observed_pos,
                         snap[i].get()});
+                    ++observed_pos;
+                } else if (was_in && is_in) {
+                    // Unchanged member: no event, but it occupies a slot in
+                    // the observer's mirror.
+                    ++observed_pos;
                 }
+                // (!was_in && !is_in): absent before and after — no slot.
             }
 
             state_->source_to_derived = std::move(new_s2d);
