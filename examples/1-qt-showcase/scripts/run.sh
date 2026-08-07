@@ -40,13 +40,16 @@ JOBS="${JOBS:-8}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$DEMO_ROOT/../.." && pwd)"
+# Demo's own build tree (standalone: only this demo's objects, not the
+# framework). The framework SDK is built once into build/flavors/sdk/ and
+# installed to build/dist/tree/; the demo links it via find_package.
 BUILD_DIR="$REPO_ROOT/build/flavors/qt-demo"
-# Per-demo isolated build tree under build/flavors/<name>-demo/ so each
-# demo's cmake cache does not collide with framework or other demos' configs.
-# (build/examples/<name>/ is the main build's add_subdirectory mirror and
-# must NOT double as a standalone tree — see scripts/build.sh layout.)
-APP_PATH_NEW="$BUILD_DIR/bin/ex_qt_showcase.app/Contents/MacOS/ex_qt_showcase"
-APP_PATH_OLD="$BUILD_DIR/examples/1-qt-showcase/ex_qt_showcase.app/Contents/MacOS/ex_qt_showcase"
+SDK_TREE="$REPO_ROOT/build/flavors/sdk"
+SDK_PREFIX="$REPO_ROOT/build/dist/tree"
+# The .app lands directly under the standalone build tree's root on macOS
+# (CMAKE_RUNTIME_OUTPUT_DIRECTORY is only set by the *framework* CMakeLists,
+# which is not involved in standalone mode).
+APP_PATH="$BUILD_DIR/ex_qt_showcase.app/Contents/MacOS/ex_qt_showcase"
 
 log "仓库根  : $REPO_ROOT"
 log "构建类型: $BUILD_TYPE"
@@ -61,29 +64,67 @@ if [[ ! -d "$QT_DIR" ]]; then
 fi
 command -v cmake >/dev/null 2>&1 || { warn "cmake 未安装"; exit 1; }
 
-# ── Configure ─────────────────────────────────────────────────────────────────
+# ── 确保框架 SDK 已构建并安装 ────────────────────────────────────────────────
+# 框架只构建一次（build/flavors/sdk/），install 到 build/dist/tree/，所有
+# CMake demo 共享。任何框架源码比已安装的 SDK 新就重建——否则 demo 会链接
+# 旧 dylib 报 undefined symbol（见 0f142ec 的教训）。
+ensure_sdk() {
+    local sdk_config="$SDK_PREFIX/lib/cmake/aria/ariaConfig.cmake"
+    local newest_src newest_lib
+    if [[ ! -f "$sdk_config" ]]; then
+        need_sdk=1
+    else
+        newest_src="$(find "${REPO_ROOT}/modules" \
+            -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.mm' \) \
+            -not -path '*/tests/*' -not -path '*/fuzz/*' \
+            -exec stat -f '%m' {} + 2>/dev/null | sort -rn | head -1)"
+        newest_lib="$(stat -f '%m' "$sdk_config" 2>/dev/null)"
+        need_sdk=0
+        if [[ -n "$newest_src" && -n "$newest_lib" && "$newest_src" -gt "$newest_lib" ]]; then
+            need_sdk=1
+        fi
+    fi
+    if [[ "$need_sdk" == "1" ]]; then
+        log "构建框架 SDK → $SDK_PREFIX ..."
+        # UIKit adapter is NOT built here: it requires an iOS toolchain,
+        # and demo3 (Xcode) compiles it directly without the installed SDK.
+        cmake -S "$REPO_ROOT" -B "$SDK_TREE" \
+            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DARIA_BUILD_QT6=ON \
+            -DARIA_BUILD_HTTP=ON \
+            -DARIA_BUILD_APPKIT=ON \
+            -DARIA_BUILD_EXAMPLES=OFF \
+            -DARIA_BUILD_TESTS=OFF \
+            -DARIA_BUILD_BENCHMARK=OFF \
+            >/dev/null
+        cmake --build "$SDK_TREE" -j "$JOBS" >/dev/null
+        # Full re-install: clear lib/ + include/ first so CMake never sees
+        # up-to-date dylibs and skips its install-time rpath rewrite. On a
+        # partial rebuild, skipping the rewrite leaves stale rpaths in the
+        # freshly linked dylibs and install_name_tool then errors on the
+        # next run ("no LC_RPATH ... required for -delete_rpath").
+        cmake -E rm -rf "$SDK_PREFIX/lib" "$SDK_PREFIX/include"
+        cmake --install "$SDK_TREE" --prefix "$SDK_PREFIX" >/dev/null
+        ok "框架 SDK 就绪：$SDK_PREFIX"
+    fi
+}
+ensure_sdk
+
+# ── Configure（standalone：只配 demo 自己，链接已安装 SDK）────────────────────
 log "配置 CMake..."
-cmake -S "$REPO_ROOT" -B "$BUILD_DIR" \
+cmake -S "$DEMO_ROOT" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-    -DCMAKE_PREFIX_PATH="$QT_DIR" \
-    -DARIA_BUILD_QT6=ON \
-    -DARIA_BUILD_EXAMPLES=ON \
-    -DARIA_BUILD_TESTS=OFF \
+    -DARIA_USE_INSTALLED=ON \
+    -DCMAKE_PREFIX_PATH="$SDK_PREFIX;$QT_DIR" \
     >/dev/null
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 log "编译 ex_qt_showcase..."
 cmake --build "$BUILD_DIR" --target ex_qt_showcase --config "$BUILD_TYPE" -j "$JOBS"
 
-# ── 找到最终产物（fc87b2a 之后用 build/bin/，老 build 缓存可能在 examples/.../） ─
-APP_PATH=""
-for p in "$APP_PATH_NEW" "$APP_PATH_OLD"; do
-    if [[ -x "$p" ]]; then APP_PATH="$p"; break; fi
-done
-if [[ -z "$APP_PATH" ]]; then
-    warn "构建成功但没找到可执行文件，候选路径："
-    warn "  $APP_PATH_NEW"
-    warn "  $APP_PATH_OLD"
+# ── 找到最终产物 ──────────────────────────────────────────────────────────────
+if [[ ! -x "$APP_PATH" ]]; then
+    warn "构建成功但没找到可执行文件：$APP_PATH"
     exit 1
 fi
 ok "构建完成：$APP_PATH"

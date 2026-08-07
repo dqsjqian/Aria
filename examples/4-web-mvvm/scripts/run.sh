@@ -55,12 +55,13 @@ JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/de
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$DEMO_ROOT/../.." && pwd)"
+# Demo's own build tree (standalone: only this demo's objects, not the
+# framework). The framework SDK is built once into build/flavors/sdk/ and
+# installed to build/dist/tree/; the demo links it via find_package.
 BUILD_DIR="$REPO_ROOT/build/flavors/web-demo"
-# Per-demo isolated build tree under build/flavors/<name>-demo/ so each
-# demo's cmake cache does not collide with framework or other demos' configs.
-# (build/examples/<name>/ is the main build's add_subdirectory mirror and
-# must NOT double as a standalone tree — see scripts/build.sh layout.)
-APP_PATH="$BUILD_DIR/bin/example_4_web_mvvm"
+SDK_TREE="$REPO_ROOT/build/flavors/sdk"
+SDK_PREFIX="$REPO_ROOT/build/dist/tree"
+APP_PATH="$BUILD_DIR/example_4_web_mvvm"
 
 log "仓库根  : $REPO_ROOT"
 log "构建目录: $BUILD_DIR"
@@ -71,19 +72,61 @@ log "并行度  : $JOBS"
 
 command -v cmake >/dev/null 2>&1 || { err "cmake 未安装"; exit 1; }
 
-# ── Configure ─────────────────────────────────────────────────────────────────
+# ── 确保框架 SDK 已构建并安装 ────────────────────────────────────────────────
+# 与 demo1 的 run.sh 共用同一个 SDK 树（build/flavors/sdk → build/dist/tree），
+# 框架只构建一次。任何框架源码比已安装的 SDK 新就重建。
+ensure_sdk() {
+    local sdk_config="$SDK_PREFIX/lib/cmake/aria/ariaConfig.cmake"
+    local newest_src newest_lib
+    if [[ ! -f "$sdk_config" ]]; then
+        need_sdk=1
+    else
+        newest_src="$(find "${REPO_ROOT}/modules" \
+            -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.mm' \) \
+            -not -path '*/tests/*' -not -path '*/fuzz/*' \
+            -exec stat -f '%m' {} + 2>/dev/null | sort -rn | head -1)"
+        newest_lib="$(stat -f '%m' "$sdk_config" 2>/dev/null)"
+        need_sdk=0
+        if [[ -n "$newest_src" && -n "$newest_lib" && "$newest_src" -gt "$newest_lib" ]]; then
+            need_sdk=1
+        fi
+    fi
+    if [[ "$need_sdk" == "1" ]]; then
+        log "构建框架 SDK → $SDK_PREFIX ..."
+        # UIKit adapter is NOT built here: it requires an iOS toolchain,
+        # and demo3 (Xcode) compiles it directly without the installed SDK.
+        cmake -S "$REPO_ROOT" -B "$SDK_TREE" \
+            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DARIA_BUILD_QT6=ON \
+            -DARIA_BUILD_HTTP=ON \
+            -DARIA_BUILD_APPKIT=ON \
+            -DARIA_BUILD_EXAMPLES=OFF \
+            -DARIA_BUILD_TESTS=OFF \
+            -DARIA_BUILD_BENCHMARK=OFF \
+            >/dev/null
+        cmake --build "$SDK_TREE" -j "$JOBS" >/dev/null
+        # Full re-install: clear lib/ + include/ first so CMake never sees
+        # up-to-date dylibs and skips its install-time rpath rewrite. On a
+        # partial rebuild, skipping the rewrite leaves stale rpaths in the
+        # freshly linked dylibs and install_name_tool then errors on the
+        # next run ("no LC_RPATH ... required for -delete_rpath").
+        cmake -E rm -rf "$SDK_PREFIX/lib" "$SDK_PREFIX/include"
+        cmake --install "$SDK_TREE" --prefix "$SDK_PREFIX" >/dev/null
+        ok "框架 SDK 就绪：$SDK_PREFIX"
+    fi
+}
+ensure_sdk
+
+# ── Configure（standalone：只配 demo 自己，链接已安装 SDK）────────────────────
 TLS_FLAG="OFF"
 if [[ "$USE_TLS" == "1" ]]; then TLS_FLAG="ON"; fi
 
 log "配置 CMake..."
-cmake -S "$REPO_ROOT" -B "$BUILD_DIR" \
+cmake -S "$DEMO_ROOT" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-    -DARIA_BUILD_HTTP=ON \
+    -DARIA_USE_INSTALLED=ON \
     -DARIA_HTTP_ENABLE_TLS=$TLS_FLAG \
-    -DARIA_BUILD_EXAMPLES=ON \
-    -DARIA_BUILD_TESTS=OFF \
-    -DARIA_BUILD_BENCHMARK=OFF \
-    -DARIA_BUILD_QT6=OFF \
+    -DCMAKE_PREFIX_PATH="$SDK_PREFIX" \
     >/dev/null
 
 # ── Build ─────────────────────────────────────────────────────────────────────

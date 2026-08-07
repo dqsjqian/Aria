@@ -53,6 +53,10 @@ $BuildDir  = if ($UseMsvc) {
 } else {
     Join-Path $RepoRoot "build/flavors/web-demo"
 }
+# Demo builds STANDALONE against the shared installed SDK
+# (build/flavors/sdk → build/dist/tree), same design as demo1.
+$SdkTree   = Join-Path $RepoRoot "build/flavors/sdk"
+$SdkPrefix = Join-Path $RepoRoot "build/dist/tree"
 
 # ── 探测工具（Git Bash 环境需要 .exe 后缀） ──────────────────────────────
 function Find-Cmd($name) {
@@ -213,16 +217,59 @@ if ($UseTls) {
     }
 }
 
+# -- 确保框架 SDK 已构建并安装（与 demo1 共用；框架只构建一次）----------------
+$SdkConfig = Join-Path $SdkPrefix "lib\cmake\aria\ariaConfig.cmake"
+$NeedSdk = $false
+if (-not (Test-Path $SdkConfig)) {
+    $NeedSdk = $true
+} else {
+    $NewestSrc = Get-ChildItem -Path (Join-Path $RepoRoot "modules") -Recurse -File `
+        -Include *.cpp,*.hpp,*.h,*.mm -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '\\tests\\|\\fuzz\\' } |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $NewestLib = (Get-Item $SdkConfig).LastWriteTime
+    if ($NewestSrc -and $NewestSrc.LastWriteTime -gt $NewestLib) { $NeedSdk = $true }
+}
+if ($NeedSdk) {
+    Log-Info "构建框架 SDK → $SdkPrefix ..."
+    $sdkArgs = @(
+        "-S", "$RepoRoot",
+        "-B", "$SdkTree",
+        "-DARIA_BUILD_QT6=ON",
+        "-DARIA_BUILD_HTTP=ON",
+        "-DARIA_BUILD_APPKIT=ON",
+        "-DARIA_BUILD_EXAMPLES=OFF",
+        "-DARIA_BUILD_TESTS=OFF",
+        "-DARIA_BUILD_BENCHMARK=OFF"
+    )
+    if (-not $UseMsvc) { $sdkArgs += @("-DCMAKE_BUILD_TYPE=$BuildType") }
+    if ($Generator) { $sdkArgs += @("-G", $Generator) }
+    & cmake @sdkArgs 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { Log-Err "SDK 配置失败"; exit 1 }
+    & cmake --build "$SdkTree" --config "$BuildType" -j $Jobs 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { Log-Err "SDK 编译失败"; exit 1 }
+    # Full re-install: clear lib + include first so CMake never sees
+    # up-to-date binaries and skips its install-time rpath rewrite
+    # (same rationale as the macOS run.sh scripts).
+    $SdkLib = Join-Path $SdkPrefix "lib"
+    $SdkInc = Join-Path $SdkPrefix "include"
+    if (Test-Path $SdkLib) { Remove-Item -Recurse -Force $SdkLib }
+    if (Test-Path $SdkInc) { Remove-Item -Recurse -Force $SdkInc }
+    & cmake --install "$SdkTree" --prefix "$SdkPrefix" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { Log-Err "SDK 安装失败"; exit 1 }
+    Log-Ok "框架 SDK 就绪：$SdkPrefix"
+} else {
+    Log-Ok "框架 SDK 已就绪：$SdkPrefix"
+}
+
+# -- Configure（standalone：只配 demo 自己，链接已安装 SDK）-------------------
 Log-Info "配置 CMake..."
 $cfgArgs = @(
-    "-S", "$RepoRoot",
+    "-S", "$DemoRoot",
     "-B", "$BuildDir",
-    "-DARIA_BUILD_HTTP=ON",
+    "-DARIA_USE_INSTALLED=ON",
     "-DARIA_HTTP_ENABLE_TLS=$TlsFlag",
-    "-DARIA_BUILD_EXAMPLES=ON",
-    "-DARIA_BUILD_TESTS=OFF",
-    "-DARIA_BUILD_BENCHMARK=OFF",
-    "-DARIA_BUILD_QT6=OFF"
+    "-DCMAKE_PREFIX_PATH=$SdkPrefix"
 )
 # MSYS2/Ninja 是单配置生成器，需要 -DCMAKE_BUILD_TYPE；
 # MSVC Visual Studio 是多配置生成器，不需要（用 --config 在 build 时选）。
@@ -261,10 +308,9 @@ if ($buildExit -ne 0) { Log-Err "编译失败"; exit 1 }
 # Visual Studio: bin/<Config>/example_4_web_mvvm.exe  (多配置子目录)
 $FinalAppPath = $null
 foreach ($p in @(
-    (Join-Path $BuildDir "bin\$BuildType\example_4_web_mvvm.exe"),
-    (Join-Path $BuildDir "bin\example_4_web_mvvm.exe"),
-    (Join-Path $BuildDir "bin\example_4_web_mvvm"),
-    (Join-Path $BuildDir "example_4_web_mvvm.exe")
+    (Join-Path $BuildDir "$BuildType\example_4_web_mvvm.exe"),
+    (Join-Path $BuildDir "example_4_web_mvvm.exe"),
+    (Join-Path $BuildDir "example_4_web_mvvm")
 )) {
     if (Test-Path $p) { $FinalAppPath = $p; break }
 }

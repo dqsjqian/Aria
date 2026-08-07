@@ -276,8 +276,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(SRCROOT)/../../build/examples/2-macos-appkit-mvvm/bin",
-					"$(SRCROOT)/../../build/examples/2-macos-appkit-mvvm/lib",
+					"$(SRCROOT)/../../build/dist/tree/lib",
 				);
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_DYNAMIC_NO_PIC = NO;
@@ -339,8 +338,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(SRCROOT)/../../build/examples/2-macos-appkit-mvvm/bin",
-					"$(SRCROOT)/../../build/examples/2-macos-appkit-mvvm/lib",
+					"$(SRCROOT)/../../build/dist/tree/lib",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MTL_ENABLE_DEBUG_INFO = NO;

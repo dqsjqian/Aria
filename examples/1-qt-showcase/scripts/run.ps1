@@ -43,11 +43,8 @@ function Log-Dim   { Write-Host "  $args" -ForegroundColor DarkGray }
 function Copy-Dependencies($exePath, $destDir, $msys2Bin) {
     if (-not $msys2Bin) { return }
 
-    # 1) 复制项目自身的 DLL（优先从统一输出目录 bin/ 找，其次回退到 modules/）
-    $projectDlls = Get-ChildItem -Path "$BuildDir/bin" -Filter "libaria_*.dll" -ErrorAction SilentlyContinue
-    if (-not $projectDlls) {
-        $projectDlls = Get-ChildItem -Path "$BuildDir/modules" -Filter "libaria_*.dll" -Recurse -ErrorAction SilentlyContinue
-    }
+    # 1) 复制项目自身的 DLL（standalone 模式下框架 DLL 来自 SDK 安装树）
+    $projectDlls = Get-ChildItem -Path (Join-Path $SdkPrefix "bin") -Filter "libaria_*.dll" -ErrorAction SilentlyContinue
     foreach ($dll in $projectDlls) {
         $dest = Join-Path $destDir $dll.Name
         if (-not (Test-Path $dest)) {
@@ -119,18 +116,17 @@ function Copy-Dependencies($exePath, $destDir, $msys2Bin) {
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $DemoRoot  = Split-Path -Parent $ScriptDir
 $RepoRoot  = Split-Path -Parent (Split-Path -Parent $DemoRoot)
+# Demo's own standalone build tree (only this demo's objects — the framework
+# SDK lives in build/flavors/sdk → install to build/dist/tree, shared with
+# the other CMake demos).
 $BuildDir  = Join-Path $RepoRoot "build/flavors/qt-demo"
-# Per-demo isolated build tree under build/flavors/<name>-demo/ so each
-# demo's cmake cache does not collide with framework or other demos' configs.
-# (build/examples/<name>/ is the main build's add_subdirectory mirror and
-# must NOT double as a standalone tree — see scripts/build.sh layout.)
+$SdkTree   = Join-Path $RepoRoot "build/flavors/sdk"
+$SdkPrefix = Join-Path $RepoRoot "build/dist/tree"
+# Standalone tree: exe at the root (Ninja / Unix Makefiles) or <Config>/
+# (VS generators). CMAKE_RUNTIME_OUTPUT_DIRECTORY is only set by the
+# *framework* CMakeLists, which is not involved in standalone mode.
 $AppPath   = Join-Path $BuildDir "$BuildType\ex_qt_showcase.exe"
-
-# 某些 Windows 生成器（Ninja、Unix Makefiles）不分 Debug/Release 子目录
 $AppPathFlat = Join-Path $BuildDir "ex_qt_showcase.exe"
-
-# 项目设置了 CMAKE_RUNTIME_OUTPUT_DIRECTORY=${CMAKE_BINARY_DIR}/bin，exe 可能在这里
-$AppPathBin = Join-Path $BuildDir "bin\ex_qt_showcase.exe"
 
 # -- 并行度 --------------------------------------------------------------------
 $Jobs = if ($env:JOBS) { $env:JOBS } else { $env:NUMBER_OF_PROCESSORS }
@@ -232,16 +228,62 @@ if ($IsMingwLike) {
     }
 }
 
-# -- Configure -----------------------------------------------------------------
+# -- 确保框架 SDK 已构建并安装 --------------------------------------------------
+# 与 macOS 的 run.sh 同一套设计：框架只构建一次到 build/flavors/sdk/，
+# install 到 build/dist/tree/，demo 用 ARIA_USE_INSTALLED 链接它。
+# 任何框架源码比已安装的 SDK 新就重建（避免链接旧 dylib 报 undefined symbol）。
+$SdkConfig = Join-Path $SdkPrefix "lib\cmake\aria\ariaConfig.cmake"
+$NeedSdk = $false
+if (-not (Test-Path $SdkConfig)) {
+    $NeedSdk = $true
+} else {
+    $NewestSrc = Get-ChildItem -Path (Join-Path $RepoRoot "modules") -Recurse -File `
+        -Include *.cpp,*.hpp,*.h,*.mm -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '\\tests\\|\\fuzz\\' } |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $NewestLib = (Get-Item $SdkConfig).LastWriteTime
+    if ($NewestSrc -and $NewestSrc.LastWriteTime -gt $NewestLib) { $NeedSdk = $true }
+}
+if ($NeedSdk) {
+    Log-Info "构建框架 SDK → $SdkPrefix ..."
+    $sdkArgs = @(
+        "-S", $RepoRoot,
+        "-B", $SdkTree,
+        "-DCMAKE_BUILD_TYPE=$BuildType",
+        "-DARIA_BUILD_QT6=ON",
+        "-DARIA_BUILD_HTTP=ON",
+        "-DARIA_BUILD_APPKIT=ON",
+        "-DARIA_BUILD_EXAMPLES=OFF",
+        "-DARIA_BUILD_TESTS=OFF",
+        "-DARIA_BUILD_BENCHMARK=OFF"
+    )
+    if ($Generator) { $sdkArgs += @("-G", $Generator) }
+    & $CmakePath @sdkArgs
+    if ($LASTEXITCODE -ne 0) { Log-Err "SDK 配置失败"; exit $LASTEXITCODE }
+    & $CmakePath --build $SdkTree --config $BuildType -j $Jobs
+    if ($LASTEXITCODE -ne 0) { Log-Err "SDK 编译失败"; exit $LASTEXITCODE }
+    # Full re-install: clear lib + include first so CMake never sees
+    # up-to-date binaries and skips its install-time rpath rewrite
+    # (same rationale as the macOS run.sh scripts).
+    $SdkLib = Join-Path $SdkPrefix "lib"
+    $SdkInc = Join-Path $SdkPrefix "include"
+    if (Test-Path $SdkLib) { Remove-Item -Recurse -Force $SdkLib }
+    if (Test-Path $SdkInc) { Remove-Item -Recurse -Force $SdkInc }
+    & $CmakePath --install $SdkTree --prefix $SdkPrefix
+    if ($LASTEXITCODE -ne 0) { Log-Err "SDK 安装失败"; exit $LASTEXITCODE }
+    Log-Ok "框架 SDK 就绪：$SdkPrefix"
+} else {
+    Log-Ok "框架 SDK 已就绪：$SdkPrefix"
+}
+
+# -- Configure（standalone：只配 demo 自己，链接已安装 SDK）--------------------
 Log-Info "配置 CMake..."
+$prefixPath = "$SdkPrefix;$QtDir"
 $cfgArgs = @(
-    "-S", $RepoRoot,
+    "-S", $DemoRoot,
     "-B", $BuildDir,
-    "-DCMAKE_BUILD_TYPE=$BuildType",
-    "-DCMAKE_PREFIX_PATH=$QtDir",
-    "-DARIA_BUILD_QT6=ON",
-    "-DARIA_BUILD_EXAMPLES=ON",
-    "-DARIA_BUILD_TESTS=OFF"
+    "-DARIA_USE_INSTALLED=ON",
+    "-DCMAKE_PREFIX_PATH=$prefixPath"
 )
 if ($Generator) { $cfgArgs += @("-G", $Generator) }
 & $CmakePath @cfgArgs
@@ -255,7 +297,7 @@ if ($LASTEXITCODE -ne 0) { Log-Err "编译失败"; exit $LASTEXITCODE }
 
 # -- 找到产物（VS 生成器有 Debug/ 子目录，Ninja/Makefile 没有） ----------------
 $FinalAppPath = $null
-foreach ($p in @($AppPath, $AppPathFlat, $AppPathBin)) {
+foreach ($p in @($AppPath, $AppPathFlat)) {
     if (Test-Path $p) { $FinalAppPath = $p; break }
 }
 if (-not $FinalAppPath) {

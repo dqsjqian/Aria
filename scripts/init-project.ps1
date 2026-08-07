@@ -572,11 +572,12 @@ $Tasks = @"
 
 # -- launch.json ---------------------------------------------------------------
 # Demo1 (Qt) Windows: examples/1-qt-showcase/scripts/run.ps1 builds into
-# build/flavors/qt-demo/bin/ex_qt_showcase.exe (per-demo isolated cache).
-$ProgramRel = "`${workspaceFolder}/build/flavors/qt-demo/bin/ex_qt_showcase.exe"
-$LaunchCwd = "`${workspaceFolder}/build/flavors/qt-demo/bin"
-# Launch PATH: demo1's bin (DLLs) + MSYS2 (runtime) + system PATH
-$LaunchPath = "`${workspaceFolder}\\build\\flavors\\qt-demo\\bin;$PathEnvEsc"
+# build/flavors/qt-demo/ (standalone tree; Ninja puts the exe at the root,
+# VS generators under <Config>/).
+$ProgramRel = "`${workspaceFolder}/build/flavors/qt-demo/ex_qt_showcase.exe"
+$LaunchCwd = "`${workspaceFolder}/build/flavors/qt-demo"
+# Launch PATH: demo1's exe dir + MSYS2 (runtime) + system PATH
+$LaunchPath = "`${workspaceFolder}\\build\\flavors\\qt-demo;$PathEnvEsc"
 
 $Launch = @"
 {
