@@ -24,22 +24,23 @@ build, test, and submit changes.
 ## Build & test
 
 ```bash
-cmake -B build
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+cmake -B build/flavors/release -DCMAKE_BUILD_TYPE=Release
+cmake --build build/flavors/release -j
+ctest --test-dir build/flavors/release --output-on-failure
 ```
 
-**Use a single `build/` tree.** Toggle features with `-D` options on that
-one directory rather than spawning a parallel build tree (`build-foo/`,
-`build-ex/`, …) per feature — a second tree doubles configure/build/test
-time and drifts out of sync. To change what gets built, just re-run
-`cmake -B build` with the option flipped; CMake updates the existing cache
-in place:
+**Use one tree per flavor.** `build/` is a *container* for build trees, not a
+build tree — never configure straight into it. Pick a flavor directory and
+toggle features with `-D` options on that one directory rather than
+spawning a parallel sibling tree (`build-foo/`, `build-ex/`, …) per feature
+— a second tree doubles configure/build/test time and drifts out of sync.
+To change what gets built, just re-run `cmake -B build/flavors/<name>` with
+the option flipped; CMake updates the existing cache in place:
 
 ```bash
-cmake -B build -DARIA_BUILD_EXAMPLES=ON   # add examples to the same tree
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+cmake -B build/flavors/dev -DARIA_BUILD_EXAMPLES=ON   # add examples to the same tree
+cmake --build build/flavors/dev -j
+ctest --test-dir build/flavors/dev --output-on-failure
 ```
 
 Common options (all default to the value shown; flip on the existing

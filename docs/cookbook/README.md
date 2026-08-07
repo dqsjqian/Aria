@@ -7,8 +7,8 @@ contract docs (`docs/reference/*.md`) and module guides
 Doxygen API docs:
 
 ```bash
-cmake -B build -DARIA_BUILD_DOCS=ON
-cmake --build build --target aria_docs
+cmake -B build/flavors/docs -DARIA_BUILD_DOCS=ON
+cmake --build build/flavors/docs --target aria_docs
 open build/docs/html/index.html
 ```
 

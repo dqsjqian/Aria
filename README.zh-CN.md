@@ -92,10 +92,13 @@
 ```bash
 git clone https://github.com/dqsjqian/aria.git
 cd aria
-cmake -B build
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+cmake -B build/flavors/release -DCMAKE_BUILD_TYPE=Release
+cmake --build build/flavors/release -j
+ctest --test-dir build/flavors/release --output-on-failure
 ```
+
+> `build/` 是构建树的**容器**，不要直接配置进它。统一布局（flavors / ide / platforms / examples / dist）见
+> [`scripts/build.sh`](scripts/build.sh) 顶部；`scripts/build.sh [release|debug|asan|tsan]` 会自动选择正确的目录。
 
 > 首次配置会通过内置的 `CPM.cmake` 拉取 [doctest](https://github.com/doctest/doctest)。之后全部离线可用。
 
@@ -164,8 +167,8 @@ scripts\build.ps1 tests
 
 ```bash
 # 在 aria 目录下：
-cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local
-cmake --build build -j && sudo cmake --install build
+cmake -S . -B build/flavors/release -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build build/flavors/release -j && sudo cmake --install build/flavors/release
 ```
 
 ```cmake
@@ -210,21 +213,21 @@ aria 提供覆盖**每一个受支持 UI 工具包**的可运行示例，外加�
 构建并运行示例 1（Qt）：
 
 ```bash
-cmake -S . -B build -DARIA_BUILD_QT6=ON
-cmake --build build -j
-./build/examples/1-qt-showcase/ex_qt_showcase
+cmake -S . -B build/flavors/qt-demo -DARIA_BUILD_QT6=ON
+cmake --build build/flavors/qt-demo -j
+./build/flavors/qt-demo/bin/ex_qt_showcase
 ```
 
 示例 4（web）需要 HTTP 适配器，运行说明见
 [`examples/4-web-mvvm/README.md`](examples/4-web-mvvm/)：
 
 ```bash
-cmake -S . -B build -DARIA_BUILD_HTTP=ON
-cmake --build build --target example_4_web_mvvm
+cmake -S . -B build/flavors/web-demo -DARIA_BUILD_HTTP=ON
+cmake --build build/flavors/web-demo --target example_4_web_mvvm
 ```
 
 无界面示例默认随 `ARIA_BUILD_EXAMPLES=ON` 构建，可用 `ctest`
-（`cross_dylib_abi_smoke`、`todomvc_smoke`）或直接从 `build/bin/` 运行。
+（`cross_dylib_abi_smoke`、`todomvc_smoke`）或直接从 `build/flavors/<name>/bin/` 运行。
 
 示例 2、3 **不参与** CMake 构建 —— 直接打开 Xcode 工程运行；示例 5 是
 Android Studio / Gradle 工程（需 NDK r26+）：

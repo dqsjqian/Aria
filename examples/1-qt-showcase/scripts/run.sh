@@ -40,9 +40,11 @@ JOBS="${JOBS:-8}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$DEMO_ROOT/../.." && pwd)"
-BUILD_DIR="$REPO_ROOT/build/examples/1-qt-showcase"
-# Per-demo isolated build dir under build/examples/<name>/ so each demo's
-# cmake cache does not collide with framework or other demos' configs.
+BUILD_DIR="$REPO_ROOT/build/flavors/qt-demo"
+# Per-demo isolated build tree under build/flavors/<name>-demo/ so each
+# demo's cmake cache does not collide with framework or other demos' configs.
+# (build/examples/<name>/ is the main build's add_subdirectory mirror and
+# must NOT double as a standalone tree — see scripts/build.sh layout.)
 APP_PATH_NEW="$BUILD_DIR/bin/ex_qt_showcase.app/Contents/MacOS/ex_qt_showcase"
 APP_PATH_OLD="$BUILD_DIR/examples/1-qt-showcase/ex_qt_showcase.app/Contents/MacOS/ex_qt_showcase"
 

@@ -49,13 +49,20 @@ JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/de
 #     │     ├── tidy/           CI: clang-tidy gate
 #     │     ├── bench/          nightly: benchmark + P99 ceiling check
 #     │     └── fuzz/           nightly: fuzzers at 1M iterations
+#     │     │
+#     │     │── CMake-based demo trees (created by examples/<demo>/scripts/
+#     │     │      run.sh / run.ps1 — per-demo isolated caches, so each
+#     │     │      demo's flags (Qt6 vs HTTP …) never cross-contaminate) ──
+#     │     ├── qt-demo/        1-qt-showcase (Qt6)
+#     │     ├── qt-demo-msvc/   1-qt-showcase, MSVC generator (run-msvc.ps1)
+#     │     ├── web-demo/       4-web-mvvm (HTTP)
+#     │     └── web-demo-msvc/  4-web-mvvm, MSVC generator
 #     ├── platforms/            cross-compilation targets
 #     │     └── android/       scripts/build.sh android (NDK cross-build)
-#     ├── examples/             per-demo isolated cmake caches
-#     │     ├── 1-qt-showcase/
-#     │     ├── 2-macos-appkit-mvvm/
-#     │     ├── 3-ios-oc-uikit-mvvm/
-#     │     └── 4-web-mvvm/
+#     ├── examples/             MIRROR of the main build's add_subdirectory
+#     │     examples (NOT standalone trees — never configure into them),
+#     │     plus raw product output from the non-CMake demos
+#     │     (2-macos-appkit-mvvm, 3-ios-oc-uikit-mvvm via xcodebuild)
 #     └── dist/                 release artefacts (only when packaging)
 #           ├── tree/           install-prefix layout (was release-pkg/)
 #           └── archives/       .tar.gz / .zip output (was packages/)

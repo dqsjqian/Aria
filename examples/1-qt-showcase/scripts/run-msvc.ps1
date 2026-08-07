@@ -7,7 +7,7 @@
 # 前提：先跑过 scripts\build-msvc.ps1（生成 build/dist/tree/）
 #
 # 用法：
-#   .\run-msvc.ps1                  # 默认：生成 VS 工程到 build/examples/1-qt-showcase-msvc/
+#   .\run-msvc.ps1                  # 默认：生成 VS 工程到 build/flavors/qt-demo-msvc/
 #   .\run-msvc.ps1 Debug            # Debug 编译 + windeployqt + 运行
 #   .\run-msvc.ps1 Release          # Release 编译 + 运行
 #   .\run-msvc.ps1 Debug probe      # Debug + probe 模式
@@ -54,7 +54,12 @@ try {
 
     Set-Location $RepoRoot
 
-    $BuildDir   = "build/examples/1-qt-showcase-msvc"
+    $BuildDir   = "build/flavors/qt-demo-msvc"
+    # Standalone demo tree: links the framework install under
+    # build/dist/tree/ (produced by scripts\build-msvc.ps1), so the demo
+    # does NOT recompile the framework. Lives under build/flavors/ per the
+    # unified layout — build/examples/<name>/ is the main build's
+    # add_subdirectory mirror and must not double as a standalone tree.
     $FrameworkRelease = "build/dist/tree"
 
     # -- 探测 Visual Studio 生成器 (支持 VS 2022 / 2026 / ...) ------------------

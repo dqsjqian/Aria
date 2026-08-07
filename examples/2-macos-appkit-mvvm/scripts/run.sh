@@ -3,7 +3,8 @@
 #
 # What it does:
 #   1. 确保 Aria 的共享库 (libaria_binding / libaria_runtime / libaria_abi)
-#      已经构建在 ../../build/modules/ 下，没有就跑一次 cmake。
+#      已经构建在 build/examples/2-macos-appkit-mvvm/ 下（demo 的独立树，
+#      不参与主 CMake 构建；Xcode 产物区同目录），没有就跑一次 cmake。
 #   2. xcodebuild 构建 mac-oc-mvvm.app。
 #   3. 把 Aria 的 dylib 拷到 app 的 Contents/Frameworks/（app 默认 rpath
 #      是 @executable_path/../Frameworks，dylib 是 @rpath/libaria_*.dylib）。

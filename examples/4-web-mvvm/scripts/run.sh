@@ -15,7 +15,7 @@
 #   ARIA_DEMO4_KEY       已存在的 key
 #   JOBS                 并行任务数（默认 CPU 核心数）
 #
-# Build dir : build/examples/4-web-mvvm/   (与其他 demo 完全隔离)
+# Build dir : build/flavors/web-demo/   (与其他 demo 完全隔离)
 
 set -euo pipefail
 
@@ -55,7 +55,11 @@ JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/de
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$DEMO_ROOT/../.." && pwd)"
-BUILD_DIR="$REPO_ROOT/build/examples/4-web-mvvm"
+BUILD_DIR="$REPO_ROOT/build/flavors/web-demo"
+# Per-demo isolated build tree under build/flavors/<name>-demo/ so each
+# demo's cmake cache does not collide with framework or other demos' configs.
+# (build/examples/<name>/ is the main build's add_subdirectory mirror and
+# must NOT double as a standalone tree — see scripts/build.sh layout.)
 APP_PATH="$BUILD_DIR/bin/example_4_web_mvvm"
 
 log "仓库根  : $REPO_ROOT"
