@@ -16,9 +16,13 @@ to a browser over a small HTTP/REST/SSE protocol — with optional HTTPS.
 
 ## Build
 
+The demo builds inside its own isolated tree under `build/flavors/web-demo/`
+(the main build mirrors examples via `add_subdirectory` — see the layout map
+at the top of `scripts/build.sh`):
+
 ```bash
-cmake -B build -DARIA_BUILD_HTTP=ON
-cmake --build build --target example_4_web_mvvm
+cmake -S . -B build/flavors/web-demo -DARIA_BUILD_HTTP=ON
+cmake --build build/flavors/web-demo --target example_4_web_mvvm
 ```
 
 > First-time configure with `ARIA_HTTP_ENABLE_TLS=ON` (the default)
@@ -28,7 +32,7 @@ cmake --build build --target example_4_web_mvvm
 ## Run (plain HTTP)
 
 ```bash
-./build/bin/example_4_web_mvvm
+./build/flavors/web-demo/bin/example_4_web_mvvm
 ```
 
 Then open <http://localhost:19090/> in a browser.
@@ -44,7 +48,7 @@ openssl req -x509 -newkey rsa:2048 -nodes \
     -subj "/CN=localhost"
 
 # Run with TLS — third arg is static-root (empty=disabled):
-./build/bin/example_4_web_mvvm "" /tmp/aria_cert.pem /tmp/aria_key.pem
+./build/flavors/web-demo/bin/example_4_web_mvvm "" /tmp/aria_cert.pem /tmp/aria_key.pem
 ```
 
 Then open <https://localhost:19090/> and accept the self-signed cert

@@ -51,7 +51,7 @@ Task-oriented recipes — short, self-contained, grounded in shipped APIs:
 | 8 | [Writing a new `IViewAdapter`](cookbook/08-writing-a-view-adapter.md) |
 
 The full symbol-level **API reference** is Doxygen-generated:
-`cmake -B build -DARIA_BUILD_DOCS=ON && cmake --build build --target aria_docs`
+`cmake -B build/flavors/docs -DARIA_BUILD_DOCS=ON && cmake --build build/flavors/docs --target aria_docs`
 → `build/docs/html/index.html`.
 
 ## Reference

@@ -44,9 +44,9 @@ function Copy-Dependencies($exePath, $destDir, $msys2Bin) {
     if (-not $msys2Bin) { return }
 
     # 1) 复制项目自身的 DLL（优先从统一输出目录 bin/ 找，其次回退到 modules/）
-    $projectDlls = Get-ChildItem -Path "$RepoRoot/build/bin" -Filter "libaria_*.dll" -ErrorAction SilentlyContinue
+    $projectDlls = Get-ChildItem -Path "$BuildDir/bin" -Filter "libaria_*.dll" -ErrorAction SilentlyContinue
     if (-not $projectDlls) {
-        $projectDlls = Get-ChildItem -Path "$RepoRoot/build/modules" -Filter "libaria_*.dll" -Recurse -ErrorAction SilentlyContinue
+        $projectDlls = Get-ChildItem -Path "$BuildDir/modules" -Filter "libaria_*.dll" -Recurse -ErrorAction SilentlyContinue
     }
     foreach ($dll in $projectDlls) {
         $dest = Join-Path $destDir $dll.Name
@@ -119,7 +119,11 @@ function Copy-Dependencies($exePath, $destDir, $msys2Bin) {
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $DemoRoot  = Split-Path -Parent $ScriptDir
 $RepoRoot  = Split-Path -Parent (Split-Path -Parent $DemoRoot)
-$BuildDir  = Join-Path $RepoRoot "build/examples/1-qt-showcase"
+$BuildDir  = Join-Path $RepoRoot "build/flavors/qt-demo"
+# Per-demo isolated build tree under build/flavors/<name>-demo/ so each
+# demo's cmake cache does not collide with framework or other demos' configs.
+# (build/examples/<name>/ is the main build's add_subdirectory mirror and
+# must NOT double as a standalone tree — see scripts/build.sh layout.)
 $AppPath   = Join-Path $BuildDir "$BuildType\ex_qt_showcase.exe"
 
 # 某些 Windows 生成器（Ninja、Unix Makefiles）不分 Debug/Release 子目录

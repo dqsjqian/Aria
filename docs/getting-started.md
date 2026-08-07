@@ -3,8 +3,8 @@
 ## Build
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
+cmake -B build/flavors/release -DCMAKE_BUILD_TYPE=Release
+cmake --build build/flavors/release -j
 ctest --test-dir build
 ```
 
@@ -173,4 +173,4 @@ SwiftUI, Jetpack Compose, or HTML/DOM by swapping the adapter.
 - Android JNI + Compose MVVM sample:
   [`examples/5-android-jni-mvvm/`](../examples/5-android-jni-mvvm/)
   (Gradle build; see its `scripts/run.sh` or `run.ps1`).
-- Run the benchmark: `./build/benchmark/aria_bench`.
+- Run the benchmark: `./build/flavors/release/benchmark/aria_bench`.

@@ -10,8 +10,10 @@
 #   examples\4-web-mvvm\scripts\run.ps1 Debug --msvc           # 用 MSVC (Visual Studio 生成器)
 #   examples\4-web-mvvm\scripts\run.ps1 Debug --msvc --tls     # MSVC + HTTPS
 #
-# Build dir : build/examples/4-web-mvvm/   (MSYS2)  或  build/examples/4-web-mvvm-msvc/  (MSVC)
+# Build dir : build/flavors/web-demo/      (MSYS2)  或  build/flavors/web-demo-msvc/  (MSVC)
 #             两个工具链隔离，互不污染 CMakeCache
+#             (build/examples/<name>/ is the main build's add_subdirectory
+#              mirror and must not double as a standalone tree)
 
 param(
     [string]$BuildType = "Debug"
@@ -47,9 +49,9 @@ $DemoRoot  = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $RepoRoot  = (Resolve-Path (Join-Path $DemoRoot "../..")).Path
 # MSVC 和 MSYS2 用不同的 build 目录，避免 CMakeCache 生成器冲突
 $BuildDir  = if ($UseMsvc) {
-    Join-Path $RepoRoot "build/examples/4-web-mvvm-msvc"
+    Join-Path $RepoRoot "build/flavors/web-demo-msvc"
 } else {
-    Join-Path $RepoRoot "build/examples/4-web-mvvm"
+    Join-Path $RepoRoot "build/flavors/web-demo"
 }
 
 # ── 探测工具（Git Bash 环境需要 .exe 后缀） ──────────────────────────────

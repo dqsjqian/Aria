@@ -107,10 +107,16 @@ glue you to a single platform, or hide behind macros. **aria** is the opposite:
 ```bash
 git clone https://github.com/dqsjqian/Aria.git
 cd Aria
-cmake -B build
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+cmake -B build/flavors/release -DCMAKE_BUILD_TYPE=Release
+cmake --build build/flavors/release -j
+ctest --test-dir build/flavors/release --output-on-failure
 ```
+
+> `build/` is a *container* for build trees — never configure straight into
+> it. The unified layout (flavors / ide / platforms / examples / dist) is
+> documented at the top of [`scripts/build.sh`](scripts/build.sh); the
+> per-flavor script `scripts/build.sh [release|debug|asan|tsan]` picks the
+> right directory for you.
 
 > First configure pulls [doctest](https://github.com/doctest/doctest) via the
 > bundled `CPM.cmake`. After that everything is offline.
@@ -188,8 +194,8 @@ v143 on the same release gate as macOS, Ubuntu, and MSYS2.
 
 ```bash
 # In the aria tree:
-cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local
-cmake --build build -j && sudo cmake --install build
+cmake -S . -B build/flavors/release -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build build/flavors/release -j && sudo cmake --install build/flavors/release
 ```
 
 ```cmake
@@ -235,22 +241,22 @@ headless console examples that exercise the core with no GUI.
 Build & run example 1 (Qt):
 
 ```bash
-cmake -S . -B build -DARIA_BUILD_QT6=ON
-cmake --build build -j
-./build/examples/1-qt-showcase/ex_qt_showcase
+cmake -S . -B build/flavors/qt-demo -DARIA_BUILD_QT6=ON
+cmake --build build/flavors/qt-demo -j
+./build/flavors/qt-demo/bin/ex_qt_showcase
 ```
 
 Example 4 (web) needs the HTTP adapter; see
 [`examples/4-web-mvvm/README.md`](examples/4-web-mvvm/) for run instructions:
 
 ```bash
-cmake -S . -B build -DARIA_BUILD_HTTP=ON
-cmake --build build --target example_4_web_mvvm
+cmake -S . -B build/flavors/web-demo -DARIA_BUILD_HTTP=ON
+cmake --build build/flavors/web-demo --target example_4_web_mvvm
 ```
 
 The headless examples build by default (`ARIA_BUILD_EXAMPLES=ON`) and run via
 `ctest` (`cross_dylib_abi_smoke`, `todomvc_smoke`) or directly from
-`build/bin/`.
+`build/flavors/<name>/bin/`.
 
 Examples 2 and 3 are **not** part of the CMake tree — open the Xcode project
 and hit Run; example 5 is an Android Studio / Gradle project (NDK r26+):
@@ -347,8 +353,8 @@ requirements). WASM remains planned; the `IViewAdapter` interface is stable.
 ## Test status
 
 ```
-$ ctest --test-dir build --output-on-failure
-Test project /…/aria/build
+$ ctest --test-dir build/flavors/release --output-on-failure
+Test project /…/aria/build/flavors/release
     Start 1: abi_tests           ✅ Passed
     Start 2: core_tests          ✅ Passed
     Start 3: fuzz_tests          ✅ Passed
@@ -421,7 +427,7 @@ set `ARIA_FUZZ_ITERS=1000000`).
 **Learn it:** the [documentation index](docs/index.md) links the guides,
 the [Cookbook](docs/cookbook/README.md) (task-oriented recipes), and the
 contract references. Build the symbol-level **API reference** with
-`cmake -B build -DARIA_BUILD_DOCS=ON && cmake --build build --target aria_docs`.
+`cmake -B build/flavors/docs -DARIA_BUILD_DOCS=ON && cmake --build build/flavors/docs --target aria_docs`.
 
 ## Roadmap
 
