@@ -8,6 +8,7 @@ add_executable(aria_fuzz
     fuzz_cancellation_race.cpp
     fuzz_async_command_dtor.cpp
     fuzz_when_any_race.cpp
+    fuzz_coroutine_scope_drain.cpp
 )
 
 target_include_directories(aria_fuzz PRIVATE
