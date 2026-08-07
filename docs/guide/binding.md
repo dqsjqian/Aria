@@ -13,12 +13,16 @@
 ```cpp
 #include "aria/binding/binding_engine.hpp"
 
+// The engine always needs an adapter — it is the only way it can reach
+// your UI toolkit. `adapter` here is a std::shared_ptr<IViewAdapter>,
+// e.g. std::make_shared<aria::adapters::QtAdapter>().
+
 // Simplest: direct dispatch (single-threaded, no marshal)
-aria::binding::BindingEngine engine;
+aria::binding::BindingEngine engine{adapter};
 
 // Production: SmartMarshal — auto-posts from background threads
-aria::binding::BindingEngine engine(dispatcher,
-    aria::binding::DispatchPolicy::SmartMarshal);
+aria::binding::BindingEngine engine(adapter, dispatcher,
+    aria::binding::BindingEngine::DispatchPolicy::SmartMarshal);
 ```
 
 ### Dispatch Policies
@@ -160,29 +164,53 @@ engine.bind_command(open, button, "documents/report.pdf");
 
 ## Converters
 
-When the VM type doesn't match the view type, insert a converter:
+When the VM type doesn't match the view type, you have two options.
+
+### One-way display: `bind_text_projected`
+
+For a read-only label, pass a plain projection functor (`T -> std::string`).
+No parsing back, no `Converter` needed:
+
+```cpp
+aria::Property<bool> is_admin{true};
+
+// Bool → string for display
+engine.bind_text_projected(is_admin, role_label,
+    [](bool v) -> std::string { return v ? "Admin" : "Guest"; });
+```
+
+### Two-way: `bind_text_converted`
+
+When the view must also write back, supply a `Converter<T, std::string>`:
 
 ```cpp
 #include "aria/binding/converter.hpp"
 
-aria::Property<bool> is_admin{true};
+aria::Property<int> quantity{1};
 
-// Bool → string for display
-engine.bind_text_oneway(
-    aria::binding::convert(is_admin,
-        [](bool v) -> std::string { return v ? "Admin" : "Guest"; }),
-    role_label
-);
+auto conv = aria::binding::converters::int_to_string();
+engine.bind_text_converted(quantity, quantity_field, conv);
 ```
+
+On the View → Model direction a built-in converter reports unparseable
+input through `try_to_model` (returning `std::nullopt`) or by throwing
+`ConversionError`; in both cases the engine **skips the model write**, so
+the previous value stays authoritative rather than being clobbered with a
+default-constructed one.
 
 ### Built-In Converters
 
-| Converter | From | To |
-|-----------|------|----|
-| `convert_bool_to_text` | `bool` | `string` ("true"/"false") |
-| `convert_int_to_text` | `int` | `string` |
-| `convert_double_to_text` | `double` | `string` |
-| `invert_bool` | `bool` | `bool` (negated) |
+All live in `aria::binding::converters` and return a `Converter<T, U>`:
+
+| Factory | From | To |
+|---------|------|----|
+| `identity_string()` | `string` | `string` |
+| `int_to_string()` | `int` | `string` |
+| `double_to_string(int precision = 2)` | `double` | `string` |
+| `bool_to_yes_no()` | `bool` | `string` (`"yes"` / `"no"`; parses `yes`/`true`/`1` and `no`/`false`/`0`) |
+
+For anything else, construct a `Converter<T, U>` directly (or use
+`bind_text_projected` when the binding is one-way).
 
 ---
 

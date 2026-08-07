@@ -17,7 +17,7 @@ Integrating Aria with iOS native UIKit applications. The UIKit adapter provides 
 
 aria::adapters::uikit::UIKitAdapter adapter;
 aria::binding::BindingEngine engine(adapter,
-    aria::binding::DispatchPolicy::SmartMarshal);
+    aria::binding::BindingEngine::DispatchPolicy::SmartMarshal);
 ```
 
 ---
@@ -149,7 +149,7 @@ UIKit widgets must be accessed from the main thread. The adapter assumes all met
     [super viewDidLoad];
 
     _engine = std::make_unique<aria::binding::BindingEngine>(
-        _adapter, aria::binding::DispatchPolicy::SmartMarshal);
+        _adapter, aria::binding::BindingEngine::DispatchPolicy::SmartMarshal);
 
     _engine->bind_text(_vm.query,
         *std::make_shared<aria::adapters::uikit::UIKitView>(self.searchField));

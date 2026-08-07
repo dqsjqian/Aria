@@ -224,6 +224,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Cheap and dependency-free, so it runs before anything is built: a
+      # guide that names a symbol the headers do not define is a broken
+      # promise to the reader, and no compiler ever sees prose. Added after
+      # an audit found four such names shipped in the guides — including one
+      # wrong spelling that had been copied into three adapter docs.
+      - name: Verify documented API symbols exist
+        run: ./scripts/check-docs-api.sh
+
       - name: Install ninja + doxygen + graphviz
         run: brew install ninja doxygen graphviz
 

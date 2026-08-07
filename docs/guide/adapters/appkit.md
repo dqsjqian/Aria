@@ -17,7 +17,7 @@ Integrating Aria with macOS native AppKit applications. The AppKit adapter provi
 
 aria::adapters::appkit::AppKitAdapter adapter;
 aria::binding::BindingEngine engine(adapter,
-    aria::binding::DispatchPolicy::SmartMarshal);
+    aria::binding::BindingEngine::DispatchPolicy::SmartMarshal);
 ```
 
 ---
@@ -194,7 +194,7 @@ AppKit widgets must be accessed from the main thread. The adapter assumes all me
     [super windowDidLoad];
 
     _engine = std::make_unique<aria::binding::BindingEngine>(
-        _adapter, aria::binding::DispatchPolicy::SmartMarshal);
+        _adapter, aria::binding::BindingEngine::DispatchPolicy::SmartMarshal);
 
     _engine->bind_text(_vm.query,
         *std::make_shared<aria::adapters::appkit::AppKitView>(self.searchField));
