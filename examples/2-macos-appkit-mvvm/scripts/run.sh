@@ -2,14 +2,16 @@
 # run.sh — One-shot build & launch for the AppKit demo.
 #
 # What it does:
-#   1. 确保 Aria 的共享库 (libaria_binding / libaria_runtime / libaria_abi)
-#      已经构建在 build/examples/2-macos-appkit-mvvm/ 下（demo 的独立树，
-#      不参与主 CMake 构建；Xcode 产物区同目录），没有就跑一次 cmake。
+#   1. 确保框架 SDK 已安装到 build/dist/tree/（与 demo1/demo4 共享同一个
+#      SDK 树，框架只构建一次；Xcode 工程通过 LIBRARY_SEARCH_PATHS 链接它）。
 #   2. xcodebuild 构建 mac-oc-mvvm.app。
-#   3. 把 Aria 的 dylib 拷到 app 的 Contents/Frameworks/（app 默认 rpath
-#      是 @executable_path/../Frameworks，dylib 是 @rpath/libaria_*.dylib）。
+#   3. 把 Aria 的 dylib 从 SDK 拷到 app 的 Contents/Frameworks/（app 默认
+#      rpath 是 @executable_path/../Frameworks，dylib 是 @rpath/libaria_*.dylib）。
 #   4. 重新 ad-hoc 签名（避免 dylib 跟 bundle 签名不一致）。
 #   5. open app。
+#
+# 本 demo 是纯 Xcode 构建：产物（含 demo2.app symlink）在 build/flavors/appkit-demo/，
+# 不再需要任何 per-demo CMake 树。
 #
 # Usage:
 #   scripts/run.sh             # Debug，构建 + open
@@ -27,7 +29,13 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ARIA_ROOT="$(cd "$PROJECT_DIR/../.." && pwd)"
-BUILD_DIR="${ARIA_ROOT}/build/examples/2-macos-appkit-mvvm"
+# Demo's own tree: this is a pure Xcode build, so the tree only holds the
+# xcodebuild products + the final .app symlink. The framework dylibs come
+# from the shared SDK install (build/flavors/sdk → build/dist/tree), which
+# demo1/demo4 build and install — we reuse it instead of compiling a second
+# copy of the framework.
+BUILD_DIR="${ARIA_ROOT}/build/flavors/appkit-demo"
+SDK_PREFIX="${ARIA_ROOT}/build/dist/tree"
 
 cyan() { printf '\033[0;36m%s\033[0m\n' "$*"; }
 green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
@@ -93,53 +101,57 @@ DEPLOY_TARGET="$(xcodebuild -project "${PROJECT_DIR}/mac-oc-mvvm.xcodeproj" \
 DEPLOY_TARGET="${DEPLOY_TARGET//[[:space:]]/}"
 DEPLOY_TARGET="${DEPLOY_TARGET:-13.0}"
 
-# ── 1. 确保 Aria 核心库已构建 ─────────────────────────────────────────
-# CMake 把所有动态库 / 可执行文件放到 ${BUILD_DIR}/bin/，静态库放到 lib/
-# (CMAKE_RUNTIME/LIBRARY_OUTPUT_DIRECTORY 在 root CMakeLists.txt 里设的)。
-need_build=0
-for lib in \
-    "${BUILD_DIR}/bin/libaria_binding.dylib" \
-    "${BUILD_DIR}/bin/libaria_runtime.dylib" \
-    "${BUILD_DIR}/lib/libaria_abi.a"
-do
-    if [[ ! -f "$lib" ]]; then
-        need_build=1
-        break
+# ── 1. 确保框架 SDK 已构建并安装 ────────────────────────────────────────
+# 与 demo1/demo4 的 run.sh 共用同一个 SDK 树（build/flavors/sdk →
+# build/dist/tree），框架只构建一次。任何框架源码比已安装的 SDK 新就重建
+# ——否则 Xcode 链接旧 dylib 会报 undefined symbol（见 0f142ec 的教训）。
+ensure_sdk() {
+    local sdk_config="$SDK_PREFIX/lib/cmake/aria/ariaConfig.cmake"
+    local newest_src newest_lib
+    if [[ ! -f "$sdk_config" ]]; then
+        need_sdk=1
+    else
+        newest_src="$(find "${ARIA_ROOT}/modules" \
+            -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.mm' \) \
+            -not -path '*/tests/*' -not -path '*/fuzz/*' \
+            -exec stat -f '%m' {} + 2>/dev/null | sort -rn | head -1)"
+        newest_lib="$(stat -f '%m' "$sdk_config" 2>/dev/null)"
+        need_sdk=0
+        if [[ -n "$newest_src" && -n "$newest_lib" && "$newest_src" -gt "$newest_lib" ]]; then
+            need_sdk=1
+        fi
     fi
-done
-
-# 若已构建过，但缓存里的部署目标与本次期望不一致，也要重建——否则旧 dylib
-# 仍带旧 min-os 版本，链接告警会复现。
-if [[ $need_build -eq 0 ]]; then
-    cached_target="$(awk -F= '/^CMAKE_OSX_DEPLOYMENT_TARGET:/{print $2}' \
-        "${BUILD_DIR}/CMakeCache.txt" 2>/dev/null)"
-    [[ "$cached_target" != "$DEPLOY_TARGET" ]] && need_build=1
-fi
-
-# 任何 Aria 框架源码比 dylib 新，也必须重建——否则改过 binding/runtime 的
-# 头文件或实现（例如把某个析构从隐式改成显式，新增导出符号）后，Xcode 链接
-# 旧 dylib 会直接报 undefined symbol。光检查"文件存在 + 部署目标"抓不住这个。
-if [[ $need_build -eq 0 ]]; then
-    newest_src="$(find "${ARIA_ROOT}/modules" \
-        -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.mm' \) \
-        -not -path '*/tests/*' -not -path '*/fuzz/*' \
-        -exec stat -f '%m' {} + 2>/dev/null | sort -rn | head -1)"
-    newest_lib="$(stat -f '%m' "${BUILD_DIR}/bin/libaria_binding.dylib" 2>/dev/null)"
-    if [[ -n "$newest_src" && -n "$newest_lib" && "$newest_src" -gt "$newest_lib" ]]; then
-        need_build=1
+    if [[ "$need_sdk" == "1" ]]; then
+        cyan "[1/4] 构建框架 SDK → $SDK_PREFIX …"
+        # UIKit adapter is NOT built here: it requires an iOS toolchain,
+        # and demo3 (Xcode) compiles it directly without the installed SDK.
+        cmake -S "${ARIA_ROOT}" -B "${ARIA_ROOT}/build/flavors/sdk" \
+            -DCMAKE_BUILD_TYPE="$CONFIG" \
+            -DARIA_BUILD_QT6=ON \
+            -DARIA_BUILD_HTTP=ON \
+            -DARIA_BUILD_APPKIT=ON \
+            -DARIA_BUILD_EXAMPLES=OFF \
+            -DARIA_BUILD_TESTS=OFF \
+            -DARIA_BUILD_BENCHMARK=OFF \
+            > /dev/null
+        cmake --build "${ARIA_ROOT}/build/flavors/sdk" -j > /dev/null
+        # Full re-install: clear lib/ + include/ first so CMake never sees
+        # up-to-date dylibs and skips its install-time rpath rewrite. On a
+        # partial rebuild, skipping the rewrite leaves stale rpaths in the
+        # freshly linked dylibs and install_name_tool then errors on the
+        # next run ("no LC_RPATH ... required for -delete_rpath").
+        cmake -E rm -rf "$SDK_PREFIX/lib" "$SDK_PREFIX/include"
+        cmake --install "${ARIA_ROOT}/build/flavors/sdk" --prefix "$SDK_PREFIX" > /dev/null
+        green "    框架 SDK 就绪：$SDK_PREFIX"
+    else
+        green "[1/4] 框架 SDK 已就绪：$SDK_PREFIX"
     fi
-fi
+}
+ensure_sdk
 
-if [[ $need_build -eq 1 ]]; then
-    cyan "[1/4] 构建 Aria 核心库 (部署目标 macOS ${DEPLOY_TARGET})…"
-    cmake -S "${ARIA_ROOT}" -B "${BUILD_DIR}" \
-        -DARIA_BUILD_TESTS=OFF -DARIA_BUILD_EXAMPLES=OFF -DARIA_BUILD_BENCHMARK=OFF \
-        -DCMAKE_OSX_DEPLOYMENT_TARGET="${DEPLOY_TARGET}" \
-        > /dev/null
-    cmake --build "${BUILD_DIR}" --target aria_binding aria_runtime aria_abi -j
-else
-    green "[1/4] Aria 核心库已在 ${BUILD_DIR}/{bin,lib}/ (部署目标 macOS ${DEPLOY_TARGET})"
-fi
+# 部署目标一致性检查（不再需要 CMake 缓存：dylib 的 min-os 版本由 SDK 树
+# 决定；SDK 用默认部署目标构建，Xcode 工程读到的目标若更高会链接告警。
+# 这里只打印提示，不阻断——SDK 树与 demo 的部署目标都在 macOS 13 档位）。
 
 # 强制用机器的**真实硬件架构**（不是 shell 架构 —— 如果终端以 Rosetta 打开，
 # `uname -m` 会返回 x86_64 即使机器是 Apple Silicon）。避免 xcodebuild 在
@@ -178,9 +190,9 @@ mkdir -p "$FW"
 
 # dylib 的 install name 是 @rpath/libaria_xxx.<SOVERSION>.dylib，
 # 真文件是 .<full-version>.dylib，两者都要在 Frameworks 里（symlink + 实体）。
-# CMAKE_LIBRARY_OUTPUT_DIRECTORY 把所有共享库都放在 ${BUILD_DIR}/bin/。
+# SDK install 把所有共享库放在 ${SDK_PREFIX}/lib/。
 # 用 cp -P 跟着 dylib 全家（实体 + 各级 symlink）一起拷过来。
-SRC_DIR="${BUILD_DIR}/bin"
+SRC_DIR="${SDK_PREFIX}/lib"
 for mod in binding runtime; do
     # 把 libaria_<mod>{.dylib,.<n>.dylib,.<n>.<m>.<p>.dylib} 全拷一遍
     for f in "${SRC_DIR}/libaria_${mod}".dylib "${SRC_DIR}/libaria_${mod}".*.dylib; do
