@@ -1,6 +1,11 @@
 # Build directories
 #   build/ covers all sub-dirs: ide/, flavors/, platforms/, examples/, dist/
+#   Everything belongs UNDER build/ — see the layout map at the top of
+#   scripts/build.sh. `build-*/` is only a safety net for a stray sibling
+#   tree (e.g. a `cmake -B build-foo` typo); do not create those on
+#   purpose, add a flavor under build/flavors/ instead.
 build/
+build-*/
 out/
 cmake-build-*/
 

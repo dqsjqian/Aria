@@ -25,44 +25,44 @@ jobs:
         run: brew install ninja
 
       - name: Configure (Release)
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build/flavors/release -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build -j
+        run: cmake --build build/flavors/release -j
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build/flavors/release --output-on-failure
 
       - name: Configure (ASan + UBSan)
         run: |
-          cmake -S . -B build-asan -G Ninja \
+          cmake -S . -B build/flavors/asan -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DARIA_ENABLE_ASAN=ON \
             -DARIA_ENABLE_UBSAN=ON
 
       - name: Build (sanitized)
-        run: cmake --build build-asan -j
+        run: cmake --build build/flavors/asan -j
 
       - name: Test (sanitized)
-        run: ctest --test-dir build-asan --output-on-failure
+        run: ctest --test-dir build/flavors/asan --output-on-failure
 
       - name: Install Qt6
         run: brew install qt
 
       - name: Configure (Qt6)
         run: |
-          cmake -S . -B build-qt -G Ninja \
+          cmake -S . -B build/flavors/qt -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_QT6=ON \
             -DCMAKE_PREFIX_PATH=$(brew --prefix qt)
 
       - name: Build (Qt6)
-        run: cmake --build build-qt -j
+        run: cmake --build build/flavors/qt -j
 
       - name: Test (Qt6)
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build-qt --output-on-failure
+        run: ctest --test-dir build/flavors/qt --output-on-failure
 
   # ────────────────────────────────────────────────────────────────────
   # Ubuntu — gcc + clang matrix, plus Qt6 dev packages
@@ -96,21 +96,21 @@ jobs:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
         run: |
-          cmake -S . -B build -G Ninja \
+          cmake -S . -B build/flavors/release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_QT6=ON
 
       - name: Build
-        run: cmake --build build -j
+        run: cmake --build build/flavors/release -j
 
       - name: Test
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build/flavors/release --output-on-failure
 
       - name: Install (smoke test for find_package)
         run: |
-          cmake --install build --prefix /tmp/aria-prefix
+          cmake --install build/flavors/release --prefix /tmp/aria-prefix
           test -f /tmp/aria-prefix/lib/cmake/aria/ariaConfig.cmake
 
   # ────────────────────────────────────────────────────────────────────
@@ -145,21 +145,21 @@ jobs:
 
       - name: Configure
         run: |
-          cmake -S . -B build -G Ninja \
+          cmake -S . -B build/flavors/release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_QT6=ON
 
       - name: Build
-        run: cmake --build build -j
+        run: cmake --build build/flavors/release -j
 
       - name: Test
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build/flavors/release --output-on-failure
 
       - name: Install (smoke test)
         run: |
-          cmake --install build --prefix /tmp/aria-prefix
+          cmake --install build/flavors/release --prefix /tmp/aria-prefix
           test -f /tmp/aria-prefix/lib/cmake/aria/ariaConfig.cmake
 
   # ────────────────────────────────────────────────────────────────────
@@ -188,25 +188,25 @@ jobs:
       - name: Configure (MSVC, Release)
         shell: pwsh
         run: |
-          cmake -S . -B build `
+          cmake -S . -B build/flavors/release `
             -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
             -DARIA_BUILD_QT6=ON
 
       - name: Build
         shell: pwsh
-        run: cmake --build build --config Release -j
+        run: cmake --build build/flavors/release --config Release -j
 
       - name: Test
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build/flavors/release -C Release --output-on-failure
 
       - name: Install (smoke test for find_package)
         shell: pwsh
         run: |
-          cmake --install build --config Release --prefix "${env:TEMP}/aria-prefix"
+          cmake --install build/flavors/release --config Release --prefix "${env:TEMP}/aria-prefix"
           if (-not (Test-Path "${env:TEMP}/aria-prefix/lib/cmake/aria/ariaConfig.cmake")) {
             Write-Error "ariaConfig.cmake missing after install"
             exit 1
@@ -216,7 +216,7 @@ jobs:
   # API reference (Doxygen) — builds the `aria_docs` target so a broken
   # Doxyfile or a malformed doc comment fails CI rather than surfacing
   # only when someone tries to publish the reference (ROADMAP P1-F).
-  # Non-blocking to the build matrix; runs on the cheap macOS runner.
+  # Non-blocking to the build/flavors/release matrix; runs on the cheap macOS runner.
   # ────────────────────────────────────────────────────────────────────
   docs:
     name: API docs (Doxygen)
@@ -237,7 +237,7 @@ jobs:
 
       - name: Configure (docs)
         run: |
-          cmake -S . -B build -G Ninja \
+          cmake -S . -B build/flavors/docs -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_DOCS=ON \
             -DARIA_BUILD_TESTS=OFF \
@@ -245,22 +245,22 @@ jobs:
             -DARIA_BUILD_BENCHMARK=OFF
 
       - name: Build API reference
-        run: cmake --build build --target aria_docs
+        run: cmake --build build/flavors/docs --target aria_docs
 
       - name: Sanity-check generated HTML
-        run: test -f build/docs/html/index.html
+        run: test -f build/flavors/docs/docs/html/index.html
 
       - name: Upload API reference artifact
         uses: actions/upload-artifact@v4
         with:
           name: aria-api-reference
-          path: build/docs/html
+          path: build/flavors/docs/docs/html
 
   # ────────────────────────────────────────────────────────────────────
   # Cross-dylib ABI smoke (ROADMAP P2-A) — explicit job that builds the
   # examples (shared libs) and runs ONLY the ABI smoke + headless TodoMVC
   # so an ABI regression is attributed clearly rather than buried in the
-  # full matrix. The same tests also run in the default build matrix
+  # full matrix. The same tests also run in the default build/flavors/docs matrix
   # (examples default ON), this job just makes the intent legible.
   # ────────────────────────────────────────────────────────────────────
   abi-smoke:
@@ -279,17 +279,17 @@ jobs:
           CC: gcc-13
           CXX: g++-13
         run: |
-          cmake -S . -B build -G Ninja \
+          cmake -S . -B build/flavors/abi-smoke -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_SHARED=ON \
             -DARIA_BUILD_EXAMPLES=ON \
             -DARIA_BUILD_BENCHMARK=OFF
 
       - name: Build
-        run: cmake --build build -j
+        run: cmake --build build/flavors/abi-smoke -j
 
       - name: Run ABI smoke + TodoMVC
-        run: ctest --test-dir build -R "cross_dylib_abi_smoke|todomvc_smoke" --output-on-failure
+        run: ctest --test-dir build/flavors/abi-smoke -R "cross_dylib_abi_smoke|todomvc_smoke" --output-on-failure
 
   # ────────────────────────────────────────────────────────────────────
   # clang-tidy gate — runs on macOS (cheapest runner with clang-tidy
@@ -315,12 +315,12 @@ jobs:
 
       - name: Configure (compile_commands.json)
         run: |
-          cmake -S . -B build -G Ninja \
+          cmake -S . -B build/flavors/tidy -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       - name: Build (so generated headers/sources exist)
-        run: cmake --build build -j
+        run: cmake --build build/flavors/tidy -j
 
       - name: Run clang-tidy across modules/*/include
         run: |
@@ -342,11 +342,11 @@ jobs:
           for f in "${files[@]}"; do
             batch+=("$f")
             if [[ ${#batch[@]} -ge 25 ]]; then
-              clang-tidy -p build --warnings-as-errors='*' "${batch[@]}" || rc=1
+              clang-tidy -p build/flavors/tidy --warnings-as-errors='*' "${batch[@]}" || rc=1
               batch=()
             fi
           done
           if [[ ${#batch[@]} -gt 0 ]]; then
-            clang-tidy -p build --warnings-as-errors='*' "${batch[@]}" || rc=1
+            clang-tidy -p build/flavors/tidy --warnings-as-errors='*' "${batch[@]}" || rc=1
           fi
           exit $rc
