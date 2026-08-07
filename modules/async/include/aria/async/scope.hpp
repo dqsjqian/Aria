@@ -144,7 +144,20 @@ public:
         if (!drained) {
             const auto leaked =
                 state_->inflight.load(std::memory_order_acquire);
+            // Hand back any joiner coroutines still parked in
+            // `drain_waiters`. On the drained path `decrement_inflight_`
+            // has already swapped the vector out and resumed them, but on
+            // the timeout path nobody ever will: `inflight` never reaches
+            // zero, so the last-one-out branch cannot fire. Leaving the
+            // handles parked leaks a coroutine frame per joiner *on top of*
+            // the tasks we are already reporting as leaked. Resume them so
+            // the awaiting frames unwind and their destructors run.
+            std::vector<std::function<void()>> stranded;
+            stranded.swap(state_->drain_waiters);
             lk.unlock();
+            for (auto& w : stranded) {
+                try { w(); } catch (...) {}
+            }
             report_async_error(
                 std::string("CoroutineScope: dtor leaked ") +
                 std::to_string(leaked) +
@@ -165,14 +178,30 @@ public:
             return st->inflight.load(std::memory_order_acquire) == 0;
         }
 
-        void await_suspend(std::coroutine_handle<> h) {
+        /// Returns `false` when the scope already drained between
+        /// `await_ready()` and here, telling the compiler to resume the
+        /// awaiting coroutine *in place* on its own frame.
+        ///
+        /// This must NOT call `h.resume()` on the current stack. Doing so
+        /// makes `await_suspend` return into a frame the resumed coroutine
+        /// may already have destroyed, and an exception unwinding out of
+        /// the resumed body would cross `await_suspend`'s frame — both
+        /// undefined behaviour. See contract (3) in the cancellation-resume
+        /// commentary below: "`await_suspend` MUST NOT cause `h.resume()`
+        /// to run on the current stack ... Returning `false` lets the
+        /// compiler resume the caller in place."
+        ///
+        /// The drained check is repeated under the lock because
+        /// `decrement_inflight_` swaps `drain_waiters` out under the same
+        /// lock: either we observe zero and decline to suspend, or we
+        /// enqueue and the last task out is guaranteed to see our entry.
+        bool await_suspend(std::coroutine_handle<> h) {
             std::unique_lock lk(st->mu);
             if (st->inflight.load(std::memory_order_acquire) == 0) {
-                lk.unlock();
-                h.resume();
-                return;
+                return false;// resume in place, on the caller's frame
             }
             st->drain_waiters.emplace_back([h]() mutable { h.resume(); });
+            return true;
         }
 
         void await_resume() const noexcept {}

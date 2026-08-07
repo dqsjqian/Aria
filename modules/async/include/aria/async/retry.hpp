@@ -23,6 +23,7 @@
 //       [&]() { return http::get(url); });
 
 #include "aria/async/task.hpp"
+#include "aria/async/cancellation.hpp"  // OperationCancelled — never retried
 #include "aria/async/executor.hpp"
 #include "aria/async/virtual_time_executor.hpp"  // also serves as IDelayedScheduler
 
@@ -78,6 +79,15 @@ namespace detail {
                 } else {
                     co_return co_await factory();
                 }
+            } catch (const OperationCancelled&) {
+                // Cancellation is NOT a retryable failure. `OperationCancelled`
+                // derives from std::exception, so without this arm it would be
+                // swallowed by the generic handler below and — because the
+                // default `should_retry` returns true unconditionally — the
+                // operation the caller just cancelled would be retried until
+                // `max_attempts` was exhausted. Rethrow immediately so
+                // cancellation propagates to the awaiting frame intact.
+                throw;
             } catch (const std::exception& e) {
                 last = std::current_exception();
                 const bool last_attempt = (attempt + 1 == max_attempts);
@@ -141,7 +151,22 @@ auto retry_with_backoff(int max_attempts,
         [](const std::exception&) { return true; },
         [initial](int attempt) {
             // attempt is 0-based; doubling per failure.
-            return initial * (1 << attempt);
+            //
+            // Two things are guarded here:
+            //
+            //   * `1 << attempt` on a plain `int` is signed-overflow UB from
+            //     attempt 31 onward, and `max_attempts` is caller-supplied
+            //     with no ceiling. The shift is therefore done in
+            //     `unsigned long long`.
+            //   * A doubling sequence reaches absurd delays long before it
+            //     reaches the width of the type: with a 100ms base, attempt
+            //     31 is already ~6.8 years. Clamping the exponent at 20 caps
+            //     the multiplier at ~1e6 (100ms base → ~29 hours), which is
+            //     far beyond any sensible retry window while keeping every
+            //     later attempt well-defined and finite.
+            constexpr int kMaxShift = 20;
+            const int shift = attempt < kMaxShift ? attempt : kMaxShift;
+            return initial * (1ull << shift);
         },
         &timer,
         std::move(factory));
