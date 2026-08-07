@@ -90,8 +90,18 @@ public:
     /// it. Returns nothing; the binding lives until this Selection dies (or
     /// `unbind()`), so a Selection must NOT outlive the list it binds to
     /// without calling `unbind()` first.
+    ///
+    /// Implementation note — why Replace cannot be handled by comparing
+    /// `ch.item`: per the list-diff contract (D-2), a `Replace` event
+    /// carries a pointer to the **new** element, not the one that was
+    /// evicted. Testing `ch.item == cur.get()` therefore never matches on
+    /// Replace, and the documented "a Replace at the selected element's
+    /// slot drops it" behaviour silently never fired. We instead resolve
+    /// the event's slot against the list itself: if the element now sitting
+    /// at `ch.index` is no longer the selected handle, our selection was
+    /// the one displaced.
     void bind_to(ObservableList<T>& source) {
-        source_sub_ = source.observe([this](const ListChange<T>& ch) {
+        source_sub_ = source.observe([this, &source](const ListChange<T>& ch) {
             handle cur = selected_.peek();
             if (!cur) return;
             switch (ch.kind) {
@@ -99,9 +109,18 @@ public:
                     clear();
                     break;
                 case ListChangeKind::Remove:
-                case ListChangeKind::Replace:
-                    // `ch.item` is the element that left its slot.
+                    // `ch.item` IS the removed element (D-2), and the
+                    // framework keeps it alive for the duration of the emit
+                    // (D-3), so pointer identity is authoritative here.
                     if (ch.item == cur.get()) clear();
+                    break;
+                case ListChangeKind::Replace:
+                    // `ch.item` is the NEW element. If it is not our
+                    // selection, and our selection is no longer anywhere in
+                    // the list, it was the element this Replace evicted.
+                    if (ch.item != cur.get() && !source.contains(cur.get())) {
+                        clear();
+                    }
                     break;
                 default:
                     break;  // Insert / Move / ItemChanged keep the selection
@@ -186,18 +205,38 @@ public:
     /// Follow a source list: removed elements (Remove / Replace at slot)
     /// drop out of the selection; Reset clears it. Repositioning keeps the
     /// selection. See `Selection::bind_to`.
+    ///
+    /// As in the single-selection case, `Replace` cannot be resolved by
+    /// comparing `ch.item`: that pointer is the NEW element (D-2). We drop
+    /// any selected handle that is no longer a member of the list.
     void bind_to(ObservableList<T>& source) {
-        source_sub_ = source.observe([this](const ListChange<T>& ch) {
+        source_sub_ = source.observe([this, &source](const ListChange<T>& ch) {
             if (ch.kind == ListChangeKind::Reset) { clear(); return; }
             if (ch.kind != ListChangeKind::Remove &&
                 ch.kind != ListChangeKind::Replace) {
                 return;
             }
             auto v = selected_.peek();
-            auto it = std::find_if(v.begin(), v.end(),
-                [&](const handle& h) { return h.get() == ch.item; });
-            if (it == v.end()) return;
-            v.erase(it);
+            if (v.empty()) return;
+
+            if (ch.kind == ListChangeKind::Remove) {
+                // `ch.item` IS the removed element and is kept alive for the
+                // emit (D-3), so pointer identity is authoritative.
+                auto it = std::find_if(v.begin(), v.end(),
+                    [&](const handle& h) { return h.get() == ch.item; });
+                if (it == v.end()) return;
+                v.erase(it);
+                selected_.set(std::move(v));
+                return;
+            }
+
+            // Replace: drop every selected handle that has left the list.
+            const auto new_end = std::remove_if(v.begin(), v.end(),
+                [&](const handle& h) {
+                    return h.get() != ch.item && !source.contains(h.get());
+                });
+            if (new_end == v.end()) return;  // nothing displaced
+            v.erase(new_end, v.end());
             selected_.set(std::move(v));
         });
     }

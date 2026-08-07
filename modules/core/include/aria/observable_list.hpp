@@ -450,6 +450,28 @@ public:
         emit_(ListChange<T>{ListChangeKind::Reset, 0, nullptr, 0}, 0);
     }
 
+    /// O(1) membership / position query by raw pointer.
+    ///
+    /// Returns the element's current index, or `size()` ("past the end") if
+    /// the pointer is not a member. Takes a shared lock, so it is safe to
+    /// call from an observer callback — events are emitted after the write
+    /// lock is released.
+    ///
+    /// This is the supported way to answer "is my handle still in the list,
+    /// and where?" without copying the list. `Selection::bind_to` relies on
+    /// it to decide whether a `Replace` evicted the selected element: a
+    /// Replace event carries the NEW element (D-2), so comparing the event's
+    /// pointer alone cannot detect displacement.
+    [[nodiscard]] std::size_t index_of(const T* raw) const {
+        return index_of_raw_(raw);
+    }
+
+    /// Convenience wrapper over `index_of`: true iff `raw` is a member.
+    [[nodiscard]] bool contains(const T* raw) const {
+        std::shared_lock lk(mutex_);
+        return index_of_.find(raw) != index_of_.end();
+    }
+
 private:
     struct Slot {
         std::shared_ptr<T> item;
