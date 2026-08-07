@@ -118,6 +118,19 @@ public:
                   std::shared_ptr<runtime::IDispatcher> ui_dispatcher,
                   DispatchPolicy policy = DispatchPolicy::SmartMarshal);
 
+    /// Declared here, defined in binding.cpp — deliberately NOT implicit.
+    ///
+    /// An implicit destructor is generated inline in every consumer TU, and
+    /// it expands the destructors of `per_view_` / `view_alive_` /
+    /// `engine_holders_`. That makes the layout of those private members part
+    /// of the effective ABI: changing one, or merely building the consumer
+    /// against a different standard-library version, would break binary
+    /// compatibility. The C4251 note above argues that the inline template
+    /// *methods* are acceptable, but it does not cover the destructor, which
+    /// every consumer emits whether or not it ever calls a template method.
+    /// Pinning the definition inside the library keeps the layout private.
+    ~BindingEngine();
+
     [[nodiscard]] IViewAdapter& adapter() noexcept { return *adapter_; }
 
     [[nodiscard]] DispatchPolicy dispatch_policy() const noexcept { return policy_; }
@@ -565,12 +578,24 @@ private:
         const bool tracing = ::aria::has_trace_sink();
         const std::string_view platform = adapter_->platform_name();
 
+        // Liveness is established by *locking* the weak token, not by
+        // querying `expired()`. `expired()` is a check-then-use: it can
+        // report "alive" and the sentinel can hit zero before `fn()` runs.
+        // Holding the strong reference for the duration of the call closes
+        // that window and matches what both the commentary above and
+        // lifecycle.md L-32 describe ("the weak handle no-ops the call").
+        //
+        // On the Direct / on-thread paths this is currently redundant —
+        // emission and view destruction cannot interleave on one thread —
+        // but it costs one refcount and removes a foot-gun for any future
+        // caller that is not single-threaded. On the posted path it is load
+        // bearing: the view can be destroyed between the post and the drain.
+
         // Direct path: no dispatcher, or policy explicitly disables
         // marshalling. Drop straight into the inline behaviour.
-        // Even on this path we honour the alive_token so unit tests
-        // exercising "emit after view-destroy" stay safe.
         if (!dispatcher_ || policy_ == DispatchPolicy::Direct) {
-            if (alive_token.expired()) {
+            auto keep_alive = alive_token.lock();
+            if (!keep_alive) {
                 if (tracing) trace_drop_(platform);
                 return;
             }
@@ -580,7 +605,8 @@ private:
         }
         if (policy_ == DispatchPolicy::SmartMarshal &&
             dispatcher_->is_main_thread()) {
-            if (alive_token.expired()) {
+            auto keep_alive = alive_token.lock();
+            if (!keep_alive) {
                 if (tracing) trace_drop_(platform);
                 return;
             }
@@ -593,7 +619,8 @@ private:
         dispatcher_->post(
             [alive_token, fn = std::forward<Fn>(fn),
              platform_copy = std::move(platform_copy)]() mutable {
-                if (alive_token.expired()) {
+                auto keep_alive = alive_token.lock();
+                if (!keep_alive) {
                     if (::aria::has_trace_sink()) trace_drop_(platform_copy);
                     return;   // view died in flight
                 }

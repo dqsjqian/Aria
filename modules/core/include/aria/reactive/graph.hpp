@@ -16,10 +16,18 @@
 //       evaluated in topological order (ascending depth); nodes whose
 //       upstreams did not actually move are skipped, which is what makes
 //       the graph glitch-free.
-//    4. Tracking context. A Derivation declares "I read from X" during
-//       compute via the explicit `dep(x)` API, which the Graph turns into
-//       an Edge. The API is explicit on purpose -- no hidden subscriptions,
-//       no accidental "I just logged a value and now I depend on it".
+//    4. Tracking context. While a Derivation computes, every reactive read
+//       it performs is recorded automatically: `Property::get()` and
+//       `Computed::get()` call into the active TrackingContext themselves,
+//       so a Computed never declares its dependency list. The Graph turns
+//       the recorded reads into Edges and reconciles the edge set after each
+//       compute, which is what lets a dependency set change shape between
+//       evaluations.
+//
+//       `dep(x)` exists as an explicit escape hatch for the case where a
+//       value must be depended upon without its `get()` appearing in the
+//       compute body; `reactive::untracked` is the inverse, suppressing
+//       recording for reads inside its scope.
 //
 //  Threading model
 //  ---------------
@@ -83,9 +91,11 @@ inline FlushTraceFn& flush_trace_hook_() {
     return hook;
 }
 
-/// One "upstream read" record, produced each time a Derivation calls
-/// `dep(source)` during a compute. The Graph's TrackingContext collects
-/// them and reconciles the edge set once compute finishes.
+/// One "upstream read" record. Produced by every reactive read that happens
+/// while a Derivation is computing — `Property::get()` / `Computed::get()`
+/// report themselves, and the explicit `dep(source)` helper routes here too.
+/// The Graph's TrackingContext collects them and reconciles the edge set once
+/// compute finishes.
 struct ReadRecord {
     Node* source;  ///< The upstream node that was read.
 };
@@ -93,8 +103,8 @@ struct ReadRecord {
 /// Per-recompute tracking context for a single Derivation evaluation.
 class TrackingContext {
 public:
-    /// Explicit dependency injection point, invoked from `dep(prop)`.
-    /// Supplied by `reactive::current_tracker()`.
+    /// Records one upstream read. Called by `Property`/`Computed` getters
+    /// during tracked evaluation, and by `dep(prop)`.
     void record_read(Node& src) {
         // Small read sets -- linear de-dup is more than fast enough.
         for (Node* n : reads_) {

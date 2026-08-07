@@ -2,6 +2,7 @@ add_library(aria_abi STATIC
     src/signal.cpp
     src/slot.cpp
     src/callback_boundary.cpp
+    src/version.cpp
 )
 add_library(aria::abi ALIAS aria_abi)
 
