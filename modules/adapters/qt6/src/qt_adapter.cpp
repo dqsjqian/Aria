@@ -180,8 +180,8 @@ std::string QtAdapter::get_text(binding::IView& v) {
         };
         if (auto* le = qobject_cast<QLineEdit*>(o))
             bridge.qt_conn = QObject::connect(le, &QLineEdit::textChanged, fwd);
-        else if (auto* cb = qobject_cast<QComboBox*>(o))
-            bridge.qt_conn = QObject::connect(cb, &QComboBox::currentTextChanged, fwd);
+        else if (auto* combo = qobject_cast<QComboBox*>(o))
+            bridge.qt_conn = QObject::connect(combo, &QComboBox::currentTextChanged, fwd);
         else if (auto* pe = qobject_cast<QPlainTextEdit*>(o))
             bridge.qt_conn = QObject::connect(pe, &QPlainTextEdit::textChanged,
                 [pe, b = &bridge]{
