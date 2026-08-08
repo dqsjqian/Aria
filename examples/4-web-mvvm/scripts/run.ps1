@@ -39,6 +39,7 @@ function Log-Info  { Write-Host "[demo4] $args" -ForegroundColor Blue }
 function Log-Ok    { Write-Host "[demo4] $args" -ForegroundColor Green }
 function Log-Warn  { Write-Host "[demo4] $args" -ForegroundColor Yellow }
 function Log-Err   { Write-Host "[demo4] $args" -ForegroundColor Red }
+function Log-Dim   { Write-Host "  $args" -ForegroundColor DarkGray }
 
 $Port = if ($env:ARIA_DEMO4_PORT) { $env:ARIA_DEMO4_PORT } else { "19090" }
 $Jobs = if ($env:JOBS) { $env:JOBS } else { [Environment]::ProcessorCount }
@@ -321,6 +322,70 @@ if (-not $FinalAppPath) {
 }
 Log-Ok "构建完成：$FinalAppPath"
 
+# -- 复制运行时依赖 DLL 到 exe 目录 --------------------------------------------
+# Standalone 模式下 exe 动态链接 SDK 的 libaria_*.dll 和 MinGW 运行时
+# (libstdc++-6.dll 等)。不复制的话 exe 双击/脚本启动都会因缺 DLL 直接退出。
+function Copy-RuntimeDeps($exePath, $destDir, $msys2Bin) {
+    # 1) 项目自身 DLL（来自 SDK 安装树 bin/）
+    $projectDlls = Get-ChildItem -Path (Join-Path $SdkPrefix "bin") -Filter "libaria_*.dll" -ErrorAction SilentlyContinue
+    foreach ($dll in $projectDlls) {
+        Copy-Item -Path $dll.FullName -Destination $destDir -Force
+        Log-Dim "  copied: $($dll.Name)"
+    }
+
+    # 2) 用 objdump 迭代复制 MSYS2 bin 中的依赖（MinGW runtime + 传递依赖）
+    if (-not $msys2Bin) { return }
+    $objdump = Join-Path $msys2Bin "objdump.exe"
+    if (-not (Test-Path $objdump)) { return }
+
+    function Get-Imports($filePath) {
+        $tmp = [System.IO.Path]::GetTempFileName()
+        & $objdump -p $filePath > $tmp 2>$null
+        $output = Get-Content $tmp
+        Remove-Item $tmp
+        $imports = @()
+        foreach ($line in $output) {
+            if ($line -match "DLL Name:\s*(.+)") {
+                $imports += $matches[1].Trim()
+            }
+        }
+        return $imports
+    }
+
+    $filesToScan = @($exePath)
+    $processed = @{}
+    do {
+        $newFiles = @()
+        foreach ($file in $filesToScan) {
+            $imports = Get-Imports $file
+            foreach ($dllName in $imports) {
+                if ($processed.ContainsKey($dllName)) { continue }
+
+                $destPath = Join-Path $destDir $dllName
+                if (Test-Path $destPath) {
+                    $processed[$dllName] = $true
+                    $newFiles += $destPath
+                    continue
+                }
+
+                $srcPath = Join-Path $msys2Bin $dllName
+                if (Test-Path $srcPath) {
+                    Copy-Item -Path $srcPath -Destination $destDir -Force
+                    Log-Dim "  copied: $dllName"
+                    $processed[$dllName] = $true
+                    $newFiles += $srcPath
+                } else {
+                    $processed[$dllName] = $true
+                }
+            }
+        }
+        $filesToScan = $newFiles
+    } while ($filesToScan.Count -gt 0)
+}
+
+$ExeDir = Split-Path -Parent $FinalAppPath
+Copy-RuntimeDeps -exePath $FinalAppPath -destDir $ExeDir -msys2Bin $Msys2Bin
+
 if ($NoRun) {
     Log-Info "--no-launch 已指定，不启动"
     exit 0
@@ -353,6 +418,17 @@ $Url = "${Scheme}://127.0.0.1:$Port"
 
 # -- 启动服务器（始终启用 static_root → 浏览器同源）----------------------------
 Log-Info "启动 -> $Url  (static_root = $DemoRoot)"
+# ── 修复 PowerShell 5.1 Start-Process 的 Path/PATH 大小写冲突 bug ──────────
+# 环境块里存在多个 PATH 大小写变体时（WorkBuddy 等父进程创建），Start-Process
+# 的 StringDictionary 会抛 ArgumentException "已添加项"。合并到单个大写 PATH。
+$pathVariants = [System.Environment]::GetEnvironmentVariables().Keys | Where-Object { $_ -ieq "path" }
+if ($pathVariants.Count -gt 1) {
+    $pathValue = [Environment]::GetEnvironmentVariable("PATH")
+    foreach ($v in $pathVariants) {
+        [Environment]::SetEnvironmentVariable($v, $null)
+    }
+    [Environment]::SetEnvironmentVariable("PATH", $pathValue)
+}
 if ($UseTls) {
     $proc = Start-Process -FilePath $FinalAppPath -ArgumentList @($DemoRoot, $CertPath, $KeyPath) `
         -PassThru -NoNewWindow
