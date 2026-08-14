@@ -170,7 +170,7 @@ inline int saturate_uint64_to_int(std::uint64_t v,
 /// surface as 0 (a `Property<uint64_t>` should not see negatives but
 /// the underlying widget can dial down past 0).
 inline std::uint64_t int_to_uint64_clamped(int v) noexcept {
-    return v < 0 ? 0ULL : static_cast<std::uint64_t>(v);
+    return v < 0 ? std::uint64_t{0} : static_cast<std::uint64_t>(v);
 }
 
 /// Test-only: drop the dedup memory so a fresh test case can observe
