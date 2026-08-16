@@ -42,7 +42,7 @@ insufficient.
 
 Keep shipped/planned status consistent across:
 
-- `README.md` / `README.zh-CN.md` and their tracked HTML mirrors;
+- `README.md` / `README.en.md` and their tracked HTML mirrors;
 - `docs/architecture.md`;
 - `docs/index.md`;
 - this roadmap;

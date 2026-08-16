@@ -19,7 +19,7 @@
 | [`build-msvc.ps1`](./build-msvc.ps1) | Windows (MSVC / VS 2022) | Framework build + tests + packaging on MSVC | Auto-detects VS 2022 via `vswhere`; uses `build/flavors/msvc/`. |
 | [`check-bench.sh`](./check-bench.sh) | mac/Linux | Nightly bench regression gate | Pairs with `docs/performance.md`. |
 | [`sync-cmake.sh`](./sync-cmake.sh) | mac/Linux | Maintenance: register new `.cpp` files into the right `CMakeLists.txt` | Run after adding source files. |
-| [`open-readme.sh`](./open-readme.sh) | macOS | Open `README.html` / `README.zh-CN.html` in the browser | Convenience. |
+| [`open-readme.sh`](./open-readme.sh) | macOS | Open `README.html` / `README.en.html` in the browser | Convenience. |
 
 > Demos are NOT in this table — see [§2 Running demos](#2-running-demos) below.
 
@@ -153,7 +153,7 @@ build/dist/tree/
 ├── cmake/             # CMake package config for find_package
 ├── examples/          # Example source code (sources only, no demo build artefacts)
 ├── LICENSE
-├── README.md / README.zh-CN.md
+├── README.md / README.en.md
 └── CHANGELOG.md
 ```
 

@@ -58,7 +58,7 @@ add_custom_command(TARGET package-release POST_BUILD
 )
 
 # Step 2c: copy top-level docs
-foreach(doc_file LICENSE README.md README.zh-CN.md CHANGELOG.md)
+foreach(doc_file LICENSE README.md README.en.md CHANGELOG.md)
     if(EXISTS "${PROJECT_SOURCE_DIR}/${doc_file}")
         add_custom_command(TARGET package-release POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different

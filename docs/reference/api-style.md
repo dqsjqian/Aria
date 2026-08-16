@@ -533,8 +533,8 @@ Per [[memory:j61ttodt]]:
 - Version evolution lives only in `CHANGELOG.md` and `README.md`.
 - Comments, documentation, and tests MUST be in English. Chinese is
   permitted only inside `examples/` (per-demo source) and the
-  Chinese localised README files (`README.zh-CN.md` /
-  `README.zh-CN.html`).
+  Chinese localised README files (`README.md` /
+  `README.html`).
 
 ---
 
@@ -548,7 +548,7 @@ Before merging any PR, self-review:
 [ ] Template entries have BOTH a concept constraint AND a one-line static_assert
 [ ] Naming follows PascalCase types / snake_case functions / trailing_underscore_ members
 [ ] No new deprecated aliases
-[ ] No version literals in source; no Chinese comments / docs / tests outside examples/ and README.zh-CN.*
+[ ] No version literals in source; no Chinese comments / docs / tests outside examples/ and README.* (Chinese defaults)
 [ ] Exception what() satisfies the What/Where/How recipe
 [ ] detail/testing namespaces stay in their lanes: detail does NOT appear in public signatures
 [ ] Consistent with the relevant L-N in lifecycle.md; if there's a conflict, fix lifecycle.md first
