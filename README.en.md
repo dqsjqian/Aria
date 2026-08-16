@@ -1,39 +1,48 @@
-# aria
+<div align="center">
 
-> **Modern C++20 MVVM framework — cross-platform, layered, coroutine-first.**
->
-> Targets Windows / macOS / Linux / iOS / Android / Web with a single shared core.
+# ⚡ aria
 
-[![Status](https://img.shields.io/badge/status-v1.0.0-blue.svg)](#)
-[![C++](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](#)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+**Modern C++20 MVVM framework** · cross-platform · layered · coroutine-first
+
+One shared core: Windows / macOS / Linux / iOS / Android / Web
+
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20iOS%20%7C%20Android%20%7C%20Web-lightgrey.svg)](#)
+[![Build](https://img.shields.io/badge/Build-MSYS2%20%7C%20MSVC%20%7C%20Clang-success.svg)](#)
+[![Tests](https://img.shields.io/badge/Tests-75%2B%20passed-brightgreen.svg)](#)
 
 [English](README.en.md) | [简体中文](README.md) | [HTML Version](README.en.html)
 
+</div>
+
 ---
 
-## Why
+## 🎯 How it compares
 
-Existing C++ MVVM offerings either drag in a giant UI framework (Qt is 100+ MB),
-glue you to a single platform, or hide behind macros. **aria** is the opposite:
+| | **aria** | Qt | Flutter | React Native | SwiftUI |
+|---|---|---|---|---|---|
+| **Language** | C++20 | C++ / QML | Dart | JS / TS | Swift |
+| **Core size** | Header-only, ~0 | 100+ MB | ~50 MB SDK | ~200 MB node_modules | Built-in |
+| **Reactive engine** | ✅ Auto dep-tracking (`Computed`, zero-config) | ❌ Manual `connect` | ✅ but locked to Flutter | ✅ but locked to React | ✅ but locked to Apple |
+| **C++20 coroutines** | ✅ `Task<T>` + `co_await` | ⚠️ `QCoroutine` (limited) | — | — | — |
+| **ABI stable** | ✅ Type-erased layer, stable within major | ⚠️ Partial | — | — | — |
+| **UI toolkit** | ✅ Any (Qt / AppKit / UIKit / JNI / Web / WASM) | ❌ Qt only | ❌ Flutter only | ❌ React only | ❌ SwiftUI only |
+| **Cross-platform ViewModel** | ✅ One C++ codebase, 6 platforms | ❌ Rewrite QML per platform | ⚠️ Dart cross-plat, non-native UI | ⚠️ JS cross-plat, non-native UI | ❌ Apple only |
+| **Web** | ✅ HTTP/SSE + WASM (planned) | ❌ | ✅ Web | ❌ | ❌ |
+| **Macro dependency** | Zero macros | Heavy `Q_OBJECT` / `SIGNAL` / `SLOT` | — | — | — |
+| **License** | MIT | LGPL / Commercial | BSD | MIT | Apple proprietary |
 
-- A small **header-only core** built on one unified **reactive dependency
-  graph** (push-color + pull-evaluate). `Property<T>` / `Computed<T>` /
-  `Effect` / `Command<>` / `ObservableList<T>` / `Validator<T>` all share
-  the same engine — Computed is auto-tracking (no explicit deps), and
-  `reactive::batch` / `reactive::untracked` give you fine control when you
-  need it.
-- A **type-erased ABI layer** so non-template parts of the framework can ship
-  as proper shared libraries. `aria-abi` / `aria-runtime` / `aria-binding`
-  (non-template exports) are ABI-stable within a major version; template layers
-  (`aria-core` / `aria-async`) are source-compatible only.
-- A **C++20 coroutine** layer (`Task<T>`, executors, `co_await schedule_on(pool)`) —
-  treat asynchronous work like local code.
-- An adapter abstraction (`IViewAdapter`) so any UI toolkit — Qt6, AppKit, UIKit,
-  JNI/Compose, Emscripten/WebAssembly — can host your view-models with the
-  *same business logic*.
+> In short: **aria extracts the reactive engine from the UI framework and makes it a pure C++20 header-only library. Pick any UI toolkit — one ViewModel runs on six platforms.**
 
-## Architecture (10 modules)
+## ✨ Core features
+
+- 📦 **Header-only core** — `Property<T>` / `Computed<T>` / `Effect` / `Command<>` / `ObservableList<T>` / `Validator<T>` share one reactive dependency-graph engine. `Computed` auto-tracks deps; `reactive::batch` / `reactive::untracked` for fine control.
+- 🔌 **Type-erased ABI layer** — `aria-abi` / `aria-runtime` / `aria-binding` are ABI-stable within a major version; template layers are source-compatible only.
+- ⚡ **C++20 coroutines** — `Task<T>`, executors, `co_await schedule_on(pool)`. Async code reads like sync code.
+- 🖥 **Adapter abstraction** (`IViewAdapter`) — Qt6 / AppKit / UIKit / JNI / HTTP / WASM. Any UI toolkit, same business logic.
+
+## 🏗 Architecture (10 modules)
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -88,7 +97,7 @@ glue you to a single platform, or hide behind macros. **aria** is the opposite:
 | `aria-binding` | `SHARED` | core, runtime | `BindingEngine`, `IViewAdapter`. **ABI-stable** (non-template exports). |
 | Adapters | `SHARED`/`STATIC` | binding | Qt6 / AppKit / UIKit / JNI / HTTP (each opt-in); WASM is planned. |
 
-## Requirements
+## 📋 Requirements
 
 - **CMake** >= 3.20
 - **Compiler** with full C++20 support:
@@ -102,7 +111,7 @@ glue you to a single platform, or hide behind macros. **aria** is the opposite:
 > stack — both build the full framework + tests + adapters from a single
 > tree, no source forks. See ["Windows toolchains"](#windows-toolchains) below.
 
-## Quick start
+## 🚀 Quick start
 
 ```bash
 git clone https://github.com/dqsjqian/Aria.git
@@ -282,7 +291,7 @@ and hit Run; example 5 is an Android Studio / Gradle project (NDK r26+):
 | `ARIA_ENABLE_UBSAN` | OFF | UndefinedBehaviorSanitizer. |
 | `ARIA_ENABLE_TSAN` | OFF | ThreadSanitizer. |
 
-## Hello, world
+## 👋 Hello, world
 
 ```cpp
 #include "aria/aria.hpp"
@@ -304,7 +313,7 @@ increment();   // → "count = 1"
 increment();   // → "count = 2"
 ```
 
-## Async (C++20 coroutines)
+## ⚡ Async (C++20 coroutines)
 
 ```cpp
 #include "aria/async/task.hpp"
@@ -319,7 +328,7 @@ Task<std::string> fetch_user(int id) {
 }
 ```
 
-## Cross-platform mapping
+## 🌍 Cross-platform mapping
 
 | Platform   | UI host        | Adapter                            |
 |------------|----------------|------------------------------------|
@@ -350,7 +359,7 @@ binding layers — fully unit-tested. Qt6, AppKit, UIKit, JNI, and HTTP are
 first-class opt-in adapters in the CMake tree (subject to their platform
 requirements). WASM remains planned; the `IViewAdapter` interface is stable.
 
-## Test status
+## 🧪 Test status
 
 ```
 $ ctest --test-dir build/flavors/release --output-on-failure
@@ -372,7 +381,7 @@ Test project /…/aria/build/flavors/release
 regression tests for the lifecycle / re-entrancy / exception-safety
 invariants pinned in `docs/reference/lifecycle.md` and `docs/reference/error-model.md`.
 
-## Benchmark (Apple M-series, -O3 -DNDEBUG)
+## 📊 Benchmark (Apple M-series, -O3 -DNDEBUG)
 
 | Operation | ns/op |
 |-----------|-------|
@@ -387,7 +396,7 @@ invariants pinned in `docs/reference/lifecycle.md` and `docs/reference/error-mod
 | 10 sets wrapped in `reactive::batch` (notify once)     | 156.1 |
 | Batch update speedup vs individual                      | **1.91×** |
 
-## Framework contracts
+## 📋 Framework contracts
 
 Every non-trivial behaviour Aria promises is pinned in a numbered
 contract document. Each contract item carries an ID (e.g. `L-13`,
@@ -409,7 +418,7 @@ framework-level fuzzers in `modules/core/fuzz/` stress-verify the
 lifecycle invariants (default 50k iterations / fuzzer; nightly runs
 set `ARIA_FUZZ_ITERS=1000000`).
 
-## Capabilities
+## 🗺 Capabilities
 
 | Capability | Type | Where |
 |---|---|---|
@@ -429,7 +438,7 @@ the [Cookbook](docs/cookbook/README.md) (task-oriented recipes), and the
 contract references. Build the symbol-level **API reference** with
 `cmake -B build/flavors/docs -DARIA_BUILD_DOCS=ON && cmake --build build/flavors/docs --target aria_docs`.
 
-## Roadmap
+## 🗺 Roadmap
 
 Aria does not ship public releases — the version stays `1.0.0` and there is no
 version-by-version changelog to maintain. The single source of truth for what
@@ -437,7 +446,7 @@ is *not yet done* (and what has been deliberately deferred) lives in
 [`docs/ROADMAP.md`](docs/ROADMAP.md). For the current capability snapshot, see
 [`CHANGELOG.md`](CHANGELOG.md).
 
-## Contributing
+## 🤝 Contributing
 
 Contributions are welcome! Please open an issue first to discuss design changes.
 
@@ -445,41 +454,25 @@ Contributions are welcome! Please open an issue first to discuss design changes.
 - All changes must pass `ctest --output-on-failure`.
 - New features require tests in the matching `modules/*/tests/` suite.
 
-## Acknowledgments
+## 🙏 Acknowledgments
 
 - [doctest](https://github.com/doctest/doctest) — lightweight test framework
+- [nlohmann_json](https://github.com/nlohmann/json) — JSON for Modern C++
+- [cpp-httplib](https://github.com/yhirose/cpp-httplib) — HTTP/HTTPS server
+- [OpenSSL](https://www.openssl.org/) — TLS 1.2/1.3 (3.5 LTS)
 - [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) — CMake dependency management
 
-## License
+## 📄 License
 
-MIT © 2026 aria contributors
-
-Bundled third-party components retain their own licenses; see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+[MIT](LICENSE) © 2026 aria contributors
 
 ---
 
-## 📖 Alternative Formats
+<div align="center">
 
-This documentation is also available in other formats for better viewing experience:
+**📖 Alternative Formats**
 
-- **[HTML Version](README.en.html)** - Enhanced visual experience with responsive design
-- **[Chinese (Simplified)](README.md)** - Chinese language version
-- **[Chinese (Simplified) HTML](README.html)** - Chinese HTML version
+[HTML Version](README.en.html) · [Chinese](README.md) · [Chinese HTML](README.html)
 
-### Quick Access Script
+</div>
 
-Use the provided script to quickly open HTML versions in your browser:
-
-```bash
-# Open Chinese HTML version (default)
-./scripts/open-readme.sh          # or: ./scripts/open-readme.sh zh
-
-# Open English HTML version
-./scripts/open-readme.sh en
-
-# Open both versions
-./scripts/open-readme.sh all
-```
-
-The HTML versions provide better visual layout, responsive design, and improved code highlighting compared to the Markdown versions.
