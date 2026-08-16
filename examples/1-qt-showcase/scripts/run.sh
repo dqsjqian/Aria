@@ -42,10 +42,11 @@ DEMO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$DEMO_ROOT/../.." && pwd)"
 # Demo's own build tree (standalone: only this demo's objects, not the
 # framework). The framework SDK is built once into build/flavors/sdk/ and
-# installed to build/dist/tree/; the demo links it via find_package.
+# installed to build/dist/sdk/ (NOT build/dist/tree — that prefix is the
+# build.sh release package); the demo links it via find_package.
 BUILD_DIR="$REPO_ROOT/build/flavors/qt-demo"
 SDK_TREE="$REPO_ROOT/build/flavors/sdk"
-SDK_PREFIX="$REPO_ROOT/build/dist/tree"
+SDK_PREFIX="$REPO_ROOT/build/dist/sdk"
 # The .app lands directly under the standalone build tree's root on macOS
 # (CMAKE_RUNTIME_OUTPUT_DIRECTORY is only set by the *framework* CMakeLists,
 # which is not involved in standalone mode).
@@ -65,7 +66,7 @@ fi
 command -v cmake >/dev/null 2>&1 || { warn "cmake 未安装"; exit 1; }
 
 # ── 确保框架 SDK 已构建并安装 ────────────────────────────────────────────────
-# 框架只构建一次（build/flavors/sdk/），install 到 build/dist/tree/，所有
+# 框架只构建一次（build/flavors/sdk/），install 到 build/dist/sdk/，所有
 # CMake demo 共享。任何框架源码比已安装的 SDK 新就重建——否则 demo 会链接
 # 旧 dylib 报 undefined symbol（见 0f142ec 的教训）。
 ensure_sdk() {
@@ -78,7 +79,12 @@ ensure_sdk() {
             -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.mm' \) \
             -not -path '*/tests/*' -not -path '*/fuzz/*' \
             -exec stat -f '%m' {} + 2>/dev/null | sort -rn | head -1)"
-        newest_lib="$(stat -f '%m' "$sdk_config" 2>/dev/null)"
+        # Compare against the actual build artifact, not ariaConfig.cmake:
+        # CMake install keeps the source mtime, and configure_package_config_file
+        # only regenerates when its template changes — the config's mtime can be
+        # arbitrarily older than the real build, which would force a rebuild
+        # on every run. A relinked dylib always gets a fresh mtime.
+        newest_lib="$(stat -f '%m' "$SDK_PREFIX/lib/libaria_runtime.dylib" 2>/dev/null)"
         need_sdk=0
         if [[ -n "$newest_src" && -n "$newest_lib" && "$newest_src" -gt "$newest_lib" ]]; then
             need_sdk=1
@@ -112,9 +118,13 @@ ensure_sdk
 
 # ── Configure（standalone：只配 demo 自己，链接已安装 SDK）────────────────────
 log "配置 CMake..."
+# Pin aria_DIR explicitly: find_package honours a cached aria_DIR over
+# CMAKE_PREFIX_PATH, so after a prefix change (e.g. dist/tree -> dist/sdk)
+# a stale cache would silently resolve to the wrong SDK.
 cmake -S "$DEMO_ROOT" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
     -DARIA_USE_INSTALLED=ON \
+    -Daria_DIR="$SDK_PREFIX/lib/cmake/aria" \
     -DCMAKE_PREFIX_PATH="$SDK_PREFIX;$QT_DIR" \
     >/dev/null
 

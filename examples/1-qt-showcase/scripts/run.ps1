@@ -117,11 +117,11 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $DemoRoot  = Split-Path -Parent $ScriptDir
 $RepoRoot  = Split-Path -Parent (Split-Path -Parent $DemoRoot)
 # Demo's own standalone build tree (only this demo's objects — the framework
-# SDK lives in build/flavors/sdk → install to build/dist/tree, shared with
-# the other CMake demos).
+# SDK lives in build/flavors/sdk → install to build/dist/sdk, shared with
+# the other CMake demos; build/dist/tree is the build.sh release package).
 $BuildDir  = Join-Path $RepoRoot "build/flavors/qt-demo"
 $SdkTree   = Join-Path $RepoRoot "build/flavors/sdk"
-$SdkPrefix = Join-Path $RepoRoot "build/dist/tree"
+$SdkPrefix = Join-Path $RepoRoot "build/dist/sdk"
 # Standalone tree: exe at the root (Ninja / Unix Makefiles) or <Config>/
 # (VS generators). CMAKE_RUNTIME_OUTPUT_DIRECTORY is only set by the
 # *framework* CMakeLists, which is not involved in standalone mode.
@@ -230,7 +230,7 @@ if ($IsMingwLike) {
 
 # -- 确保框架 SDK 已构建并安装 --------------------------------------------------
 # 与 macOS 的 run.sh 同一套设计：框架只构建一次到 build/flavors/sdk/，
-# install 到 build/dist/tree/，demo 用 ARIA_USE_INSTALLED 链接它。
+# install 到 build/dist/sdk/，demo 用 ARIA_USE_INSTALLED 链接它。
 # 任何框架源码比已安装的 SDK 新就重建（避免链接旧 dylib 报 undefined symbol）。
 $SdkConfig = Join-Path $SdkPrefix "lib\cmake\aria\ariaConfig.cmake"
 $NeedSdk = $false
@@ -241,8 +241,13 @@ if (-not (Test-Path $SdkConfig)) {
         -Include *.cpp,*.hpp,*.h,*.mm -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -notmatch '\\tests\\|\\fuzz\\' } |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    $NewestLib = (Get-Item $SdkConfig).LastWriteTime
-    if ($NewestSrc -and $NewestSrc.LastWriteTime -gt $NewestLib) { $NeedSdk = $true }
+    # 与 macOS 的 run.sh 同一基准：比较实际构建产物（DLL），不用 ariaConfig.cmake——
+    # CMake install 保留源 mtime，config 是 configure-time 生成物（模板不变不重
+    # 生成），mtime 可能远旧于真实构建，会导致每次误判重建。
+    $SdkRuntime = Join-Path $SdkPrefix "bin\libaria_runtime.dll"
+    $NewestLib = if (Test-Path $SdkRuntime) { (Get-Item $SdkRuntime).LastWriteTime } else { $null }
+    if (-not $NewestLib) { $NeedSdk = $true }
+    elseif ($NewestSrc -and $NewestSrc.LastWriteTime -gt $NewestLib) { $NeedSdk = $true }
 }
 if ($NeedSdk) {
     Log-Info "构建框架 SDK → $SdkPrefix ..."
@@ -279,10 +284,13 @@ if ($NeedSdk) {
 # -- Configure（standalone：只配 demo 自己，链接已安装 SDK）--------------------
 Log-Info "配置 CMake..."
 $prefixPath = "$SdkPrefix;$QtDir"
+# 显式固定 aria_DIR：find_package 的 aria_DIR cache 优先于 CMAKE_PREFIX_PATH，
+# 前缀变更（dist/tree → dist/sdk）后旧 cache 会静默解析到错误的 SDK。
 $cfgArgs = @(
     "-S", $DemoRoot,
     "-B", $BuildDir,
     "-DARIA_USE_INSTALLED=ON",
+    "-Daria_DIR=$SdkPrefix\lib\cmake\aria",
     "-DCMAKE_PREFIX_PATH=$prefixPath"
 )
 if ($Generator) { $cfgArgs += @("-G", $Generator) }
