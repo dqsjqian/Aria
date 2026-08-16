@@ -57,10 +57,11 @@ DEMO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$DEMO_ROOT/../.." && pwd)"
 # Demo's own build tree (standalone: only this demo's objects, not the
 # framework). The framework SDK is built once into build/flavors/sdk/ and
-# installed to build/dist/tree/; the demo links it via find_package.
+# installed to build/dist/sdk/ (NOT build/dist/tree — that prefix is the
+# build.sh release package); the demo links it via find_package.
 BUILD_DIR="$REPO_ROOT/build/flavors/web-demo"
 SDK_TREE="$REPO_ROOT/build/flavors/sdk"
-SDK_PREFIX="$REPO_ROOT/build/dist/tree"
+SDK_PREFIX="$REPO_ROOT/build/dist/sdk"
 APP_PATH="$BUILD_DIR/example_4_web_mvvm"
 
 log "仓库根  : $REPO_ROOT"
@@ -73,19 +74,31 @@ log "并行度  : $JOBS"
 command -v cmake >/dev/null 2>&1 || { err "cmake 未安装"; exit 1; }
 
 # ── 确保框架 SDK 已构建并安装 ────────────────────────────────────────────────
-# 与 demo1 的 run.sh 共用同一个 SDK 树（build/flavors/sdk → build/dist/tree），
+# 与 demo1 的 run.sh 共用同一个 SDK 树（build/flavors/sdk → build/dist/sdk），
 # 框架只构建一次。任何框架源码比已安装的 SDK 新就重建。
 ensure_sdk() {
     local sdk_config="$SDK_PREFIX/lib/cmake/aria/ariaConfig.cmake"
+    local sdk_targets="$SDK_PREFIX/lib/cmake/aria/ariaTargets.cmake"
     local newest_src newest_lib
     if [[ ! -f "$sdk_config" ]]; then
+        need_sdk=1
+    elif ! grep -q "aria::http" "$sdk_targets" 2>/dev/null; then
+        # SDK 若由 scripts/build.sh 默认流程安装（ARIA_BUILD_HTTP=OFF）则不含
+        # aria::http target；demo4 需要它。config 文件的新旧无法反映构建 flag
+        # 差异，这里显式校验 target 是否存在，缺失则强制重建。
+        log "已安装 SDK 缺少 aria::http（可能由 scripts/build.sh 默认流程安装），重建 SDK …"
         need_sdk=1
     else
         newest_src="$(find "${REPO_ROOT}/modules" \
             -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.mm' \) \
             -not -path '*/tests/*' -not -path '*/fuzz/*' \
             -exec stat -f '%m' {} + 2>/dev/null | sort -rn | head -1)"
-        newest_lib="$(stat -f '%m' "$sdk_config" 2>/dev/null)"
+        # Compare against the actual build artifact, not ariaConfig.cmake:
+        # CMake install keeps the source mtime, and configure_package_config_file
+        # only regenerates when its template changes — the config's mtime can be
+        # arbitrarily older than the real build, which would force a rebuild
+        # on every run. A relinked dylib always gets a fresh mtime.
+        newest_lib="$(stat -f '%m' "$SDK_PREFIX/lib/libaria_runtime.dylib" 2>/dev/null)"
         need_sdk=0
         if [[ -n "$newest_src" && -n "$newest_lib" && "$newest_src" -gt "$newest_lib" ]]; then
             need_sdk=1
@@ -122,9 +135,13 @@ TLS_FLAG="OFF"
 if [[ "$USE_TLS" == "1" ]]; then TLS_FLAG="ON"; fi
 
 log "配置 CMake..."
+# Pin aria_DIR explicitly: find_package honours a cached aria_DIR over
+# CMAKE_PREFIX_PATH, so after a prefix change (e.g. dist/tree -> dist/sdk)
+# a stale cache would silently resolve to the wrong SDK.
 cmake -S "$DEMO_ROOT" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
     -DARIA_USE_INSTALLED=ON \
+    -Daria_DIR="$SDK_PREFIX/lib/cmake/aria" \
     -DARIA_HTTP_ENABLE_TLS=$TLS_FLAG \
     -DCMAKE_PREFIX_PATH="$SDK_PREFIX" \
     >/dev/null

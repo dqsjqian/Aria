@@ -2,7 +2,7 @@
 # run.sh — One-shot build & launch for the AppKit demo.
 #
 # What it does:
-#   1. 确保框架 SDK 已安装到 build/dist/tree/（与 demo1/demo4 共享同一个
+#   1. 确保框架 SDK 已安装到 build/dist/sdk/（与 demo1/demo4 共享同一个
 #      SDK 树，框架只构建一次；Xcode 工程通过 LIBRARY_SEARCH_PATHS 链接它）。
 #   2. xcodebuild 构建 mac-oc-mvvm.app。
 #   3. 把 Aria 的 dylib 从 SDK 拷到 app 的 Contents/Frameworks/（app 默认
@@ -31,11 +31,11 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 ARIA_ROOT="$(cd "$PROJECT_DIR/../.." && pwd)"
 # Demo's own tree: this is a pure Xcode build, so the tree only holds the
 # xcodebuild products + the final .app symlink. The framework dylibs come
-# from the shared SDK install (build/flavors/sdk → build/dist/tree), which
+# from the shared SDK install (build/flavors/sdk → build/dist/sdk), which
 # demo1/demo4 build and install — we reuse it instead of compiling a second
 # copy of the framework.
 BUILD_DIR="${ARIA_ROOT}/build/flavors/appkit-demo"
-SDK_PREFIX="${ARIA_ROOT}/build/dist/tree"
+SDK_PREFIX="${ARIA_ROOT}/build/dist/sdk"
 
 cyan() { printf '\033[0;36m%s\033[0m\n' "$*"; }
 green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
@@ -103,7 +103,7 @@ DEPLOY_TARGET="${DEPLOY_TARGET:-13.0}"
 
 # ── 1. 确保框架 SDK 已构建并安装 ────────────────────────────────────────
 # 与 demo1/demo4 的 run.sh 共用同一个 SDK 树（build/flavors/sdk →
-# build/dist/tree），框架只构建一次。任何框架源码比已安装的 SDK 新就重建
+# build/dist/sdk），框架只构建一次。任何框架源码比已安装的 SDK 新就重建
 # ——否则 Xcode 链接旧 dylib 会报 undefined symbol（见 0f142ec 的教训）。
 ensure_sdk() {
     local sdk_config="$SDK_PREFIX/lib/cmake/aria/ariaConfig.cmake"
@@ -115,7 +115,12 @@ ensure_sdk() {
             -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name '*.mm' \) \
             -not -path '*/tests/*' -not -path '*/fuzz/*' \
             -exec stat -f '%m' {} + 2>/dev/null | sort -rn | head -1)"
-        newest_lib="$(stat -f '%m' "$sdk_config" 2>/dev/null)"
+        # Compare against the actual build artifact, not ariaConfig.cmake:
+        # CMake install keeps the source mtime, and configure_package_config_file
+        # only regenerates when its template changes — the config's mtime can be
+        # arbitrarily older than the real build, which would force a rebuild
+        # on every run. A relinked dylib always gets a fresh mtime.
+        newest_lib="$(stat -f '%m' "$SDK_PREFIX/lib/libaria_runtime.dylib" 2>/dev/null)"
         need_sdk=0
         if [[ -n "$newest_src" && -n "$newest_lib" && "$newest_src" -gt "$newest_lib" ]]; then
             need_sdk=1

@@ -55,9 +55,9 @@ $BuildDir  = if ($UseMsvc) {
     Join-Path $RepoRoot "build/flavors/web-demo"
 }
 # Demo builds STANDALONE against the shared installed SDK
-# (build/flavors/sdk → build/dist/tree), same design as demo1.
+# (build/flavors/sdk → build/dist/sdk), same design as demo1.
 $SdkTree   = Join-Path $RepoRoot "build/flavors/sdk"
-$SdkPrefix = Join-Path $RepoRoot "build/dist/tree"
+$SdkPrefix = Join-Path $RepoRoot "build/dist/sdk"
 
 # ── 探测工具（Git Bash 环境需要 .exe 后缀） ──────────────────────────────
 function Find-Cmd($name) {
@@ -219,17 +219,29 @@ if ($UseTls) {
 }
 
 # -- 确保框架 SDK 已构建并安装（与 demo1 共用；框架只构建一次）----------------
-$SdkConfig = Join-Path $SdkPrefix "lib\cmake\aria\ariaConfig.cmake"
+$SdkConfig  = Join-Path $SdkPrefix "lib\cmake\aria\ariaConfig.cmake"
+$SdkTargets = Join-Path $SdkPrefix "lib\cmake\aria\ariaTargets.cmake"
 $NeedSdk = $false
 if (-not (Test-Path $SdkConfig)) {
+    $NeedSdk = $true
+} elseif (-not (Select-String -Path $SdkTargets -Pattern "aria::http" -Quiet)) {
+    # SDK 若由 build-msvc.ps1 默认流程安装（ARIA_BUILD_HTTP=OFF）则不含
+    # aria::http；demo4 需要它。config 文件的新旧无法反映构建 flag 差异，
+    # 这里显式校验 target 是否存在，缺失则强制重建（与 macOS run.sh 一致）。
+    Log-Info "已安装 SDK 缺少 aria::http（可能由 scripts/build-msvc.ps1 默认流程安装），重建 SDK …"
     $NeedSdk = $true
 } else {
     $NewestSrc = Get-ChildItem -Path (Join-Path $RepoRoot "modules") -Recurse -File `
         -Include *.cpp,*.hpp,*.h,*.mm -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -notmatch '\\tests\\|\\fuzz\\' } |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    $NewestLib = (Get-Item $SdkConfig).LastWriteTime
-    if ($NewestSrc -and $NewestSrc.LastWriteTime -gt $NewestLib) { $NeedSdk = $true }
+    # 与 macOS 的 run.sh 同一基准：比较实际构建产物（DLL），不用 ariaConfig.cmake——
+    # CMake install 保留源 mtime，config 是 configure-time 生成物（模板不变不重
+    # 生成），mtime 可能远旧于真实构建，会导致每次误判重建。
+    $SdkRuntime = Join-Path $SdkPrefix "bin\libaria_runtime.dll"
+    $NewestLib = if (Test-Path $SdkRuntime) { (Get-Item $SdkRuntime).LastWriteTime } else { $null }
+    if (-not $NewestLib) { $NeedSdk = $true }
+    elseif ($NewestSrc -and $NewestSrc.LastWriteTime -gt $NewestLib) { $NeedSdk = $true }
 }
 if ($NeedSdk) {
     Log-Info "构建框架 SDK → $SdkPrefix ..."
@@ -265,10 +277,13 @@ if ($NeedSdk) {
 
 # -- Configure（standalone：只配 demo 自己，链接已安装 SDK）-------------------
 Log-Info "配置 CMake..."
+# 显式固定 aria_DIR：find_package 的 aria_DIR cache 优先于 CMAKE_PREFIX_PATH，
+# 前缀变更（dist/tree → dist/sdk）后旧 cache 会静默解析到错误的 SDK。
 $cfgArgs = @(
     "-S", "$DemoRoot",
     "-B", "$BuildDir",
     "-DARIA_USE_INSTALLED=ON",
+    "-Daria_DIR=$SdkPrefix\lib\cmake\aria",
     "-DARIA_HTTP_ENABLE_TLS=$TlsFlag",
     "-DCMAKE_PREFIX_PATH=$SdkPrefix"
 )
