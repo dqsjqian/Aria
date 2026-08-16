@@ -157,9 +157,25 @@ if [[ "$USE_TLS" == "1" ]]; then
         KEY_PATH="$CERT_DIR/key.pem"
         if [[ ! -s "$CERT_PATH" || ! -s "$KEY_PATH" ]]; then
             log "生成自签名证书 → $CERT_DIR/"
-            openssl req -x509 -newkey rsa:2048 -nodes \
-                -keyout "$KEY_PATH" -out "$CERT_PATH" \
-                -days 365 -subj "/CN=localhost" 2>/dev/null
+            # Unlike the Windows port (run.ps1), macOS ships a usable
+            # `openssl` CLI at /usr/bin/openssl (LibreSSL on Catalina+,
+            # real OpenSSL via Homebrew otherwise), so we can shell out
+            # directly. We just refuse to fail silently: surface the
+            # openssl error and clean up partial files so the next run
+            # retries from scratch instead of trusting a 0-byte PEM.
+            if ! command -v openssl >/dev/null 2>&1; then
+                err "未找到 openssl 命令。请装 Homebrew openssl (brew install openssl) 或"
+                err "通过环境变量指定已有证书：ARIA_DEMO4_CERT=... ARIA_DEMO4_KEY= ..."
+                exit 1
+            fi
+            if ! openssl req -x509 -newkey rsa:2048 -nodes \
+                    -keyout "$KEY_PATH" -out "$CERT_PATH" \
+                    -days 365 -subj "/CN=localhost"; then
+                err "openssl req 失败（退出码 $?）。请检查 openssl 版本，或预生成证书后"
+                err "通过 ARIA_DEMO4_CERT / ARIA_DEMO4_KEY 指定。"
+                rm -f "$CERT_PATH" "$KEY_PATH"
+                exit 1
+            fi
         fi
     fi
     log "证书    : $CERT_PATH"
