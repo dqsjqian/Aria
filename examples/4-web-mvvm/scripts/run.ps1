@@ -404,9 +404,106 @@ if ($UseTls) {
         $KeyPath  = Join-Path $CertDir "key.pem"
         if (-not (Test-Path $CertPath) -or -not (Test-Path $KeyPath)) {
             Log-Info "生成自签名证书 → $CertDir"
-            & openssl req -x509 -newkey rsa:2048 -nodes `
-                -keyout $KeyPath -out $CertPath `
-                -days 365 -subj "/CN=localhost" 2>$null
+            # Self-signed cert via pure .NET BCL — no openssl.exe required.
+            #
+            # Aria's vendored OpenSSL is built static-only with `no-apps`
+            # (see cmake/BuildOpenSSL.cmake), so the SDK never produces an
+            # `openssl` CLI, and most Windows PowerShell sessions have no
+            # `openssl.exe` in PATH at all. Shelling out is therefore
+            # unreliable. We build the PEM pair directly here using:
+            #   * [System.Security.Cryptography.X509Certificates.CertificateRequest]
+            #     for the X.509 leaf
+            #   * [System.Security.Cryptography.RSA] + [System.Numerics.BigInteger]
+            #     to DER-encode an RSAPrivateKey (PKCS#1) from RSAParameters.
+            # Verified end-to-end with `openssl rsa -check` — produces a key
+            # OpenSSL accepts and whose modulus matches the cert's public key.
+
+            # RSAParameters fields are big-endian unsigned. Map through
+            # BigInteger (which expects little-endian two's-comp) and back,
+            # returning DER unsigned INTEGER bytes with the proper 0x00
+            # sign-pad for positive values whose MSB is set.
+            function Script:Int-Bytes([byte[]]$Raw) {
+                if ($Raw -eq $null -or $Raw.Length -eq 0) { return ,([byte]0x00) }
+                $le = [byte[]]::new($Raw.Length + 1)
+                [Array]::Copy($Raw, $le, $Raw.Length)
+                [Array]::Reverse($le, 0, $Raw.Length)
+                $le[$Raw.Length] = 0x00                   # force non-negative sign
+                $v  = [System.Numerics.BigInteger]::new($le)
+                $be = $v.ToByteArray()                    # LE
+                [Array]::Reverse($be)                     # BE
+                if ($be.Length -gt 1 -and $be[0] -eq 0) { # strip sign byte (now at BE front)
+                    $be = $be[1..($be.Length - 1)]
+                }
+                if (($be[0] -band 0x80)) {                # DER positive-INTEGER pad
+                    $out = [byte[]]::new($be.Length + 1)
+                    $out[0] = 0x00
+                    [Array]::Copy($be, 0, $out, 1, $be.Length)
+                    return ,$out
+                }
+                return ,$be
+            }
+
+            function Script:Der-TLV([byte]$Tag, [byte[]]$Value) {
+                $len = $Value.Length
+                $hdr = New-Object 'System.Collections.Generic.List[byte]'
+                $hdr.Add($Tag)
+                if ($len -lt 0x80) {
+                    $hdr.Add([byte]$len)
+                } else {
+                    $lb = [System.BitConverter]::GetBytes($len)
+                    [Array]::Reverse($lb)
+                    $s = 0
+                    while ($s -lt $lb.Length -and $lb[$s] -eq 0) { $s++ }
+                    if ($s -gt 0) { $lb = $lb[$s..($lb.Length - 1)] }
+                    $hdr.Add([byte](0x80 -bor $lb.Length))
+                    foreach ($b in $lb) { $hdr.Add($b) }
+                }
+                foreach ($b in $Value) { $hdr.Add($b) }
+                return ,$hdr.ToArray()
+            }
+
+            $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+            try {
+                $now      = [DateTime]::UtcNow
+                $notAfter = $now.AddDays(365)
+                $req      = New-Object System.Security.Cryptography.X509Certificates.CertificateRequest(
+                    "CN=localhost",
+                    $rsa,
+                    [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+                    [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+                $cert = $req.CreateSelfSigned($now.AddMinutes(-5), $notAfter)
+
+                # cert.pem — Base64(DER) wrapped in PEM headers
+                $certDer = $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+                $certB64 = [Convert]::ToBase64String($certDer, [Base64FormattingOptions]::InsertLineBreaks)
+                $certPem = "-----BEGIN CERTIFICATE-----`r`n$certB64`r`n-----END CERTIFICATE-----`r`n"
+                [System.IO.File]::WriteAllText($CertPath, $certPem, [System.Text.Encoding]::ASCII)
+
+                # key.pem — PKCS#1 RSAPrivateKey built from RSAParameters.
+                # cpp-httplib's OpenSSL backend reads both PKCS#1 and PKCS#8
+                # PEM, and PKCS#1 lets us avoid ExportPkcs8PrivateKey — a .NET
+                # 5+ API not present on Windows PowerShell 5.1's RSACng.
+                $P = $rsa.ExportParameters($true)
+                $ints = New-Object 'System.Collections.Generic.List[byte]'
+                # PKCS#1 v1: leading version INTEGER = 0
+                $ints.AddRange((Der-TLV 0x02 (,( [byte]0x00 ))))
+                $ints.AddRange((Der-TLV 0x02 (Int-Bytes $P.Modulus)))
+                $ints.AddRange((Der-TLV 0x02 (Int-Bytes $P.Exponent)))
+                $ints.AddRange((Der-TLV 0x02 (Int-Bytes $P.D)))
+                $ints.AddRange((Der-TLV 0x02 (Int-Bytes $P.P)))
+                $ints.AddRange((Der-TLV 0x02 (Int-Bytes $P.Q)))
+                $ints.AddRange((Der-TLV 0x02 (Int-Bytes $P.DP)))
+                $ints.AddRange((Der-TLV 0x02 (Int-Bytes $P.DQ)))
+                $ints.AddRange((Der-TLV 0x02 (Int-Bytes $P.InverseQ)))
+                $keyDer = Der-TLV 0x30 $ints.ToArray()
+                $keyB64 = [Convert]::ToBase64String($keyDer, [Base64FormattingOptions]::InsertLineBreaks)
+                $keyPem = "-----BEGIN RSA PRIVATE KEY-----`r`n$keyB64`r`n-----END RSA PRIVATE KEY-----`r`n"
+                [System.IO.File]::WriteAllText($KeyPath, $keyPem, [System.Text.Encoding]::ASCII)
+
+                $cert.Dispose()
+            } finally {
+                $rsa.Dispose()
+            }
         }
     }
     Log-Info "证书    : $CertPath"
