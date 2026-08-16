@@ -171,7 +171,7 @@ rate limiting.
 |---------|--------|---------|---------|-------------|
 | `cpp-httplib` | Yuji Hirose | MIT | HTTP/1.1 + HTTPS server, routing, chunked SSE streams, worker pool | `third_party/cpp-httplib/httplib.h` |
 | `nlohmann::json` | Niels Lohmann | MIT | JSON encode/decode | `third_party/nlohmann_json/include/nlohmann/json.hpp` |
-| `OpenSSL 3.3.x` | OpenSSL Project | Apache-2.0 | TLS 1.2 / 1.3 (when `ARIA_HTTP_ENABLE_TLS=ON`) | `third_party/openssl/` (built from source via `cmake/BuildOpenSSL.cmake`) |
+| `OpenSSL 3.5.x` | OpenSSL Project | Apache-2.0 | TLS 1.2 / 1.3 (when `ARIA_HTTP_ENABLE_TLS=ON`) | `third_party/openssl/` (built from source via `cmake/BuildOpenSSL.cmake`) |
 
 All three are widely-used, battle-tested, openly-licensed. They are
 **vendored** — no network fetch at build time, no system-package

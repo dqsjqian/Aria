@@ -5,7 +5,7 @@
 # system-package dependency):
 #   - cpp-httplib    (Yuji Hirose, MIT)         — HTTP/1.1 server
 #   - nlohmann::json (Niels Lohmann, MIT)        — JSON encode/decode
-#   - OpenSSL 3.3.x  (Apache-2.0; built from source via BuildOpenSSL)
+#   - OpenSSL 3.5.x  (Apache-2.0; built from source via BuildOpenSSL)
 #                                                — TLS 1.2/1.3 (optional)
 #
 # Configure with: cmake -DARIA_BUILD_HTTP=ON ...
