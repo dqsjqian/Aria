@@ -160,6 +160,19 @@ set(_OPENSSL_CONFIGURE_ARGS
     "--libdir=lib"        # 统一输出到 lib/ 而非 lib64/
 )
 
+# MSYS2 MinGW: disable ASM. OpenSSL's generated Makefile uses
+# `CC="gcc" $(PERL) ...` for ASM recipe lines, which requires a Unix
+# shell (sh.exe). MSYS2's sh.exe can't find gcc when invoked from
+# cmake/PowerShell because the MSYS2 runtime strips its own paths from
+# the inherited Windows PATH. Using cmd.exe instead fails on the
+# `CC="gcc"` prefix. Disabling ASM eliminates all shell-dependent
+# recipes — the remaining `gcc -c ...` and `perl ...` commands work
+# fine with cmd.exe. The crypto performance impact is negligible for
+# a demo SDK. MSVC (nmake) and non-Windows platforms keep ASM.
+if(WIN32 AND MINGW)
+    list(APPEND _OPENSSL_CONFIGURE_ARGS "no-asm")
+endif()
+
 # 新版 Clang（Apple Clang 17+ / Clang 16+）对 C99 implicit-int 等更严格，
 # OpenSSL 3.5.x 的宏展开会触发这些错误，需要通过 CFLAGS 抑制
 set(_OPENSSL_EXTRA_CFLAGS "-Wno-implicit-int -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-deprecated-non-prototype")
@@ -284,24 +297,26 @@ exec cp -rf \"\$resolved\" \"\$dst\"
                     GROUP_READ GROUP_EXECUTE
                     WORLD_READ WORLD_EXECUTE)
 
-    # mingw32-make 需要 SHELL 环境变量指向 sh.exe 来执行 Unix shell 语法 recipe。
-    # 同时把 compiler dir (gcc/ar/ranlib)、perl dir、ln-wrapper dir prepend 到
-    # PATH：让 make recipe 能找到编译器、perl，并让 `ln` 命中我们的 cp 包装。
-    # ExternalProject_Add 会在 build 目录里运行 BUILD_COMMAND，无需 cd。
+    # mingw32-make 默认用 sh.exe（如果在 PATH 里）执行 recipe。但 MSYS2 的
+    # sh.exe 从 cmake/PowerShell 调用时 PATH 转换有问题 —— 它看不到 ucrt64/bin，
+    # 导致 gcc 找不到 cc1.exe 的依赖 DLL（libgmp/libmpfr/libmpc/libisl 等）。
+    #
+    # 解决方案：用 no-asm 消除所有 `CC="gcc" perl ...` Unix-shell 语法 recipe
+    # （只剩 `gcc -c ...` 和 `perl ...` 直接调用，cmd.exe 能处理），然后在
+    # BUILD/INSTALL 阶段不设 SHELL、不把 usr/bin 加进 PATH —— 这样 mingw32-make
+    # 回退到 cmd.exe，gcc 继承正确的 Windows PATH，cc1 的 DLL 能找到。
+    #
+    # CONFIGURE 阶段仍需 SHELL=sh.exe + usr/bin（ln-wrapper 是 shell 脚本）。
     set(_OPENSSL_BUILD_COMMAND
         ${CMAKE_COMMAND} -E env
         --modify PATH=path_list_prepend:${_COMPILER_DIR}
-        --modify PATH=path_list_prepend:${_PERL_DIR}
         --modify PATH=path_list_prepend:${_OPENSSL_LN_WRAPPER_DIR}
-        "SHELL=${_OPENSSL_SH_COMMAND}"
         "${_OPENSSL_MAKE_COMMAND}" -j${NPROC}
     )
     set(_OPENSSL_INSTALL_COMMAND
         ${CMAKE_COMMAND} -E env
         --modify PATH=path_list_prepend:${_COMPILER_DIR}
-        --modify PATH=path_list_prepend:${_PERL_DIR}
         --modify PATH=path_list_prepend:${_OPENSSL_LN_WRAPPER_DIR}
-        "SHELL=${_OPENSSL_SH_COMMAND}"
         "${_OPENSSL_MAKE_COMMAND}" install_sw
     )
     set(_OPENSSL_PATH_ENV "")
