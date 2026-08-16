@@ -513,7 +513,7 @@ Reasons:
 
 ### S-40: the project ships zero `deprecated` APIs
 
-Aria's external version stays at 1.0.0 forever; **during evolution
+Aria follows semantic versioning (currently `1.1.0`); **during evolution
 we keep no deprecated aliases**. Every P0/P1 closure breaks all call
 sites outright in the same commit, and migrates the in-tree examples
 / adapters / tests in that commit too.
@@ -529,7 +529,7 @@ Reasons:
 
 Per [[memory:j61ttodt]]:
 - Source code / headers / inline docs / commit messages MUST NOT
-  contain version literals like `v2.x`, `since 1.x`, `v1.0.0`.
+  contain version literals like `v2.x`, `since 1.x`, `v1.x`.
 - Version evolution lives only in `CHANGELOG.md` and `README.md`.
 - Comments, documentation, and tests MUST be in English. Chinese is
   permitted only inside `examples/` (per-demo source) and the
