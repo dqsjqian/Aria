@@ -156,16 +156,33 @@ case "$MODE" in
             echo "✗ CMake not found. Install CMake or set ARIA_ANDROID_CMAKE" >&2
             exit 1
         fi
+        # Ninja: prefer the SDK-bundled ninja (same dir as its cmake), else PATH.
+        # CMake won't auto-discover ninja if it isn't on PATH, and the Android
+        # demo (5-android-jni-mvvm) links the STATIC libraries produced here.
+        ARIA_ANDROID_NINJA="${ARIA_ANDROID_NINJA:-$(dirname "$ARIA_ANDROID_CMAKE")/ninja}"
+        if [[ ! -x "$ARIA_ANDROID_NINJA" ]]; then
+            ARIA_ANDROID_NINJA="$(command -v ninja 2>/dev/null || true)"
+        fi
+        if [[ -z "$ARIA_ANDROID_NINJA" ]]; then
+            echo "✗ ninja not found. Install ninja or set ARIA_ANDROID_NINJA" >&2
+            exit 1
+        fi
         echo "  NDK   : $ANDROID_NDK_ROOT"
         echo "  CMake : $ARIA_ANDROID_CMAKE"
+        echo "  Ninja : $ARIA_ANDROID_NINJA"
         mkdir -p "${BUILD_DIR}"
+        # ARIA_BUILD_SHARED=OFF: Android consumers (5-android-jni-mvvm) link
+        # STATIC .a archives; binding/runtime default to SHARED (.so) which
+        # would break them.
         "$ARIA_ANDROID_CMAKE" -S . -B "${BUILD_DIR}" \
             -G Ninja \
+            -DCMAKE_MAKE_PROGRAM="$ARIA_ANDROID_NINJA" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-21 \
             -DARIA_BUILD_JNI=ON \
+            -DARIA_BUILD_SHARED=OFF \
             -DARIA_BUILD_TESTS=ON \
             -DARIA_BUILD_EXAMPLES=OFF \
             -DARIA_BUILD_QT6=OFF
