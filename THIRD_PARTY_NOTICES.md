@@ -8,8 +8,8 @@ summarized below. Aria itself is licensed under the MIT License (see `LICENSE`).
 
 ## cpp-httplib
 
-- **Version:** bundled single-header (`third_party/cpp-httplib/httplib.h`)
-- **Copyright:** Copyright (c) 2024 Yuji Hirose. All rights reserved.
+- **Version:** v0.53.1 (bundled single-header `third_party/cpp-httplib/httplib.h`)
+- **Copyright:** Copyright (c) 2026 Yuji Hirose. All rights reserved.
 - **License:** MIT — see `third_party/cpp-httplib/LICENSE`
 - **Upstream:** https://github.com/yhirose/cpp-httplib
 
