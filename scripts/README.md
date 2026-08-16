@@ -227,7 +227,7 @@ probes Homebrew `/opt/homebrew/opt/qt`); `JOBS=N` for parallelism.
 Environment variables: `ARIA_DEMO4_PORT=...` (default 19090),
 `ARIA_DEMO4_CERT=...` / `ARIA_DEMO4_KEY=...` to skip self-signed
 cert generation when using `--tls`. First-time `--tls` configure
-builds vendored OpenSSL 3.3 from source (~1-2 min).
+builds vendored OpenSSL 3.5 from source (~1-2 min).
 
 ---
 

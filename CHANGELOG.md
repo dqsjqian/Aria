@@ -68,7 +68,7 @@ without leaving the `IViewAdapter` contract.
 * **JSON via `nlohmann::json`** (Niels Lohmann, MIT, vendored
   single-header). Fuzzed, UTF-8-correct, line/column-precise parse
   errors.
-* **HTTPS via vendored OpenSSL 3.3.x** (Apache-2.0). Built from source
+* **HTTPS via vendored OpenSSL 3.5.x** (Apache-2.0). Built from source
   by `cmake/BuildOpenSSL.cmake` so deployments don't depend on the
   user's system OpenSSL. TLS 1.2 / 1.3, optional mTLS via client CA
   bundle. Configurable via `HttpAdapterConfig::tls_cert_file` /

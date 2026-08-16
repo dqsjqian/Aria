@@ -192,14 +192,14 @@ if ($UseTls) {
                 exit 1
             }
             Remove-Item $opensslDir -Force -ErrorAction SilentlyContinue
-            # .gitmodules pins OpenSSL to 3.3.1 (commit db2ac4f).  Do NOT
+            # .gitmodules pins OpenSSL to 3.5.7 (commit 8cf17aa).  Do NOT
             # blindly clone master — OpenSSL 4.x dev branches have a
             # Configure build-dir path bug that breaks MSYS2 MinGW builds.
             & git clone --depth 1 $subUrl "$opensslDir" 2>&1 | Out-Null
             if ($LASTEXITCODE -eq 0) {
                 Push-Location "$opensslDir"
                 try {
-                    $pinnedCommit = "db2ac4f6ebd8f3d7b2a60882992fbea1269114e2"
+                    $pinnedCommit = "8cf17aaeb4599f8af87fefd810b5b5fee90fe69e"
                     & git fetch --depth 1 origin $pinnedCommit 2>&1 | Out-Null
                     & git checkout $pinnedCommit 2>&1 | Out-Null
                 } finally { Pop-Location }
@@ -210,11 +210,11 @@ if ($UseTls) {
             Log-Err "OpenSSL 克隆失败 (网络问题? 检查代理/防火墙/VPN)"
             Log-Err "手动修复步骤:"
             Log-Err "  1. git clone https://github.com/openssl/openssl.git third_party/openssl"
-            Log-Err "  2. cd third_party/openssl ; git checkout db2ac4f  (OpenSSL 3.3.1)"
+            Log-Err "  2. cd third_party/openssl ; git checkout 8cf17aa  (OpenSSL 3.5.7)"
             Log-Err "  3. 或设置 Git 代理: git config --global http.proxy <你的代理>"
             exit 1
         }
-        Log-Ok "OpenSSL 子模块就绪 (3.3.1 / db2ac4f)"
+        Log-Ok "OpenSSL 子模块就绪 (3.5.7 / 8cf17aa)"
     }
 }
 

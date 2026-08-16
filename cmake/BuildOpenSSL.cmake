@@ -161,7 +161,7 @@ set(_OPENSSL_CONFIGURE_ARGS
 )
 
 # 新版 Clang（Apple Clang 17+ / Clang 16+）对 C99 implicit-int 等更严格，
-# OpenSSL 3.3.x 的宏展开会触发这些错误，需要通过 CFLAGS 抑制
+# OpenSSL 3.5.x 的宏展开会触发这些错误，需要通过 CFLAGS 抑制
 set(_OPENSSL_EXTRA_CFLAGS "-Wno-implicit-int -Wno-incompatible-pointer-types -Wno-int-conversion -Wno-deprecated-non-prototype")
 
 # 如果是 Android，需要设置 NDK 工具链
@@ -369,7 +369,7 @@ set(OPENSSL_INCLUDE_DIR "${OPENSSL_INCLUDE_DIR}" CACHE PATH "" FORCE)
 set(OPENSSL_SSL_LIBRARY "${OPENSSL_SSL_LIBRARY}" CACHE FILEPATH "" FORCE)
 set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_CRYPTO_LIBRARY}" CACHE FILEPATH "" FORCE)
 set(OPENSSL_LIBRARIES "${OPENSSL_SSL_LIBRARY};${OPENSSL_CRYPTO_LIBRARY}" CACHE STRING "" FORCE)
-set(OPENSSL_VERSION "3.3.1" CACHE STRING "" FORCE)
+set(OPENSSL_VERSION "3.5.7" CACHE STRING "" FORCE)
 set(OPENSSL_ROOT_DIR "${OPENSSL_INSTALL_DIR}" CACHE PATH "" FORCE)
 
 # 平台特定的链接依赖
