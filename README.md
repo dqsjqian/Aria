@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ aria
+# ⚡ Aria
 
 **现代 C++20 MVVM 框架** · 跨平台 · 分层架构 · 协程优先
 
