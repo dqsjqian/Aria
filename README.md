@@ -355,7 +355,7 @@ $ ctest --test-dir build --output-on-failure
 
 ## 🗺 路线图
 
-Aria 不对外发版，主版本号永远停留在 `1.0.0`。待办与已延后清单的唯一信息源在 [`docs/ROADMAP.md`](docs/ROADMAP.md)；当前能力快照见 [`CHANGELOG.md`](CHANGELOG.md)。
+Aria 已开源（MIT License），源码托管在 [GitHub](https://github.com/dqsjqian/Aria)。待办与已延后清单的唯一信息源在 [`docs/ROADMAP.md`](docs/ROADMAP.md)；当前能力快照见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 🤝 贡献指南
 

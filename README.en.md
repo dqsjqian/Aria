@@ -440,8 +440,7 @@ contract references. Build the symbol-level **API reference** with
 
 ## 🗺 Roadmap
 
-Aria does not ship public releases — the version stays `1.0.0` and there is no
-version-by-version changelog to maintain. The single source of truth for what
+Aria is open source (MIT License), hosted on [GitHub](https://github.com/dqsjqian/Aria). The single source of truth for what
 is *not yet done* (and what has been deliberately deferred) lives in
 [`docs/ROADMAP.md`](docs/ROADMAP.md). For the current capability snapshot, see
 [`CHANGELOG.md`](CHANGELOG.md).
