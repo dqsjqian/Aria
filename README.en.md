@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ aria
+# ⚡ Aria
 
 **Modern C++20 MVVM framework** · cross-platform · layered · coroutine-first
 
