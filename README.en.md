@@ -20,7 +20,7 @@ One shared core: Windows / macOS / Linux / iOS / Android / Web
 
 ## 🎯 How it compares
 
-| | **aria** | Qt | Flutter | React Native | SwiftUI |
+| | **Aria** | Qt | Flutter | React Native | SwiftUI |
 |---|---|---|---|---|---|
 | **Language** | C++20 | C++ / QML | Dart | JS / TS | Swift |
 | **Core size** | Header-only, ~0 | 100+ MB | ~50 MB SDK | ~200 MB node_modules | Built-in |

@@ -20,7 +20,7 @@
 
 ## 🎯 与主流框架对比
 
-| | **aria** | Qt | Flutter | React Native | SwiftUI |
+| | **Aria** | Qt | Flutter | React Native | SwiftUI |
 |---|---|---|---|---|---|
 | **语言** | C++20 | C++ / QML | Dart | JS / TS | Swift |
 | **核心体积** | 仅头文件，~0 | 100+ MB | ~50 MB SDK | ~200 MB node_modules | 系统内置 |
