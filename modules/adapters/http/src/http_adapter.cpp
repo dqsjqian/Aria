@@ -165,7 +165,10 @@ struct HttpAdapter::Impl {
                 ca);
 
             // Enforce minimum TLS version on the underlying SSL_CTX.
-            SSL_CTX* ctx = s->ssl_context();
+            // cpp-httplib >= 0.19 renamed ssl_context() to tls_context()
+            // and made it backend-agnostic (tls::ctx_t = void*); with the
+            // OpenSSL backend the handle is still an SSL_CTX*.
+            auto* ctx = static_cast<SSL_CTX*>(s->tls_context());
             if (ctx) {
                 int min_ver = TLS1_2_VERSION;
                 if (config.tls_min_version == "1.3") min_ver = TLS1_3_VERSION;
