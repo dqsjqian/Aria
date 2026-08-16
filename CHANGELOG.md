@@ -2,15 +2,16 @@
 
 All notable changes to **aria** are documented here.
 
-> Aria is an internal / not-yet-released project. We deliberately keep the
-> version pinned at **1.0.0** and do **not** publish per-feature semver
-> bumps. This file is therefore not a historical changelog in the usual
-> sense — it is a snapshot of *what the framework currently is* plus a
-> rolling **TODO** list of what is still wanted.
+> Aria is an open-source project (MIT License). We follow semantic
+> versioning: `MAJOR` bumps on breaking changes, `MINOR` on
+> backward-compatible additions. The `1.0.0` → `1.1.0` bump in 2026-08
+> marks the project's first public release. This file is a snapshot of
+> *what the framework currently is* plus a rolling **TODO** list of
+> what is still wanted.
 
 ---
 
-## 1.0.0 — current snapshot
+## 1.1.0 — current snapshot
 
 Aria is a modern C++20 MVVM framework — cross-platform, layered,
 coroutine-first. Everything below is implemented, tested and shipped in
