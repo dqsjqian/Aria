@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aria - Modern C++20 MVVM Framework</title>
+<style>
+  :root {
+    --bg: #f8f9fa;
+    --fg: #212529;
+    --accent: #4361ee;
+    --card-bg: #ffffff;
+    --border: #dee2e6;
+    --muted: #6c757d;
+  }
+  body { font-family: -apple-system, 'SF Pro Text', 'PingFang SC', 'Noto Sans SC', sans-serif; background: var(--bg); color: var(--fg); max-width: 980px; margin: 0 auto; padding: 1.5em; line-height: 1.6; }
+  h1 { color: var(--accent); border-bottom: 2px solid var(--border); padding-bottom: .25em; }
+  h2 { color: var(--fg); margin-top: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: .2em; }
+  h3 { color: var(--fg); margin-top: 1.2em; }
+  h4 { color: var(--muted); margin-top: 1em; }
+  .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1.5em; margin-bottom: 1em; box-shadow: 0 2px 4px rgba(0,0,0,.1); }
+  code { background: #e9ecef; padding: 2px 4px; border-radius: 4px; font-family: 'SF Mono', Menlo, Consolas, monospace; }
+  pre { background: #1e1e2e; color: #e0e0e0; padding: 1em; border-radius: 8px; overflow-x: auto; }
+  pre code { background: none; color: inherit; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid var(--border); padding: .5em .75em; text-align: left; vertical-align: top; }
+  th { background: #e9ecef; }
+  blockquote { border-left: 4px solid var(--accent); margin: 1em 0; padding: .5em 1em; background: #eef1ff; color: var(--muted); }
+  a { color: var(--accent); }
+  .tag { display: inline-block; background: #e9ecef; padding: 2px 8px; border-radius: 12px; font-size: .85em; margin-right: 4px; }
+</style>
+</head>
+<body>
+
+<h1>Aria <code>v1.0.0</code></h1>
+<p><strong>Modern C++20 MVVM framework — cross-platform, layered, coroutine-first.</strong><br>
+Targets Windows / macOS / Linux / iOS / Android / Web with a single shared core.</p>
+<p>
+  <span class="tag">status: v1.0.0</span>
+  <span class="tag">C++20</span>
+  <span class="tag">MIT</span>
+</p>
+<p><a href="README.en.md">English (Markdown)</a> | <a href="README.md">简体中文</a> | <a href="README.html">中文 HTML</a></p>
+
+<div class="card">
+<h2>Why</h2>
+<p>Existing C++ MVVM offerings either drag in a giant UI framework (Qt is 100+ MB), glue you to a single platform, or hide behind macros. <strong>aria</strong> is the opposite:</p>
+<ul>
+<li>A small <strong>header-only core</strong> built on one unified <strong>reactive dependency graph</strong> (push-color + pull-evaluate). <code>Property&lt;T&gt;</code> / <code>Computed&lt;T&gt;</code> / <code>Effect</code> / <code>Command&lt;&gt;</code> / <code>ObservableList&lt;T&gt;</code> / <code>Validator&lt;T&gt;</code> all share the same engine — Computed is auto-tracking (no explicit deps), and <code>reactive::batch</code> / <code>reactive::untracked</code> give you fine control when you need it.</li>
+<li>A <strong>type-erased ABI layer</strong> so non-template parts of the framework can ship as proper shared libraries. <code>aria-abi</code> / <code>aria-runtime</code> / <code>aria-binding</code> (non-template exports) are ABI-stable within a major version; template layers (<code>aria-core</code> / <code>aria-async</code>) are source-compatible only.</li>
+<li>A <strong>C++20 coroutine</strong> layer (<code>Task&lt;T&gt;</code>, executors, <code>co_await schedule_on(pool)</code>) — treat asynchronous work like local code.</li>
+<li>An adapter abstraction (<code>IViewAdapter</code>) so any UI toolkit — Qt6, AppKit, UIKit, JNI/Compose, Emscripten/WebAssembly — can host your view-models with the <em>same business logic</em>.</li>
+</ul>
+</div>
+
+<div class="card">
+<h2>Architecture (10 modules)</h2>
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                        Application                          │
+└───────────────────────────────┬─────────────────────────────┘
+        ┌──────────────────┬─────┴────────────┐
+        ▼                  ▼                  ▼
+  ┌───────────┐      ┌───────────┐      ┌───────────┐   (optional
+  │Qt6 adapter│      │JNI adapter│      │HTTP adapter│   adapters,
+  │AppKit/UIKit│     │ (Android) │      │REST/SSE Web│   opt-in;
+  │           │      │           │      │WASM planned│
+  └─────┬─────┘      └─────┬─────┘      └─────┬─────┘
+        └──────────────────┴──────────────────┘
+                           ▼
+            ┌─────────────────────────────┐
+            │    aria-binding (SHARED)    │
+            │  BindingEngine + IViewAdapter│
+            └──────────────┬──────────────┘
+        ┌──────────────────┴──────────────────┐
+        ▼                                     ▼
+┌─────────────────┐                  ┌─────────────────┐
+│ aria-runtime    │                  │  aria-async     │
+│ (SHARED)        │                  │  (header-only)  │
+│ EventBus        │                  │  Task<T>        │
+│ Container       │                  │  Scheduler      │
+│ Dispatcher      │                  │  Executor       │
+│ Logger          │                  │  schedule_on    │
+└────────┬────────┘                  └────────┬────────┘
+         └────────────────┬───────────────────┘
+                          ▼
+            ┌─────────────────────────────┐
+            │   aria-core (header-only)   │
+            │  Property / Computed / Cmd  │
+            │  ObservableList / Validator │
+            └──────────────┬──────────────┘
+                           ▼
+            ┌─────────────────────────────┐
+            │    aria-abi (STATIC)        │
+            │  Type-erased Signal/Slot    │
+            │  ABI-stable, no templates   │
+            └─────────────────────────────┘</code></pre>
+<table>
+<tr><th>Module</th><th>Type</th><th>Depends on</th><th>Notes</th></tr>
+<tr><td><code>aria-abi</code></td><td><code>STATIC</code></td><td>none</td><td>Type-erased signal/slot. No templates. <strong>ABI-stable.</strong></td></tr>
+<tr><td><code>aria-core</code></td><td>header-only</td><td>abi</td><td>All the templates: <code>Property</code>, <code>Computed</code>, <code>Command</code>, <code>ObservableList</code>, <code>Validator</code>. Source-compatible only (not ABI-stable).</td></tr>
+<tr><td><code>aria-async</code></td><td>header-only</td><td>core</td><td>C++20 <code>Task&lt;T&gt;</code>, executors. Source-compatible only.</td></tr>
+<tr><td><code>aria-runtime</code></td><td><code>SHARED</code></td><td>core, abi</td><td>EventBus / Container / Dispatcher / Logger — singletons live in <strong>one</strong> dylib. <strong>ABI-stable</strong> (non-template exports).</td></tr>
+<tr><td><code>aria-binding</code></td><td><code>SHARED</code></td><td>core, runtime</td><td><code>BindingEngine</code>, <code>IViewAdapter</code>. <strong>ABI-stable</strong> (non-template exports).</td></tr>
+<tr><td>Adapters</td><td><code>SHARED</code>/<code>STATIC</code></td><td>binding</td><td>Qt6 / AppKit / UIKit / JNI / WASM (each opt-in).</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>Requirements</h2>
+<ul>
+<li><strong>CMake</strong> &gt;= 3.20</li>
+<li><strong>Compiler</strong> with full C++20 support:
+  <ul>
+  <li>GCC &gt;= 12 (the MSYS2 UCRT64 toolchain on Windows)</li>
+  <li>Clang &gt;= 15 (AppleClang 15+ on macOS/iOS)</li>
+  <li><strong>MSVC v143 / Visual Studio 2022</strong> (Windows, see below)</li>
+  </ul>
+</li>
+<li><em>(optional)</em> <strong>Qt6</strong> &gt;= 6.4 (for Qt6 adapter and GUI examples)</li>
+</ul>
+<blockquote>
+<p><strong>Windows is supported on two toolchains: MSYS2 UCRT64 (GCC) and MSVC / Visual Studio 2022.</strong> Pick whichever fits your team's existing stack — both build the full framework + tests + adapters from a single tree, no source forks.</p>
+</blockquote>
+</div>
+
+<div class="card">
+<h2>Quick start</h2>
+<pre><code>git clone https://github.com/dqsjqian/aria.git
+cd aria
+cmake -B build
+cmake --build build -j
+ctest --test-dir build --output-on-failure</code></pre>
+<blockquote>
+<p>First configure pulls <a href="https://github.com/doctest/doctest">doctest</a> via the bundled <code>CPM.cmake</code>. After that everything is offline.</p>
+</blockquote>
+
+<h3>One-liner build scripts</h3>
+<pre><code># macOS / Linux
+scripts/build.sh             # release
+scripts/build.sh tests       # release + ctest
+scripts/build.sh asan        # debug + AddressSanitizer + UBSan
+scripts/build.sh tsan        # debug + ThreadSanitizer
+scripts/build.sh clean
+
+# Windows — MSYS2 UCRT64 (GCC + Ninja)
+scripts\build.ps1            # release
+scripts\build.ps1 tests
+scripts\build.ps1 asan
+
+# Windows — MSVC / Visual Studio 2022
+scripts\build-msvc.ps1       # release  (build/flavors/msvc/ tree)
+scripts\build-msvc.ps1 tests
+scripts\build-msvc.ps1 debug
+scripts\build-msvc.ps1 asan  # /fsanitize=address (no UBSan on MSVC)</code></pre>
+
+<h3>Windows toolchains</h3>
+<p>Aria ships with <strong>two parallel build scripts</strong> for Windows. They live side-by-side in <code>scripts/</code>, write to separate build directories, and neither one needs to know about the other.</p>
+<table>
+<tr><th>Toolchain</th><th>Script</th><th>Build dir</th><th>Notes</th></tr>
+<tr><td><strong>MSYS2 UCRT64</strong> (GCC 14+ / Clang 18+)</td><td><code>scripts\build.ps1</code></td><td><code>build/</code></td><td>Lightweight (~300 MB). Pre-installed on most CI images. Auto-detected from <code>C:\msys64\ucrt64\bin</code> and a few other common paths.</td></tr>
+<tr><td><strong>MSVC v143</strong> (VS 2022)</td><td><code>scripts\build-msvc.ps1</code></td><td><code>build/flavors/msvc/</code></td><td>Auto-detects the VS install via <code>vswhere</code>, scrubs MSYS2 env vars (<code>INCLUDE</code> / <code>LIB</code> / <code>CPATH</code> / ...) before running CMake, and uses the <code>Visual Studio 17 2022</code> generator.</td></tr>
+</table>
+<p>You can switch back and forth without <code>clean</code> — the two trees are isolated. CI runs both nightly to make sure neither regresses.</p>
+
+<h4>MSVC one-time setup</h4>
+<pre><code># 1. Install Visual Studio 2022 Build Tools (or the full IDE) with
+#    workload "Desktop development with C++" + "C++ CMake tools".
+# 2. (Optional) install Qt 6 with the msvc2022_64 kit if you need the
+#    Qt6 adapter / Qt showcase.
+# 3. From any PowerShell window:
+scripts\build-msvc.ps1 tests</code></pre>
+
+<h4>MSYS2 one-time setup</h4>
+<pre><code># 1. Install MSYS2 from https://www.msys2.org
+# 2. Open the "MSYS2 UCRT64" shell:
+pacman -Syu
+pacman -S --needed mingw-w64-ucrt-x86_64-toolchain `
+                   mingw-w64-ucrt-x86_64-cmake `
+                   mingw-w64-ucrt-x86_64-ninja git
+# 3. (Optional) Add C:\msys64\ucrt64\bin to your PATH.
+# 4. From any shell:
+scripts\build.ps1 tests</code></pre>
+<p>Rationale for shipping both: aria is coroutine-heavy C++20 code that libstdc++, libc++, <strong>and</strong> the MSVC STL all handle cleanly. Pinning a single Windows toolchain artificially excluded a large chunk of users in the .NET / Visual Studio ecosystem — we now validate against MSVC v143 on the same release gate as macOS, Ubuntu, and MSYS2.</p>
+</div>
+
+<div class="card">
+<h2>Use it from your own project</h2>
+<h4>Option A — <code>find_package</code> after install (recommended for production)</h4>
+<pre><code># In the aria tree:
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build build -j &amp;&amp; sudo cmake --install build</code></pre>
+<pre><code># In your project's CMakeLists.txt:
+find_package(aria 1.0 REQUIRED)
+add_executable(my_app main.cpp)
+target_link_libraries(my_app PRIVATE aria::aria)
+# or pick individual modules: aria::core / ::async / ::runtime / ::binding</code></pre>
+<h4>Option B — vendored (no install)</h4>
+<pre><code>add_subdirectory(third_party/aria EXCLUDE_FROM_ALL)
+target_link_libraries(my_app PRIVATE aria::core aria::async)</code></pre>
+<p>A ready-to-copy template lives in <a href="templates/quickstart/"><code>templates/quickstart/</code></a>.</p>
+</div>
+
+<div class="card">
+<h2>Examples</h2>
+<p>aria ships runnable examples covering <strong>every supported UI toolkit</strong>, plus headless console examples that exercise the core with no GUI.</p>
+<h3>UI showcases — one per toolkit</h3>
+<table>
+<tr><th>#</th><th>Project</th><th>Toolkit</th><th>Build</th><th>What it shows</th></tr>
+<tr><td>1</td><td><strong>qt-showcase</strong></td><td>Qt6 (Widgets)</td><td>CMake (<code>ARIA_BUILD_QT6=ON</code>)</td><td>The <strong>flagship demo</strong>: one app, nine tabs, every public feature — reactive Property/Computed/Effect, Commands, ObservableList + QAbstractListModel, Validator, <code>Task&lt;T&gt;</code> + executors, cancellation, retry, <code>when_all</code>, EventBus, DI Container, Dispatcher, navigation, two-way binding.</td></tr>
+<tr><td>2</td><td><strong>macos-appkit-mvvm</strong></td><td>macOS AppKit (ObjC++)</td><td>Xcode</td><td>Self-contained Xcode project using <code>aria</code> from Objective-C++: an <code>IViewAdapter</code> over <code>NSTextField</code>/<code>NSButton</code>, the same ViewModel driving native AppKit controls.</td></tr>
+<tr><td>3</td><td><strong>ios-oc-uikit-mvvm</strong></td><td>iOS UIKit (ObjC++)</td><td>Xcode</td><td>Self-contained iOS Xcode project: an <code>IViewAdapter</code> over <code>UILabel</code>/<code>UITextField</code>/<code>UIButton</code> (Masonry layout), the same ViewModel on iPhone/iPad.</td></tr>
+<tr><td>4</td><td><strong>web-mvvm</strong></td><td>Web (HTTP/REST/SSE)</td><td>CMake (<code>ARIA_BUILD_HTTP=ON</code>)</td><td>A C++ ViewModel exposed to the browser via <code>HttpAdapter</code> — SSE-pushed state + REST-driven commands, two-way binding, plus a vanilla-JS client (<code>aria_client.js</code>). Optional HTTPS.</td></tr>
+<tr><td>5</td><td><strong>android-jni-mvvm</strong></td><td>Android (JNI + Compose/View)</td><td>Gradle (NDK r26+)</td><td>An Android Studio / Gradle project driving the same C++ ViewModel from Kotlin through the <code>aria-jni</code> adapter.</td></tr>
+</table>
+<h3>Headless / console examples</h3>
+<p>Built with <code>ARIA_BUILD_EXAMPLES=ON</code> (default), no GUI:</p>
+<table>
+<tr><th>Project</th><th>What it shows</th></tr>
+<tr><td><strong>inspector-demo</strong></td><td>CLI reactive-graph flush tracer — prints the push/pull trace of a live graph (diagnostics / <code>TraceSink</code>).</td></tr>
+<tr><td><strong>plugin-property-demo</strong></td><td>Cross-dylib ABI smoke: a host exe + plugin shared library driving a <code>Property&lt;T&gt;</code> purely through the stable, non-template <code>aria::IProperty</code> interface across a DSO boundary. Runs as the <code>cross_dylib_abi_smoke</code> test.</td></tr>
+<tr><td><strong>todomvc</strong></td><td>Headless TodoMVC: <code>ObservableList</code> + two live <code>FilteredList</code> views (active/completed) + <code>Selection</code>, all reacting incrementally. Runs as the <code>todomvc_smoke</code> test.</td></tr>
+</table>
+<p>Build &amp; run example 1 (Qt):</p>
+<pre><code>cmake -S . -B build -DARIA_BUILD_QT6=ON
+cmake --build build -j
+./build/examples/1-qt-showcase/ex_qt_showcase</code></pre>
+<p>Example 4 (web) needs the HTTP adapter; see <a href="examples/4-web-mvvm/"><code>examples/4-web-mvvm/README.md</code></a> for run instructions:</p>
+<pre><code>cmake -S . -B build -DARIA_BUILD_HTTP=ON
+cmake --build build --target example_4_web_mvvm</code></pre>
+<p>The headless examples build by default and run via <code>ctest</code> (<code>cross_dylib_abi_smoke</code>, <code>todomvc_smoke</code>) or directly from <code>build/bin/</code>.</p>
+<p>Examples 2 and 3 are <strong>not</strong> part of the CMake tree — open the Xcode project and hit Run; example 5 is an Android Studio / Gradle project (NDK r26+):</p>
+<ul>
+<li><a href="examples/2-macos-appkit-mvvm/"><code>examples/2-macos-appkit-mvvm/mac-oc-mvvm.xcodeproj</code></a> — macOS AppKit</li>
+<li><a href="examples/3-ios-oc-uikit-mvvm/"><code>examples/3-ios-oc-uikit-mvvm/ios-oc-mvvm.xcodeproj</code></a> — iOS UIKit</li>
+<li><a href="examples/5-android-jni-mvvm/"><code>examples/5-android-jni-mvvm/</code></a> — Android (Gradle)</li>
+</ul>
+
+<h3>Build options</h3>
+<table>
+<tr><th>Option</th><th>Default</th><th>Description</th></tr>
+<tr><td><code>ARIA_BUILD_TESTS</code></td><td>ON</td><td>Build unit tests + ctest registration.</td></tr>
+<tr><td><code>ARIA_BUILD_EXAMPLES</code></td><td>ON</td><td>Build all examples (console + Qt6 when enabled).</td></tr>
+<tr><td><code>ARIA_BUILD_BENCHMARK</code></td><td>ON</td><td>Build the micro-benchmark suite.</td></tr>
+<tr><td><code>ARIA_BUILD_SHARED</code></td><td>ON</td><td>Runtime/binding as <code>.dylib</code>/<code>.so</code>/<code>.dll</code> instead of <code>.a</code>.</td></tr>
+<tr><td><code>ARIA_BUILD_QT6</code></td><td>OFF</td><td>Build Qt6 adapter and GUI examples (requires <code>Qt6Widgets</code>).</td></tr>
+<tr><td><code>ARIA_BUILD_APPKIT</code></td><td>OFF</td><td><strong>(production-grade)</strong> macOS AppKit adapter as a first-class CMake module — built as <code>STATIC</code> + <code>.mm</code>, ships <code>aria::adapters::appkit</code>, passes the full <code>adapter_conformance</code> test battery. Requires <code>APPLE</code>.</td></tr>
+<tr><td><code>ARIA_BUILD_UIKIT</code></td><td>OFF</td><td><strong>(production-grade)</strong> iOS UIKit adapter as a first-class CMake module — built as <code>STATIC</code> + <code>.mm</code>, ships <code>aria::adapters::uikit</code>, passes the in-app conformance battery (25/25 on iPhone 17 Pro Max). Requires <code>APPLE</code>.</td></tr>
+<tr><td><code>ARIA_BUILD_JNI</code></td><td>OFF</td><td>Build Android JNI adapter as a first-class CMake module — built as <code>STATIC</code>, ships <code>aria::adapters::jni</code>, implementing the same <code>IViewAdapter</code> contract as Qt/AppKit/UIKit via reflective JNI dispatch. Requires an Android NDK toolchain (<strong>NDK r26+</strong>).</td></tr>
+<tr><td><code>ARIA_BUILD_WASM</code></td><td>OFF</td><td><em>(planned)</em> Build WebAssembly adapter.</td></tr>
+<tr><td><code>ARIA_ENABLE_ASAN</code></td><td>OFF</td><td>AddressSanitizer.</td></tr>
+<tr><td><code>ARIA_ENABLE_UBSAN</code></td><td>OFF</td><td>UndefinedBehaviorSanitizer.</td></tr>
+<tr><td><code>ARIA_ENABLE_TSAN</code></td><td>OFF</td><td>ThreadSanitizer.</td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>Hello, world</h2>
+<pre><code>#include "aria/aria.hpp"
+using namespace aria;
+
+Property&lt;int&gt; count{0};
+
+// No explicit dependency list — every Property::get() inside the lambda
+// is auto-tracked on first evaluation.
+Computed&lt;std::string&gt; label([&amp;]{
+    return "count = " + std::to_string(count.get());
+});
+
+Command&lt;&gt; increment([&amp;]{ count = count.get() + 1; });
+
+auto sub = label.bind([](const std::string&amp; s) { std::cout &lt;&lt; s &lt;&lt; '\n'; });
+
+increment();   // → "count = 1"
+increment();   // → "count = 2"</code></pre>
+</div>
+
+<div class="card">
+<h2>Async (C++20 coroutines)</h2>
+<pre><code>#include "aria/async/task.hpp"
+#include "aria/async/executor.hpp"
+using namespace aria::async;
+
+Task&lt;std::string&gt; fetch_user(int id) {
+    co_await schedule_on(network_pool);      // jump to worker thread
+    auto raw = http::get("/users/" + std::to_string(id));
+    co_await schedule_on(main_dispatcher);   // jump back to UI thread
+    co_return parse(raw);
+}</code></pre>
+</div>
+
+<div class="card">
+<h2>Cross-platform mapping</h2>
+<table>
+<tr><th>Platform</th><th>UI host</th><th>Adapter</th></tr>
+<tr><td>Windows</td><td>Qt6 / WinUI</td><td><code>aria-qt6</code> ✅ ready (MSYS2 UCRT64 + MSVC 2022)</td></tr>
+<tr><td>macOS</td><td>AppKit / Qt6</td><td><code>aria-qt6</code> ✅ ready; AppKit ✅ ready (example 2)</td></tr>
+<tr><td>Linux</td><td>Qt6 / GTK</td><td><code>aria-qt6</code> ✅ ready</td></tr>
+<tr><td>iOS</td><td>UIKit / SwiftUI bridge</td><td>UIKit ✅ ready (example 3); <code>aria-uikit</code> module planned</td></tr>
+<tr><td>Android</td><td>Compose / View</td><td><code>aria-jni</code> ✅ ready (NDK r26+)</td></tr>
+<tr><td><strong>Web (server-driven)</strong></td><td><strong>HTML/JS in browser</strong></td><td><strong><code>aria-http</code> ✅ ready (REST + SSE; example 4)</strong></td></tr>
+<tr><td>Web (in-browser C++)</td><td>DOM via WASM</td><td><code>aria-wasm</code> planned</td></tr>
+</table>
+<p>The HTTP adapter ships a small server (<code>HttpAdapter</code>) that exposes any ViewModel over a JSON REST + Server-Sent-Events protocol, plus a vanilla-JS browser SDK (<code>aria_client.js</code>). The server is built on the vendored single-header <strong>cpp-httplib</strong> (HTTP/1.1 + SSE) and <strong>nlohmann::json</strong> (encode/decode) — both committed under <code>third_party/</code>, so the adapter adds no new external build dependency; aria itself owns the wire protocol, view registry, subscription dispatch and SSE fan-out. It is the right shape for desktop apps that want a web UI on the side, headless services, and local debug dashboards. The WASM adapter — which compiles C++ business logic into the browser sandbox — solves a different, more constrained problem and remains on the roadmap. See <a href="docs/rfc/0001-http-adapter.md">RFC 0001</a> for the design.</p>
+<p>The <strong>current release</strong> ships the platform-agnostic core, runtime, async, and binding layers — fully unit-tested. Qt6, AppKit, UIKit, JNI, and HTTP are first-class opt-in adapters in the CMake tree (subject to their platform requirements). WASM remains planned; the <code>IViewAdapter</code> interface is stable.</p>
+</div>
+
+<div class="card">
+<h2>Test status</h2>
+<pre><code>$ ctest --test-dir build --output-on-failure
+Test project /…/aria/build
+    Start 1: abi_tests           ✅ Passed
+    Start 2: core_tests          ✅ Passed
+    Start 3: fuzz_tests          ✅ Passed
+    Start 4: async_tests         ✅ Passed
+    Start 5: runtime_tests       ✅ Passed
+    Start 6: binding_tests       ✅ Passed
+    Start 7: qt6_tests           ✅ Passed   (when ARIA_BUILD_QT6=ON)
+    Start 8: appkit_conformance  ✅ Passed   (Apple-only)
+    Start 9: appkit_table_source ✅ Passed   (Apple-only)
+
+100% tests passed, 0 tests failed (up to 9 suites, depending on options)</code></pre>
+<p>75+ individual test cases across the suites, including dedicated regression tests for the lifecycle / re-entrancy / exception-safety invariants pinned in <a href="docs/reference/lifecycle.md"><code>docs/reference/lifecycle.md</code></a> and <a href="docs/reference/error-model.md"><code>docs/reference/error-model.md</code></a>. The build tree also includes a cross-dylib ABI smoke (<code>cross_dylib_abi_smoke</code>) and a headless TodoMVC (<code>todomvc_smoke</code>).</p>
+</div>
+
+<div class="card">
+<h2>Benchmark (Apple M-series, -O3 -DNDEBUG)</h2>
+<table>
+<tr><th>Operation</th><th>ns/op</th></tr>
+<tr><td><code>Property&lt;int&gt;::get()</code></td><td>10.4</td></tr>
+<tr><td><code>Property&lt;int&gt;::set()</code> no observers</td><td>28.5</td></tr>
+<tr><td><code>Property&lt;int&gt;::set()</code> 1 observer</td><td>29.3</td></tr>
+<tr><td><code>Property&lt;int&gt;::set()</code> 10 observers</td><td>45.9</td></tr>
+<tr><td>Subscribe + auto-unsubscribe cycle</td><td>54.9</td></tr>
+<tr><td>Computed chain x5 (set + recompute + get)</td><td>289.1</td></tr>
+<tr><td><code>EventBus::publish</code> (1 subscriber)</td><td>13.4</td></tr>
+<tr><td><code>Container::resolve&lt;Singleton&gt;</code></td><td>7.6</td></tr>
+<tr><td>10 sets wrapped in <code>reactive::batch</code> (notify once)</td><td>156.1</td></tr>
+<tr><td>Batch update speedup vs individual</td><td><strong>1.91×</strong></td></tr>
+</table>
+</div>
+
+<div class="card">
+<h2>Framework contracts</h2>
+<p>Every non-trivial behaviour Aria promises is pinned in a numbered contract document. Each contract item carries an ID (e.g. <code>L-13</code>, <code>E-22</code>, <code>LD-7</code>, <code>D-4</code>, <code>S-31</code>) so a failing assertion or PR review comment can point straight at the canonical description.</p>
+<table>
+<tr><th>Document</th><th>Prefix</th><th>Scope</th></tr>
+<tr><td><a href="docs/reference/api-style.md"><code>docs/reference/api-style.md</code></a></td><td><code>S-N</code></td><td>Naming, namespace, error and async-entry style</td></tr>
+<tr><td><a href="docs/reference/lifecycle.md"><code>docs/reference/lifecycle.md</code></a></td><td><code>L-N</code></td><td>Threading, subscription, reactive flush, view-destroy, async cancel/dtor invariants</td></tr>
+<tr><td><a href="docs/reference/error-model.md"><code>docs/reference/error-model.md</code></a></td><td><code>E-N</code></td><td><code>aria::Error</code> / <code>ErrorKind</code> taxonomy and per-subsystem error contracts</td></tr>
+<tr><td><a href="docs/reference/list-diff-contract.md"><code>docs/reference/list-diff-contract.md</code></a></td><td><code>LD-N</code></td><td><code>Insert / Remove / Replace / Move / Reset / ItemChanged</code> semantics</td></tr>
+<tr><td><a href="docs/reference/diagnostics.md"><code>docs/reference/diagnostics.md</code></a></td><td><code>D-N</code></td><td><code>aria::TraceEvent</code> + <code>aria::TraceSink</code> protocol</td></tr>
+<tr><td><a href="docs/reference/performance.md"><code>docs/reference/performance.md</code></a></td><td><code>PERF-N</code></td><td>Complexity bounds and per-operation baselines for every public API</td></tr>
+</table>
+<p>The P0 hard-bedrock pass (see CHANGELOG → <em>Latest framework-grade hardening</em>) closed every open contract above; the seven framework-level fuzzers in <code>modules/core/fuzz/</code> stress-verify the lifecycle invariants (default 50k iterations / fuzzer; nightly runs set <code>ARIA_FUZZ_ITERS=1000000</code>).</p>
+</div>
+
+<div class="card">
+<h2>Capabilities</h2>
+<table>
+<tr><th>Capability</th><th>Type</th><th>Where</th></tr>
+<tr><td>Reactive state</td><td><code>Property&lt;T&gt;</code> / <code>Computed&lt;T&gt;</code> / <code>Effect</code></td><td><code>aria/reactive/reactive.hpp</code></td></tr>
+<tr><td>Commands</td><td><code>Command&lt;Args...&gt;</code> (reactive <code>can_execute</code>)</td><td><code>aria/command.hpp</code></td></tr>
+<tr><td>Collections</td><td><code>ObservableList&lt;T&gt;</code> + derived <code>Filtered/Sorted/Mapped/Distinct/Grouped/Paged</code></td><td><code>aria/observable_list.hpp</code>, <code>aria/derived/*</code></td></tr>
+<tr><td>Selection</td><td><code>Selection&lt;T&gt;</code> / <code>MultiSelection&lt;T&gt;</code> (SE-1..SE-5)</td><td><code>aria/selection.hpp</code></td></tr>
+<tr><td>Validation</td><td><code>Validator&lt;T&gt;</code> / <code>FormValidator</code> / <code>ValidationState</code> + async rules</td><td><code>aria/validator.hpp</code>, <code>aria/binding/form.hpp</code>, <code>aria/async/async_validator.hpp</code></td></tr>
+<tr><td>Async</td><td><code>Task&lt;T&gt;</code> / <code>AsyncCommand</code> / <code>with_timeout</code> / <code>when_any</code> / <code>when_all</code> / <code>CancellationToken</code></td><td><code>aria/async/*</code></td></tr>
+<tr><td>Data fetching</td><td><code>AsyncResource&lt;T&gt;</code> (SWR + dedupe) / <code>Loadable&lt;T&gt;</code> (5-state)</td><td><code>aria/async/async_resource.hpp</code>, <code>aria/loadable.hpp</code></td></tr>
+<tr><td>Navigation</td><td><code>Navigator</code> (<code>push</code>/<code>pop</code>/<code>push_for_result&lt;R&gt;</code>, route patterns)</td><td><code>aria/binding/navigation.hpp</code></td></tr>
+<tr><td>Binding</td><td><code>BindingEngine</code> / <code>IViewAdapter</code> / <code>IView</code> / <code>Converter</code> / <code>bind_view_lifetime</code></td><td><code>aria/binding/*</code></td></tr>
+<tr><td>Diagnostics</td><td><code>TraceEvent</code> / <code>TraceSink</code> / <code>GraphInspector</code> (zero-overhead off)</td><td><code>aria/diagnostics.hpp</code></td></tr>
+</table>
+<p><strong>Learn it:</strong> the <a href="docs/index.md">documentation index</a> links the guides, the <a href="docs/cookbook/README.md">Cookbook</a> (task-oriented recipes), and the contract references. Build the symbol-level <strong>API reference</strong> with <code>cmake -B build -DARIA_BUILD_DOCS=ON &amp;&amp; cmake --build build --target aria_docs</code>.</p>
+</div>
+
+<div class="card">
+<h2>Roadmap</h2>
+<p>Aria does not ship public releases — the version stays <code>1.0.0</code> and there is no version-by-version changelog to maintain. The single source of truth for what is <em>not yet done</em> (and what has been deliberately deferred) lives in <a href="docs/ROADMAP.md"><code>docs/ROADMAP.md</code></a>. For the current capability snapshot, see <a href="CHANGELOG.md"><code>CHANGELOG.md</code></a>.</p>
+
+<h2>Contributing</h2>
+<p>Contributions are welcome! Please open an issue first to discuss design changes.</p>
+<ul>
+<li>Code style is enforced by <code>.clang-format</code> and <code>.clang-tidy</code>.</li>
+<li>All changes must pass <code>ctest --output-on-failure</code>.</li>
+<li>New features require tests in the matching <code>modules/*/tests/</code> suite.</li>
+</ul>
+<p>See <a href="CONTRIBUTING.md"><code>CONTRIBUTING.md</code></a> for the full build/test/layering guide.</p>
+
+<h2>Acknowledgments</h2>
+<ul>
+<li><a href="https://github.com/doctest/doctest">doctest</a> — lightweight test framework</li>
+<li><a href="https://github.com/cpm-cmake/CPM.cmake">CPM.cmake</a> — CMake dependency management</li>
+</ul>
+
+<h2>License</h2>
+<p>MIT © 2026 aria contributors</p>
+</div>
+
+<div class="card">
+<h2>📖 Alternative Formats</h2>
+<p>This documentation is also available in other formats:</p>
+<ul>
+<li><a href="README.en.md">English (Markdown)</a> — the canonical source</li>
+<li><a href="README.md">Chinese (Simplified)</a> — Chinese Markdown version</li>
+<li><a href="README.html">Chinese (Simplified) HTML</a> — Chinese HTML version</li>
+</ul>
+<h3>Quick Access Script</h3>
+<pre><code># Open English HTML version
+./scripts/open-readme.sh          # or: ./scripts/open-readme.sh en
+
+# Open Chinese HTML version
+./scripts/open-readme.sh zh
+
+# Open both versions
+./scripts/open-readme.sh all</code></pre>
+</div>
+
+</body>
+</html>
