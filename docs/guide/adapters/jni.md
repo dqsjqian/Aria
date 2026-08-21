@@ -18,7 +18,13 @@ aria::adapters::jni::JniView status_view(env, status_text_view);
 engine.bind_text(vm.name, name_view);                    // EditText ↔ Property<string>
 engine.bind_command(vm.submit, submit_view);             // Button → Command
 engine.bind_text_oneway(vm.status, status_view);         // Property/Computed → TextView
+
+// Managed listeners call JNI entry points that forward through the same wrappers:
+adapter->notify_text_changed(name_view, new_text);
+adapter->notify_click(submit_view);
 ```
+
+`on_*_changed` installs the C++ subscription; the Java/Kotlin listener forwards the native event through the matching `notify_*` method. Listener ownership remains on Android while `BindingEngine` stays typed.
 
 `JniView` owns a JNI global reference, so its C++ wrapper must follow the native screen's lifetime. The end-to-end View-backed lab belongs to [AriaTools](https://github.com/dqsjqian/AriaTools), Aria's flagship cross-platform application for Qt, iOS, and Android. Its Web experience is a work in progress.
 

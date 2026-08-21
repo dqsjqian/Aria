@@ -51,6 +51,12 @@ static_assert(!std::is_copy_constructible_v<JniAdapter>,
 static_assert(!std::is_copy_constructible_v<JniView>,
               "JniView must be non-copyable");
 
+// ── 5. Managed-event ingress contract ────────────────────────────────────
+static_assert(requires(JniAdapter& adapter, IView& view, std::string_view text) {
+    adapter.notify_text_changed(view, text);
+    adapter.notify_click(view);
+}, "JniAdapter must expose Java/Kotlin event ingress for two-way binding");
+
 }  // namespace
 
 // A trivial runtime test so the binary has at least one assertion to run
