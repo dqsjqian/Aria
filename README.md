@@ -220,8 +220,6 @@ add_subdirectory(third_party/aria EXCLUDE_FROM_ALL)
 target_link_libraries(my_app PRIVATE aria::core aria::async)
 ```
 
-即拷即用的模板在 [`templates/quickstart/`](templates/quickstart/)。
-
 ## 💻 旗舰示例
 
 [AriaTools](https://github.com/dqsjqian/AriaTools) 是唯一的旗舰跨平台示例，集中展示 Qt、iOS 和 Android 集成；Web 端持续完善中。Aria 仓库本身不再承载应用示例，框架行为由 `tests/acceptance/` 和各模块测试固定，文档只保留聚焦单一概念的最小片段。

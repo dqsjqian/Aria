@@ -355,7 +355,6 @@ cmake --build build/flavors/release -j <span class="pl-k">&amp;&amp;</span> sudo
 <p dir="auto"><strong>Option B — vendored (no install)</strong>:</p>
 <div class="highlight highlight-source-cmake" dir="auto"><pre class="notranslate"><span class="pl-c1">add_subdirectory</span>(<span class="pl-s">third_party/aria</span> <span class="pl-c1">EXCLUDE_FROM_ALL</span>)
 <span class="pl-c1">target_link_libraries</span>(<span class="pl-s">my_app</span> <span class="pl-c1">PRIVATE</span> <span class="pl-s">aria::core</span> <span class="pl-s">aria::async</span>)</pre></div>
-<p dir="auto">A ready-to-copy template lives in <a href="templates/quickstart/"><code class="notranslate">templates/quickstart/</code></a>.</p>
 <h3 dir="auto">Flagship example</h3>
 <p dir="auto"><a href="https://github.com/dqsjqian/AriaTools">AriaTools</a> is the single flagship cross-platform example for Qt, iOS, and Android; its Web experience is a work in progress. The Aria repository no longer carries application examples. Framework behavior is pinned by <code class="notranslate">tests/acceptance/</code> and module tests, while these docs keep only focused, minimal snippets.</p>
 <h3 dir="auto">Build options</h3>

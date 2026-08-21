@@ -245,8 +245,6 @@ add_subdirectory(third_party/aria EXCLUDE_FROM_ALL)
 target_link_libraries(my_app PRIVATE aria::core aria::async)
 ```
 
-A ready-to-copy template lives in [`templates/quickstart/`](templates/quickstart/).
-
 ### Flagship example
 
 [AriaTools](https://github.com/dqsjqian/AriaTools) is the single flagship cross-platform example for Qt, iOS, and Android; its Web experience is a work in progress. The Aria repository no longer carries application examples. Framework behavior is pinned by `tests/acceptance/` and module tests, while these docs keep only focused, minimal snippets.
