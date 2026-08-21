@@ -161,16 +161,6 @@ SwiftUI, Jetpack Compose, or HTML/DOM by swapping the adapter.
 ## Next steps
 
 - Read [`docs/architecture.md`](architecture.md) for the layering rationale.
-- Explore the full-featured Qt showcase under
-  [`examples/1-qt-showcase/`](../examples/1-qt-showcase/) — it exercises
-  every public API in one runnable app.
-- macOS-native MVVM sample:
-  [`examples/2-macos-appkit-mvvm/`](../examples/2-macos-appkit-mvvm/)
-  (open its Xcode project).
-- iOS UIKit MVVM sample:
-  [`examples/3-ios-oc-uikit-mvvm/`](../examples/3-ios-oc-uikit-mvvm/)
-  (open its Xcode project).
-- Android JNI + Compose MVVM sample:
-  [`examples/5-android-jni-mvvm/`](../examples/5-android-jni-mvvm/)
-  (Gradle build; see its `scripts/run.sh` or `run.ps1`).
+- Explore [AriaTools](https://github.com/dqsjqian/AriaTools), the flagship cross-platform application for Qt, iOS, and Android; its Web experience is a work in progress.
+- Browse `tests/acceptance/` for executable framework contracts and the focused snippets in these guides for individual concepts.
 - Run the benchmark: `./build/flavors/release/benchmark/aria_bench`.

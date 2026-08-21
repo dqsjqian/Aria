@@ -1,77 +1,47 @@
 # JNI / Android Adapter
 
-Integrating Aria with Android applications via JNI + Jetpack Compose.
+Aria supports two distinct Android integration shapes. Use the typed `JniAdapter` path for classic Android `View` objects; use a side-channel only when a UI host such as Jetpack Compose has no addressable view object for `BindingEngine` to bind.
 
-## Architecture Overview
+## Typed View-backed path
 
-```
-┌─────────────────────────────────────────────────┐
-│  Compose UI                                     │
-│  ┌──────────┐  collects  ┌──────────────────┐   │
-│  │ MainScreen│ ◄──────── │ Kotlin ViewModel │   │
-│  └──────────┘            │  (thin shell)    │   │
-│                          └────────┬─────────┘   │
-│                                   │ StateFlow    │
-│                          ┌────────▼─────────┐   │
-│                          │   JniBridge.kt   │   │
-│                          └────────┬─────────┘   │
-└───────────────────────────────────┼─────────────┘
-                                    │ JNI callbacks
-┌───────────────────────────────────┼─────────────┐
-│  C++ (Aria Framework)             │             │
-│                          ┌────────▼─────────┐   │
-│                          │  jni_bridge.cpp   │   │
-│                          │  (side-channel)   │   │
-│                          └────────┬─────────┘   │
-│                          ┌────────▼─────────┐   │
-│                          │  MainViewModel    │   │
-│                          │  (aria::binding)  │   │
-│                          └────────┬─────────┘   │
-│                          ┌────────▼─────────┐   │
-│                          │  DataModel        │   │
-│                          │  (async logic)    │   │
-│                          └──────────────────┘   │
-└─────────────────────────────────────────────────┘
+`JniAdapter` implements the same typed `IViewAdapter` surface as the other first-party adapters. Its host-side contract test pins the class shape; the View-backed runtime lab in AriaTools is the behavioral gate still being completed. For Android `View`-backed screens, construct the adapter and wire properties and commands through `BindingEngine`; do not replace typed values with a string-keyed property protocol.
+
+```cpp
+// Called on the Android UI thread with real android.view.View objects.
+auto adapter = std::make_shared<aria::adapters::jni::JniAdapter>(env);
+aria::binding::BindingEngine engine(adapter);
+
+aria::adapters::jni::JniView name_view(env, name_edit_text);
+aria::adapters::jni::JniView submit_view(env, submit_button);
+aria::adapters::jni::JniView status_view(env, status_text_view);
+
+engine.bind_text(vm.name, name_view);                    // EditText ↔ Property<string>
+engine.bind_command(vm.submit, submit_view);             // Button → Command
+engine.bind_text_oneway(vm.status, status_view);         // Property/Computed → TextView
 ```
 
-## Side-Channel Bridge Pattern
+`JniView` owns a JNI global reference, so its C++ wrapper must follow the native screen's lifetime. The end-to-end View-backed lab belongs to [AriaTools](https://github.com/dqsjqian/AriaTools), Aria's flagship cross-platform application for Qt, iOS, and Android. Its Web experience is a work in progress.
 
-The JNI adapter uses a **side-channel** pattern to push property changes from C++ to Kotlin:
+## Compose side-channel path
 
-1. C++ `MainViewModel` owns `Property<string>` and `Property<bool>` instances
-2. Each property registers an `on_changed` callback via `subscribe()`
-3. The callback invokes a JNI function that updates a Kotlin `MutableStateFlow`
-4. Compose observes the `StateFlow` and recomposes automatically
+Compose state does not expose addressable Android `View` instances, so the typed view adapter is not the right bridge for composables. A side-channel can instead:
 
-This avoids polling and keeps the C++ ViewModel as the single source of truth.
+1. keep reactive state in the C++ ViewModel;
+2. subscribe to the relevant properties;
+3. forward updates through JNI into typed Kotlin `StateFlow` holders;
+4. let Compose collect those flows and recompose.
 
-## Building
+Scope this bridge to the Compose boundary. It is not a general replacement for `JniAdapter`, and application code should preserve native types rather than funneling unrelated properties through a single string map.
+
+## Building the framework for Android
 
 Prerequisites:
+
 - Android NDK 29+ (Clang 20)
 - CMake 3.22+ (bundled with Android SDK)
-- Aria pre-built for `arm64-v8a` at `build/platforms/android/`
 
 ```bash
-# From project root — build Aria for Android
 ./scripts/build.sh android
-
-# Build and install the demo
-cd examples/5-android-jni-mvvm
-./gradlew assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n com.example.aria.demo5/.MainActivity
 ```
 
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `cpp/MainViewModel.cpp/hpp` | Aria C++ ViewModel with reactive Properties |
-| `cpp/DataModel.cpp/h` | Business logic (async greeting, counter) |
-| `cpp/jni_bridge.cpp` | Side-channel: C++ → JNI → Kotlin StateFlow |
-| `JniBridge.kt` | Kotlin-side JNI interface + StateFlow holders |
-| `MainViewModel.kt` | Thin Kotlin ViewModel delegating to C++ |
-| `MainScreen.kt` | Compose UI collecting from StateFlows |
-
-See also: [Demo 5 — Android JNI MVVM](../../../examples/5-android-jni-mvvm/)
+For a runnable Android application and the View-backed typed adapter lab, follow the build instructions in [AriaTools](https://github.com/dqsjqian/AriaTools).

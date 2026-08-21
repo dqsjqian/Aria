@@ -22,6 +22,7 @@
 
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -103,16 +104,37 @@ struct QtAdapter::Impl {
     std::mutex m;
     std::unordered_map<Key, std::unique_ptr<Bridge>, KeyHash> bridges;
 
+    // Handle → IView cache backing `view_for`. One QtView per QObject, so
+    // repeated `view_for(widget)` calls share a single per-view
+    // subscription bucket inside BindingEngine. Entries are dropped when
+    // the QObject is destroyed; `views_conns` holds the corresponding
+    // `destroyed` connections so we can disconnect them in ~Impl.
+    std::unordered_map<QObject*, std::unique_ptr<QtView>>      views;
+    std::unordered_map<QObject*, QMetaObject::Connection>      views_conns;
+
     ~Impl() {
         // Drop our QObject::destroyed listeners so a widget that outlives
         // *this can't try to call our `bridges.erase(...)` lambda after the
         // mutex is gone.
-        std::lock_guard lk{m};
-        for (auto& [_, br] : bridges) {
-            QObject::disconnect(br->destroyed_conn);
-            QObject::disconnect(br->qt_conn);
+        //
+        // The cached QtViews are moved out and destroyed AFTER the lock is
+        // released: their teardown fires IView::on_destroy, which reaches
+        // BindingEngine and then arbitrary user callbacks — none of which
+        // should run under our mutex.
+        decltype(views) doomed_views;
+        {
+            std::lock_guard lk{m};
+            for (auto& [_, conn] : views_conns) {
+                QObject::disconnect(conn);
+            }
+            views_conns.clear();
+            doomed_views.swap(views);
+            for (auto& [_, br] : bridges) {
+                QObject::disconnect(br->destroyed_conn);
+                QObject::disconnect(br->qt_conn);
+            }
+            bridges.clear();
         }
-        bridges.clear();
     }
 
     Bridge& bridge_for(QObject* obj, char kind, auto&& wire_qt_signal) {
@@ -137,6 +159,42 @@ struct QtAdapter::Impl {
 
 QtAdapter::QtAdapter() : p_(std::make_unique<Impl>()) {}
 QtAdapter::~QtAdapter() = default;
+
+// ── view_for ─────────────────────────────────────────────────────────────────
+QtView& QtAdapter::view_for(QObject* obj) {
+    if (!obj)
+        throw std::invalid_argument("QtAdapter::view_for: obj must not be null");
+
+    std::lock_guard lk{p_->m};
+    auto it = p_->views.find(obj);
+    if (it != p_->views.end()) return *it->second;
+
+    auto v = std::make_unique<QtView>(obj);
+    QtView* raw = v.get();
+    // When the QObject dies, drop the cache entry. The QtView's own
+    // destroyed-connection fires the IView destroy signal (releasing every
+    // binding) — `fire_destroy_` is idempotent, so the order in which Qt
+    // invokes the two connections does not matter.
+    //
+    // The QtView is destroyed OUTSIDE the mutex: its teardown reaches
+    // BindingEngine's on_destroy handler, and we must not hold `m` while
+    // arbitrary user callbacks run.
+    auto conn = QObject::connect(obj, &QObject::destroyed,
+        [this, obj]() {
+            std::unique_ptr<QtView> doomed;
+            {
+                std::lock_guard lk2{p_->m};
+                if (auto vit = p_->views.find(obj); vit != p_->views.end()) {
+                    doomed = std::move(vit->second);
+                    p_->views.erase(vit);
+                }
+                p_->views_conns.erase(obj);
+            }
+        });
+    p_->views.emplace(obj, std::move(v));
+    p_->views_conns.emplace(obj, conn);
+    return *raw;
+}
 
 // ── Text ────────────────────────────────────────────────────────────────────
 void QtAdapter::set_text(binding::IView& v, std::string_view text) {

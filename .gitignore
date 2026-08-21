@@ -1,5 +1,5 @@
 # Build directories
-#   build/ covers all sub-dirs: ide/, flavors/, platforms/, examples/, dist/
+#   build/ covers all sub-dirs: ide/, flavors/, platforms/, dist/
 #   Everything belongs UNDER build/ — see the layout map at the top of
 #   scripts/build.sh. `build-*/` is only a safety net for a stray sibling
 #   tree (e.g. a `cmake -B build-foo` typo); do not create those on
@@ -72,12 +72,11 @@ docs/html/
 docs/latex/
 docs/xml/
 
-# macOS app bundles produced by Qt demos
+# macOS app bundles
 *.app/
 
 # Stray test binaries dropped at repo root (no extension on macOS/Linux)
 /ex_*
-!/examples/
 
 # Local agent / editor metadata
 .workbuddy/
@@ -96,7 +95,7 @@ xcuserdata/
 *.swo
 
 # ── Android / Gradle ──────────────────────────────────────────────────────────
-# Gradle cache (per-demo .gradle/ dirs)
+# Gradle cache
 .gradle/
 # Gradle wrapper (auto-downloaded, not committed)
 gradle/wrapper/

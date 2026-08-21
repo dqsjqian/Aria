@@ -20,7 +20,6 @@
 #     │     └── tsan-gate\
 #     ├── platforms\            cross-compilation targets
 #     │     └── android\      scripts\build.ps1 android (NDK cross-build)
-#     ├── examples\             per-demo cmake caches
 #     └── dist\                 release artefacts (only when packaging)
 #           ├── tree\
 #           └── archives\
@@ -51,9 +50,7 @@
 # Skip MSYS2 auto-detection (use whatever's on PATH):
 #   $env:ARIA_NO_MSYS2="1"; scripts\build.ps1
 #
-# Notes: this script only builds the aria framework + tests; it does
-# NOT build examples. To run a demo use examples\<demo>\scripts\run.ps1
-# (or run.sh).
+# AriaTools is the separately maintained flagship sample application.
 
 param(
     [string]$Mode = "default"
@@ -65,8 +62,8 @@ Push-Location $Root
 try {
 
 # ── Deploy-DllDependencies ───────────────────────────────────────────────────
-# Mirrors examples/1-qt-showcase/scripts/run.ps1 Copy-Dependencies so that any
-# exe in <build>/bin/ can be launched directly without DLL-not-found dialogs.
+# Deploy dependencies so any exe in <build>/bin/ can be launched directly
+# without DLL-not-found dialogs.
 #
 # Strategy (in order):
 #   1. windeployqt  -- for any exe that links Qt6, deploy Qt DLLs + plugins
@@ -303,12 +300,7 @@ $DoCTest   = $false
 $DoPackage = $false
 $DoArchive = $false
 
-# Defaults shared by every non-package mode: framework + tests, no examples.
-# (Qt6 / AppKit adapters are auto-enabled below when the toolchain is present;
-# adapter conformance tests belong to the framework core, examples don't.)
-$CommonOpts = @(
-    "-DARIA_BUILD_EXAMPLES=OFF"
-)
+# Qt6 / AppKit adapters are auto-enabled below when the toolchain is present.
 
 switch ($Mode) {
     "clean" {
@@ -374,7 +366,6 @@ switch ($Mode) {
             -DANDROID_PLATFORM=android-21 `
             -DARIA_BUILD_JNI=ON `
             -DARIA_BUILD_TESTS=ON `
-            -DARIA_BUILD_EXAMPLES=OFF `
             -DARIA_BUILD_QT6=OFF
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         & $AndroidCmake --build $BuildDir -j $Jobs
@@ -410,8 +401,6 @@ switch ($Mode) {
         exit 1
     }
 }
-
-$CMakeOpts += $CommonOpts
 
 # ── Auto-enable Qt6 adapter when Qt is found (qt6_tests is part of the core) ─
 function Find-Qt6 {
@@ -474,8 +463,8 @@ Write-Host "> building"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # ── Deploy DLL dependencies ──────────────────────────────────────────────────
-# Borrowed from examples/1-qt-showcase/scripts/run.ps1: after every build,
-# run windeployqt on Qt-using exes + iterative objdump to copy MinGW runtime
+# After every build, run windeployqt on Qt-using exes + iterative objdump
+# to copy MinGW runtime
 # DLLs into bin/.  Without this, launching any test exe by hand pops a
 # "libgcc_s_seh-1.dll not found" / "Qt6Core.dll not found" dialog.
 $absBin = Join-Path $BuildDir "bin"

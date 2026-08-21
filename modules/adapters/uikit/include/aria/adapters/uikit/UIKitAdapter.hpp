@@ -29,10 +29,8 @@
 ///
 /// Build
 /// -----
-///   This header is .mm-only — it imports UIKit. The CMake target is
-///   INTERFACE because UIKit only links inside an iOS app target;
-///   `examples/3-ios-oc-uikit-mvvm` compiles the .mm into its app
-///   binary directly.
+///   This header is .mm-only because it imports UIKit. Consumers link the
+///   opt-in `aria::adapters::uikit` CMake target from an iOS toolchain.
 
 #include "aria/binding/view_adapter.hpp"
 #include "aria/subscription.hpp"
@@ -42,6 +40,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -108,6 +107,41 @@ public:
     [[nodiscard]] std::string_view platform_name() const noexcept override {
         return "uikit";
     }
+
+    // ── Handle → IView ──────────────────────────────────────────────────
+    /// Wrap a native `UIView*` as an `IView` owned by this adapter.
+    ///
+    /// Every host used to hand-roll this: allocate a `UIKitView`, then park
+    /// it in a keepalive container because `BindingEngine` takes `IView&`
+    /// and does not own its views. (The common workaround — a process-global
+    /// `std::vector<UIKitView>` — never releases anything, so it leaks by
+    /// construction.) The adapter already keeps a per-view registry for its
+    /// ObjC control targets, so it is the natural owner.
+    ///
+    ///     engine.bind_text(vm.name, adapter->view_for(nameField));
+    ///
+    /// Calling `view_for` twice for the same `UIView*` returns the *same*
+    /// `UIKitView`, so multiple bindings on one control share a single
+    /// per-view subscription bucket in `BindingEngine`.
+    ///
+    /// Lifetime — matches the AppKit adapter, and differs from Qt's on
+    /// purpose: `UIKitView` retains its `UIView*` via ARC, so a cached view
+    /// keeps the control alive and there is no "native handle died first"
+    /// event to evict on. Entries live until the adapter is destroyed (which
+    /// fires each `IView`'s destroy signal and releases the bindings), or
+    /// until `release_view` is called for a control the host discards early
+    /// — a popped view controller, a recycled cell.
+    ///
+    /// Passing `nil` is a programming error and throws
+    /// `std::invalid_argument`.
+    [[nodiscard]] UIKitView& view_for(UIView* view);
+
+    /// Drop the cached `UIKitView` for `view`, if any.
+    ///
+    /// Fires that view's destroy signal, so `BindingEngine` releases every
+    /// binding wired to it, and releases the adapter's ARC reference to the
+    /// control. Calling it for an unknown view is a harmless no-op.
+    void release_view(UIView* view) noexcept;
 
     void                 set_text(::aria::binding::IView& v, std::string_view text) override;
     [[nodiscard]] std::string get_text(::aria::binding::IView& v) override;

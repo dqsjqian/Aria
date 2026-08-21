@@ -12,6 +12,7 @@ add_executable(test_core
     test_validator.cpp
     test_property_ops.cpp
     test_selection.cpp
+    test_todomvc_workflow.cpp
     test_inspector.cpp
     test_i_property.cpp
     test_lifecycle_invariants.cpp

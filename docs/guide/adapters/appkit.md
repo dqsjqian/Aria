@@ -213,4 +213,4 @@ AppKit widgets must be accessed from the main thread. The adapter assumes all me
 
 - [View Binding →](../binding.md) — BindingEngine API reference
 - [Collections →](../collections.md) — ObservableList and derived views
-- [Demo 2 — macOS AppKit MVVM →](../../../examples/2-macos-appkit-mvvm/)
+- [AriaTools →](https://github.com/dqsjqian/AriaTools) — flagship cross-platform application (Qt, iOS, Android; Web in progress)

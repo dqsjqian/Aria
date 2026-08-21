@@ -20,6 +20,7 @@
 
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <unordered_map>
 #include <utility>
 
@@ -38,8 +39,7 @@
     (void)sender;
     if (_cb) _cb();
 }
-// Backwards-compat: legacy examples (demo2 RootViewController) wired
-// `btn.action = @selector(fire);`. Keep that selector working.
+// Backwards compatibility for clients that wired the no-argument selector.
 - (void)fire {
     if (_cb) _cb();
 }
@@ -223,11 +223,40 @@ struct AppKitAdapter::Impl {
     // Per-view destroy subscription so we can drop bridges when the
     // C++ view wrapper goes away. Keyed on the same opaque void*.
     std::unordered_map<const void*, std::vector<::aria::Subscription>>        destroy_subs;
+    // Handle → IView cache backing `view_for`. One AppKitView per NSView, so
+    // repeated `view_for(control)` calls share a single per-view
+    // subscription bucket inside BindingEngine.
+    std::unordered_map<const void*, std::unique_ptr<AppKitView>>              views;
 
     ~Impl() {
+        // The cached AppKitViews are moved out and destroyed AFTER the lock
+        // is released: ~AppKitView fires IView::on_destroy, whose handlers
+        // include our own `bridges.erase` lambda (which relocks `mu`) plus
+        // BindingEngine's bucket teardown and arbitrary user callbacks.
+        // Destroying them under the lock would self-deadlock on the first
+        // bridge handler.
+        decltype(views) doomed;
+        {
+            std::lock_guard lk{mu};
+            doomed.swap(views);
+        }
+        doomed.clear();
         std::lock_guard lk{mu};
         bridges.clear();
         destroy_subs.clear();
+    }
+
+    // Destroy a cached view outside the lock, for the same reason as ~Impl.
+    // Returns the extracted owner so the caller controls the destruction
+    // point; discarding the return value destroys it at end of statement,
+    // which is already outside any lock held by the caller.
+    [[nodiscard]] std::unique_ptr<AppKitView> extract_view(const void* key) {
+        std::lock_guard lk{mu};
+        auto it = views.find(key);
+        if (it == views.end()) return nullptr;
+        auto owned = std::move(it->second);
+        views.erase(it);
+        return owned;
     }
 
     template<class WireFn>
@@ -253,6 +282,32 @@ struct AppKitAdapter::Impl {
 
 AppKitAdapter::AppKitAdapter() : p_(std::make_unique<Impl>()) {}
 AppKitAdapter::~AppKitAdapter() = default;
+
+// ── view_for / release_view ────────────────────────────────────────────
+
+AppKitView& AppKitAdapter::view_for(NSView* view) {
+    if (!view)
+        throw std::invalid_argument("AppKitAdapter::view_for: view must not be nil");
+
+    const void* key = (__bridge const void*)view;
+    std::lock_guard lk{p_->mu};
+    auto it = p_->views.find(key);
+    if (it != p_->views.end()) return *it->second;
+
+    auto owned = std::make_unique<AppKitView>(view);
+    AppKitView* raw = owned.get();
+    p_->views.emplace(key, std::move(owned));
+    return *raw;
+}
+
+void AppKitAdapter::release_view(NSView* view) noexcept {
+    if (!view) return;
+    // Extract under the lock, destroy after it is released: ~AppKitView
+    // fires on_destroy, which reaches our own bridge cleanup (relocking
+    // `mu`) and then user callbacks.
+    auto doomed = p_->extract_view((__bridge const void*)view);
+    (void)doomed;
+}
 
 // ── Text ───────────────────────────────────────────────────────────────
 

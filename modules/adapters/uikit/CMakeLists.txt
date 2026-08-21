@@ -8,10 +8,8 @@
 #   * `find_package(aria)` consumers obtain a real installed target,
 #     not a header-only stub that silently drops the .mm symbols.
 #
-# Build is opt-in via root option `ARIA_BUILD_UIKIT=ON`. The Xcode
-# example continues to work — the .mm is harmless to compile twice
-# (UIKit symbols only matter for one final link unit) and the
-# `using` aliases in the header keep its global-namespace API intact.
+# Build is opt-in via root option `ARIA_BUILD_UIKIT=ON`; consumers must
+# configure with an iOS device or simulator toolchain.
 #
 # Platform gate:
 #   Two layers guard the UIKit build:
@@ -44,9 +42,7 @@ if(NOT _aria_uikit_is_ios)
         "ARIA_BUILD_UIKIT=ON requires an iOS toolchain, but CMake is configured for "
         "CMAKE_SYSTEM_NAME='${CMAKE_SYSTEM_NAME}' with CMAKE_OSX_SYSROOT='${CMAKE_OSX_SYSROOT}'. "
         "To build the UIKit adapter, configure with an iOS toolchain "
-        "(e.g. `-G Xcode -DCMAKE_SYSTEM_NAME=iOS`, or pass an ios.toolchain.cmake file). "
-        "The Xcode example in examples/3-ios-oc-uikit-mvvm/ compiles UIKitAdapter.mm "
-        "directly and does not require this option."
+        "(e.g. `-G Xcode -DCMAKE_SYSTEM_NAME=iOS`, or pass an ios.toolchain.cmake file)."
     )
 endif()
 unset(_aria_uikit_is_ios)
@@ -69,7 +65,12 @@ target_link_libraries(aria_adapters_uikit
 target_link_libraries(aria_adapters_uikit PUBLIC
     "-framework UIKit"
     "-framework Foundation"
+    "-framework CoreGraphics"
 )
 
 # ARC for the Objective-C++ source.
 target_compile_options(aria_adapters_uikit PRIVATE -fobjc-arc)
+
+if(ARIA_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()

@@ -16,9 +16,7 @@
 #   scripts/build.sh clean          # Wipe build/
 #
 # Notes:
-#   * This script only builds the aria framework + tests; it does not
-#     build examples. To run a demo use examples/<demo>/scripts/run.sh
-#     (Qt / AppKit / UIKit each have their own).
+#   * AriaTools is the flagship sample application and is maintained separately.
 #   * To override the compiler: CC=clang CXX=clang++ scripts/build.sh
 
 set -euo pipefail
@@ -49,28 +47,10 @@ JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/de
 #     │     ├── tidy/           CI: clang-tidy gate
 #     │     ├── bench/          nightly: benchmark + P99 ceiling check
 #     │     └── fuzz/           nightly: fuzzers at 1M iterations
-#     │     │
-#     │     │── Demo SDK + standalone demo trees. The framework SDK is
-#     │     │      built ONCE into sdk/ and installed to dist/tree/;
-#     │     │      every CMake demo builds STANDALONE against it
-#     │     │      (ARIA_USE_INSTALLED=ON + find_package), so the demo
-#     │     │      tree holds only the demo's own objects ──
-#     │     ├── sdk/             shared framework SDK build (run.sh scripts)
-#     │     ├── qt-demo/         1-qt-showcase, standalone (Qt6)
-#     │     ├── qt-demo-msvc/    1-qt-showcase, standalone MSVC (run-msvc.ps1)
-#     │     ├── web-demo/        4-web-mvvm, standalone (HTTP)
-#     │     ├── web-demo-msvc/   4-web-mvvm, standalone MSVC
-#     │     └── appkit-demo/     2-macos-appkit-mvvm products (.app symlink)
 #     ├── platforms/            cross-compilation targets
-#     │     └── android/       scripts/build.sh android (NDK cross-build)
-#     ├── examples/             MIRROR of the main build's add_subdirectory
-#     │     examples (NOT standalone trees — never configure into them),
-#     │     plus raw product output from the non-CMake demos
-#     │     (3-ios-oc-uikit-mvvm via xcodebuild; 2-macos-appkit-mvvm now
-#     │     builds standalone too and keeps products in flavors/appkit-demo)
+#     │     └── android/        scripts/build.sh android (NDK cross-build)
 #     └── dist/                 release artefacts (only when packaging)
-#           ├── tree/           the installed SDK (demand-built by demo
-#           │                   run scripts; also the standalone link target)
+#           ├── tree/           installed SDK layout
 #           └── archives/       .tar.gz / .zip output (was packages/)
 #
 # Per-flavor sub-directories under a single build/ root: `rm -rf build/`
@@ -112,8 +92,7 @@ case "$MODE" in
             -DARIA_ENABLE_TSAN=ON \
             -DARIA_ENABLE_ASAN=OFF \
             -DARIA_ENABLE_UBSAN=OFF \
-            -DARIA_BUILD_QT6=OFF \
-            -DARIA_BUILD_EXAMPLES=OFF
+            -DARIA_BUILD_QT6=OFF
         cmake --build "${TSAN_BUILD_DIR}" \
             --target test_async test_binding test_core test_abi test_runtime \
             -j "${JOBS}"
@@ -157,8 +136,7 @@ case "$MODE" in
             exit 1
         fi
         # Ninja: prefer the SDK-bundled ninja (same dir as its cmake), else PATH.
-        # CMake won't auto-discover ninja if it isn't on PATH, and the Android
-        # demo (5-android-jni-mvvm) links the STATIC libraries produced here.
+        # CMake won't auto-discover ninja if it isn't on PATH.
         ARIA_ANDROID_NINJA="${ARIA_ANDROID_NINJA:-$(dirname "$ARIA_ANDROID_CMAKE")/ninja}"
         if [[ ! -x "$ARIA_ANDROID_NINJA" ]]; then
             ARIA_ANDROID_NINJA="$(command -v ninja 2>/dev/null || true)"
@@ -171,9 +149,8 @@ case "$MODE" in
         echo "  CMake : $ARIA_ANDROID_CMAKE"
         echo "  Ninja : $ARIA_ANDROID_NINJA"
         mkdir -p "${BUILD_DIR}"
-        # ARIA_BUILD_SHARED=OFF: Android consumers (5-android-jni-mvvm) link
-        # STATIC .a archives; binding/runtime default to SHARED (.so) which
-        # would break them.
+        # ARIA_BUILD_SHARED=OFF: Android consumers link STATIC .a archives;
+        # binding/runtime default to SHARED (.so), which would break them.
         "$ARIA_ANDROID_CMAKE" -S . -B "${BUILD_DIR}" \
             -G Ninja \
             -DCMAKE_MAKE_PROGRAM="$ARIA_ANDROID_NINJA" \
@@ -184,7 +161,6 @@ case "$MODE" in
             -DARIA_BUILD_JNI=ON \
             -DARIA_BUILD_SHARED=OFF \
             -DARIA_BUILD_TESTS=ON \
-            -DARIA_BUILD_EXAMPLES=OFF \
             -DARIA_BUILD_QT6=OFF
         "$ARIA_ANDROID_CMAKE" --build "${BUILD_DIR}" -j "${JOBS}"
         echo "✓ android cross-build done"
@@ -193,12 +169,6 @@ case "$MODE" in
 esac
 
 # ── Mode → CMake options ─────────────────────────────────────────────────────
-# Defaults shared by every non-package mode: framework + tests, no examples,
-# no Qt adapter. Examples live in their own per-demo scripts.
-COMMON_OPTS=(
-    -DARIA_BUILD_EXAMPLES=OFF
-)
-
 DO_CTEST="NO"
 DO_PACKAGE="NO"
 DO_ARCHIVE="NO"
@@ -248,12 +218,8 @@ case "$MODE" in
         ;;
 esac
 
-CMAKE_OPTS+=("${COMMON_OPTS[@]}")
-
 # ── Adapter auto-enable (adapter conformance tests are framework-core) ───────
-# qt6_tests / appkit_conformance and friends are part of the framework's
-# core conformance suite, but the examples that USE the adapter are not in
-# this script's scope. Set ARIA_NO_QT6=1 / ARIA_NO_APPKIT=1 to disable.
+# Set ARIA_NO_QT6=1 / ARIA_NO_APPKIT=1 to disable.
 
 # Qt6 adapter — probe Homebrew Qt (macOS) or QT_DIR
 if [[ "${ARIA_NO_QT6:-}" != "1" ]]; then

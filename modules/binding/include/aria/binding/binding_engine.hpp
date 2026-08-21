@@ -3,6 +3,7 @@
 #include "aria/abi/export.hpp"
 #include "aria/callback_boundary.hpp"
 #include "aria/command.hpp"
+#include "aria/concepts.hpp"
 #include "aria/diagnostics.hpp"
 #include "aria/property.hpp"
 #include "aria/runtime/dispatcher.hpp"
@@ -137,9 +138,37 @@ public:
     [[nodiscard]] bool has_dispatcher() const noexcept { return static_cast<bool>(dispatcher_); }
 
     // ══════════════════════════════════════════════════════════════════
+    //   One-way (VM→View) bindings accept any read-only reactive source
+    //
+    //   Every `bind_*_oneway` / `bind_visible` / `bind_enabled` comes in
+    //   two flavours:
+    //
+    //     * a non-template `Property<T>&` overload — the original,
+    //       exported-from-the-library entry point, unchanged;
+    //     * a template overload constrained on `ReadOnlyReactiveOf<S, T>`,
+    //       which additionally accepts `Computed<T>`.
+    //
+    //   Both do exactly the same thing (they share one private
+    //   implementation). The split exists so the shipped symbols keep
+    //   their ABI while `Computed` becomes bindable: passing a
+    //   `Property<T>` still selects the non-template overload, because a
+    //   non-template beats a template when the conversion sequences tie.
+    //
+    //   Two-way binders stay `Property<T>&`-only on purpose. A derived
+    //   value has no write-back path, so `bind_text(some_computed, view)`
+    //   must remain a **compile error** rather than a silently dropped
+    //   edit.
+    // ══════════════════════════════════════════════════════════════════
+
+    // ══════════════════════════════════════════════════════════════════
     //   Text
     // ══════════════════════════════════════════════════════════════════
     void bind_text_oneway(Property<std::string>& prop, IView& view);
+
+    template<ReadOnlyReactiveOf<std::string> Src>
+    void bind_text_oneway(Src& src, IView& view) {
+        bind_scalar_oneway_<std::string>(src, view, &IViewAdapter::set_text);
+    }
 
     void bind_text(Property<std::string>& prop, IView& view);
 
@@ -148,12 +177,22 @@ public:
     // ══════════════════════════════════════════════════════════════════
     void bind_bool_oneway(Property<bool>& prop, IView& view);
 
+    template<ReadOnlyReactiveOf<bool> Src>
+    void bind_bool_oneway(Src& src, IView& view) {
+        bind_scalar_oneway_<bool>(src, view, &IViewAdapter::set_bool);
+    }
+
     void bind_bool(Property<bool>& prop, IView& view);
 
     // ══════════════════════════════════════════════════════════════════
     //   Int (slider / spinbox / progress bar)
     // ══════════════════════════════════════════════════════════════════
     void bind_int_oneway(Property<int>& prop, IView& view);
+
+    template<ReadOnlyReactiveOf<int> Src>
+    void bind_int_oneway(Src& src, IView& view) {
+        bind_scalar_oneway_<int>(src, view, &IViewAdapter::set_int);
+    }
 
     void bind_int(Property<int>& prop, IView& view);
 
@@ -162,12 +201,22 @@ public:
     // ══════════════════════════════════════════════════════════════════
     void bind_int64_oneway(Property<std::int64_t>& prop, IView& view);
 
+    template<ReadOnlyReactiveOf<std::int64_t> Src>
+    void bind_int64_oneway(Src& src, IView& view) {
+        bind_scalar_oneway_<std::int64_t>(src, view, &IViewAdapter::set_int64);
+    }
+
     void bind_int64(Property<std::int64_t>& prop, IView& view);
 
     // ══════════════════════════════════════════════════════════════════
     //   UInt64 (raw handles, non-negative counters)
     // ══════════════════════════════════════════════════════════════════
     void bind_uint64_oneway(Property<std::uint64_t>& prop, IView& view);
+
+    template<ReadOnlyReactiveOf<std::uint64_t> Src>
+    void bind_uint64_oneway(Src& src, IView& view) {
+        bind_scalar_oneway_<std::uint64_t>(src, view, &IViewAdapter::set_uint64);
+    }
 
     void bind_uint64(Property<std::uint64_t>& prop, IView& view);
 
@@ -176,12 +225,22 @@ public:
     // ══════════════════════════════════════════════════════════════════
     void bind_float_oneway(Property<float>& prop, IView& view);
 
+    template<ReadOnlyReactiveOf<float> Src>
+    void bind_float_oneway(Src& src, IView& view) {
+        bind_scalar_oneway_<float>(src, view, &IViewAdapter::set_float);
+    }
+
     void bind_float(Property<float>& prop, IView& view);
 
     // ══════════════════════════════════════════════════════════════════
     //   Double (QDoubleSpinBox)
     // ══════════════════════════════════════════════════════════════════
     void bind_double_oneway(Property<double>& prop, IView& view);
+
+    template<ReadOnlyReactiveOf<double> Src>
+    void bind_double_oneway(Src& src, IView& view) {
+        bind_scalar_oneway_<double>(src, view, &IViewAdapter::set_double);
+    }
 
     void bind_double(Property<double>& prop, IView& view);
 
@@ -190,21 +249,37 @@ public:
     // ══════════════════════════════════════════════════════════════════
     void bind_visible(Property<bool>& prop, IView& view);
 
+    template<ReadOnlyReactiveOf<bool> Src>
+    void bind_visible(Src& src, IView& view) {
+        bind_scalar_oneway_<bool>(src, view, &IViewAdapter::set_visible);
+    }
+
     void bind_enabled(Property<bool>& prop, IView& view);
+
+    template<ReadOnlyReactiveOf<bool> Src>
+    void bind_enabled(Src& src, IView& view) {
+        bind_scalar_oneway_<bool>(src, view, &IViewAdapter::set_enabled);
+    }
 
     // ══════════════════════════════════════════════════════════════════
     //   Converter-based bindings (non-string model types → text view)
     //
     //   Use when your ViewModel exposes e.g. `Property<int>` but the View is
     //   a QLineEdit / QLabel.  Provide a Converter<T, std::string>.
+    //
+    //   The one-way form accepts any `ReadOnlyReactive` source, so a
+    //   `Computed<T>` can feed a converted label. The two-way form stays
+    //   `Property<T>&`-only — it writes back.
     // ══════════════════════════════════════════════════════════════════
-    template<typename T>
-    void bind_text_converted_oneway(Property<T>& prop,
+    template<ReadOnlyReactive Src>
+    void bind_text_converted_oneway(Src& src,
                                     IView& view,
-                                    Converter<T, std::string> conv) {
-        adapter_->set_text(view, conv.to_view(prop.get()));
+                                    Converter<typename Src::value_type,
+                                              std::string> conv) {
+        using T = typename Src::value_type;
+        adapter_->set_text(view, conv.to_view(src.get()));
         auto guard_alive = ensure_alive_token_(view);
-        add_view_sub_(view, prop.on_changed(
+        add_view_sub_(view, src.on_changed(
             [this, adapter = adapter_, &view, to_view = std::move(conv.to_view), guard_alive]
             (const T& v) {
                 this->dispatch_to_view_(guard_alive,
@@ -287,24 +362,33 @@ public:
     //   collapsing the hand-written `prop.on_changed([lbl]{ ... })` +
     //   initial-sync boilerplate that otherwise piles up in every view.
     //
-    //   They operate purely on `Property<T>`, so they are completely
-    //   async-agnostic: the same call binds an `AsyncCommand`'s
-    //   `last_error_message` / `last_result` projections, a `Computed`'s
-    //   formatted output, or any other model-owned value — without this
-    //   engine ever naming an `aria-async` type (see the `bind_view_lifetime`
-    //   note on that deliberate API-level decoupling).
+    //   They accept any read-only reactive source (`Property<T>` or
+    //   `Computed<T>`) and are completely async-agnostic: the same call
+    //   binds an `AsyncCommand`'s `last_error_message` / `last_result`
+    //   projections, a `Computed`'s formatted output, or any other
+    //   model-owned value — without this engine ever naming an
+    //   `aria-async` type (see the `bind_view_lifetime` note on that
+    //   deliberate API-level decoupling).
     // ══════════════════════════════════════════════════════════════════
 
-    /// Bind a read-only text view to `prop`, rendered through `project`
+    /// Bind a read-only text view to `src`, rendered through `project`
     /// (`T -> std::string`). One-way (VM→View) only. The initial value is
     /// synced inline on the calling (UI) thread; subsequent changes go
     /// through the configured dispatch policy and are dropped safely if
     /// the view is destroyed in flight.
-    template<typename T, typename Project>
-    void bind_text_projected(Property<T>& prop, IView& view, Project project) {
+    ///
+    /// `src` may be a `Property<T>` or a `Computed<T>` — a formatted
+    /// derived value ("¥ 12.34" off a `Computed<double>`) is the archetypal
+    /// case and needs no intermediate mirror property.
+    template<ReadOnlyReactive Src, typename Project>
+    void bind_text_projected(Src& src, IView& view, Project project) {
+        using T = typename Src::value_type;
+        static_assert(std::is_invocable_v<Project&, const T&>,
+            "bind_text_projected: `project` must be callable as "
+            "project(const T&) where T is the source's value_type.");
         auto guard_alive = ensure_alive_token_(view);
-        adapter_->set_text(view, project(prop.get()));
-        add_view_sub_(view, prop.on_changed(
+        adapter_->set_text(view, project(src.get()));
+        add_view_sub_(view, src.on_changed(
             [this, adapter = adapter_, &view, project = std::move(project), guard_alive]
             (const T& v) {
                 this->dispatch_to_view_(guard_alive,
@@ -314,7 +398,7 @@ public:
             }));
     }
 
-    /// Bind a read-only text view to a `Property<std::optional<T>>`.
+    /// Bind a read-only text view to a reactive `std::optional<T>` source.
     /// When the optional holds a value it is rendered through `project`
     /// (`const T& -> std::string`); when it is `std::nullopt` the view
     /// shows `empty_text` (default: empty string). One-way (VM→View) only.
@@ -322,20 +406,26 @@ public:
     /// This is the missing piece for `AsyncCommand::last_result`
     /// (`Property<std::optional<R>>`): binding a result label used to
     /// require a hand-written `on_changed` that unwrapped the optional.
-    template<typename T, typename Project>
-    void bind_optional_text(Property<std::optional<T>>& prop,
+    /// A `Computed<std::optional<T>>` works identically.
+    template<ReadOnlyReactiveOptional Src, typename Project>
+    void bind_optional_text(Src& src,
                             IView& view,
                             Project project,
                             std::string empty_text = std::string{}) {
+        using Opt = typename Src::value_type;             // std::optional<T>
+        using T   = typename Opt::value_type;
+        static_assert(std::is_invocable_v<Project&, const T&>,
+            "bind_optional_text: `project` must be callable as "
+            "project(const T&) where the source holds std::optional<T>.");
         auto guard_alive = ensure_alive_token_(view);
         auto render = [project = std::move(project), empty_text]
-                      (const std::optional<T>& opt) -> std::string {
+                      (const Opt& opt) -> std::string {
             return opt ? project(*opt) : empty_text;
         };
-        adapter_->set_text(view, render(prop.get()));
-        add_view_sub_(view, prop.on_changed(
+        adapter_->set_text(view, render(src.get()));
+        add_view_sub_(view, src.on_changed(
             [this, adapter = adapter_, &view, render = std::move(render), guard_alive]
-            (const std::optional<T>& opt) {
+            (const Opt& opt) {
                 this->dispatch_to_view_(guard_alive,
                     [adapter, &view, render, opt]() {
                         adapter->set_text(view, render(opt));
@@ -415,22 +505,48 @@ public:
         add_view_sub_(view, Subscription{std::move(on_view_destroyed)});
     }
 
+    /// Adopt an arbitrary `Subscription` into `view`'s per-view bucket.
+    ///
+    /// The subscription is released when `view` is destroyed (its
+    /// `IView::on_destroy` fires and the engine clears the bucket) OR when
+    /// the engine itself is destroyed / cleared — whichever comes first.
+    /// Exactly the same lifetime the `bind_*` calls already give their own
+    /// internal subscriptions.
+    ///
+    /// This is the escape hatch for anything the typed `bind_*` surface
+    /// does not cover yet: a hand-written `prop.on_changed(...)`, a
+    /// platform signal, a `Computed::on_changed(...)`. Without it every
+    /// host has to invent its own per-view subscription store (and the
+    /// common workaround — a process-global `std::vector<Subscription>` —
+    /// leaks by construction).
+    ///
+    ///     auto sub = vm.total.on_changed([lbl](double v) { ... });
+    ///     engine.adopt(*lbl, std::move(sub));   // released on view-destroy
+    void adopt(IView& view, Subscription s) {
+        if (!s) return;
+        (void)ensure_alive_token_(view);  // make sure bucket + destroy wiring exists
+        add_view_sub_(view, std::move(s));
+    }
+
     /// Drop every active binding.
     void clear() noexcept;
 
 private:
     // -------------------------------------------------------------------
     //  VM → View (one-way) scalar binding.
+    //    `Src` is any `ReadOnlyReactiveOf<T>` — `Property<T>` or
+    //    `Computed<T>`; both expose `get()` + `on_changed()`, which is
+    //    the whole surface this path needs.
     //    `Setter` is a pointer-to-member on IViewAdapter such as
     //    &IViewAdapter::set_text / set_int / set_visible ...
     // -------------------------------------------------------------------
-    template<typename T, typename Setter>
-    void bind_scalar_oneway_(Property<T>& prop, IView& view, Setter setter) {
+    template<typename T, typename Src, typename Setter>
+    void bind_scalar_oneway_(Src& src, IView& view, Setter setter) {
         // Initial sync runs inline — BindingEngine constructors are
         // documented to be called on the UI thread.
-        (adapter_.get()->*setter)(view, prop.get());
+        (adapter_.get()->*setter)(view, src.get());
         auto guard_alive = ensure_alive_token_(view);
-        add_view_sub_(view, prop.on_changed(
+        add_view_sub_(view, src.on_changed(
             [this, adapter = adapter_, &view, setter, guard_alive](const T& v) {
                 this->dispatch_to_view_(guard_alive,
                     [adapter, &view, setter, v]() {

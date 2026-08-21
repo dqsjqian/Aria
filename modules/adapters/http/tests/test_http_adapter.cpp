@@ -1,9 +1,9 @@
 /// @file test_http_adapter.cpp
 /// @brief Smoke tests for HttpAdapter.
 ///
-/// These tests exercise the adapter's core contracts WITHOUT spinning
-/// up a real socket server in-process — that part is covered by the
-/// `examples/4-web-mvvm` integration test. We focus here on:
+/// These tests exercise the adapter's registry, shadow state, command,
+/// subscription, and ephemeral-port start/stop contracts. Wire-level REST,
+/// SSE, TLS, and browser-client acceptance lives in AriaTools.
 ///
 ///   - Registry: register / find / unregister / list_views
 ///   - Shadow state set/get round-trip

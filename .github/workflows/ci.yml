@@ -64,6 +64,56 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: ctest --test-dir build/flavors/qt --output-on-failure
 
+      - name: Configure (AppKit)
+        run: |
+          cmake -S . -B build/flavors/appkit -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARIA_BUILD_APPKIT=ON \
+            -DARIA_BUILD_BENCHMARK=OFF
+
+      - name: Build and test (AppKit)
+        run: |
+          cmake --build build/flavors/appkit -j
+          ctest --test-dir build/flavors/appkit -R "appkit_" --output-on-failure
+
+  # ────────────────────────────────────────────────────────────────────
+  # UIKit adapter — compile and run the shared conformance battery inside
+  # an iOS simulator. This used to live inside an example app and therefore
+  # had no CI gate.
+  # ────────────────────────────────────────────────────────────────────
+  uikit:
+    name: UIKit conformance (iOS Simulator)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure simulator target
+        run: |
+          cmake -S . -B build/platforms/uikit-test -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphonesimulator \
+            -DCMAKE_OSX_ARCHITECTURES=$(uname -m) \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DARIA_BUILD_UIKIT=ON \
+            -DARIA_BUILD_TESTS=ON \
+            -DARIA_BUILD_BENCHMARK=OFF \
+            -DARIA_BUILD_SHARED=OFF
+
+      - name: Build conformance target
+        run: cmake --build build/platforms/uikit-test --config Debug --target test_uikit_conformance
+
+      - name: Run conformance in simulator
+        run: |
+          DEVICE="aria-uikit-${{ github.run_id }}"
+          UDID=$(xcrun simctl create "$DEVICE" \
+            "$(xcrun simctl list devicetypes -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["identifier"] for x in d["devicetypes"] if x["name"].startswith("iPhone")))')" \
+            "$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["identifier"] for x in d["runtimes"] if x["isAvailable"] and x["platform"] == "iOS"))')")
+          trap 'xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true; xcrun simctl delete "$UDID" >/dev/null 2>&1 || true' EXIT
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl spawn "$UDID" \
+            "$PWD/build/platforms/uikit-test/bin/Debug/test_uikit_conformance.app/test_uikit_conformance"
+
   # ────────────────────────────────────────────────────────────────────
   # Ubuntu — gcc + clang matrix, plus Qt6 dev packages
   # ────────────────────────────────────────────────────────────────────
@@ -241,7 +291,6 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_DOCS=ON \
             -DARIA_BUILD_TESTS=OFF \
-            -DARIA_BUILD_EXAMPLES=OFF \
             -DARIA_BUILD_BENCHMARK=OFF
 
       - name: Build API reference
@@ -257,11 +306,9 @@ jobs:
           path: build/flavors/docs/docs/html
 
   # ────────────────────────────────────────────────────────────────────
-  # Cross-dylib ABI smoke (ROADMAP P2-A) — explicit job that builds the
-  # examples (shared libs) and runs ONLY the ABI smoke + headless TodoMVC
-  # so an ABI regression is attributed clearly rather than buried in the
-  # full matrix. The same tests also run in the default build/flavors/docs matrix
-  # (examples default ON), this job just makes the intent legible.
+  # Cross-DSO IProperty ABI acceptance gate. This remains a separate job
+  # because an ABI regression deserves a precise failure rather than being
+  # buried in the full test matrix.
   # ────────────────────────────────────────────────────────────────────
   abi-smoke:
     name: Cross-dylib ABI smoke
@@ -274,7 +321,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build g++-13
 
-      - name: Configure (shared libs + examples)
+      - name: Configure (shared libs + acceptance tests)
         env:
           CC: gcc-13
           CXX: g++-13
@@ -282,14 +329,14 @@ jobs:
           cmake -S . -B build/flavors/abi-smoke -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_SHARED=ON \
-            -DARIA_BUILD_EXAMPLES=ON \
+            -DARIA_BUILD_TESTS=ON \
             -DARIA_BUILD_BENCHMARK=OFF
 
       - name: Build
         run: cmake --build build/flavors/abi-smoke -j
 
-      - name: Run ABI smoke + TodoMVC
-        run: ctest --test-dir build/flavors/abi-smoke -R "cross_dylib_abi_smoke|todomvc_smoke" --output-on-failure
+      - name: Run cross-DSO ABI gate
+        run: ctest --test-dir build/flavors/abi-smoke -R "cross_dylib_abi_smoke" --output-on-failure
 
   # ────────────────────────────────────────────────────────────────────
   # clang-tidy gate — runs on macOS (cheapest runner with clang-tidy

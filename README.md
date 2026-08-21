@@ -18,6 +18,28 @@
 
 ---
 
+## 🌟 旗舰示例：AriaTools
+
+想先看 Aria 如何落到真实应用？请从 [AriaTools](https://github.com/dqsjqian/AriaTools) 开始。它是 Aria 唯一的旗舰跨平台示例，覆盖 Qt、iOS 与 Android；Web 端持续完善中。本仓库只保留框架、验收测试和文档中的最小代码片段。
+
+## 🚀 30 秒看懂 Aria
+
+```cpp
+aria::Property<double> bill{100.0};
+aria::Property<int> people{2};
+aria::Computed<double> per_person{[&] {
+    return bill.get() / people.get();
+}};
+
+// Property / Computed 都能直接驱动 View；绑定随 View 销毁自动释放。
+engine.bind_text_projected(per_person, label_view,
+    [](double value) { return std::format("¥{:.2f}", value); });
+
+people = 4;  // label 自动更新为 ¥25.00
+```
+
+`Property` 保存状态，`Computed` 自动追踪依赖，`BindingEngine` 负责把只读结果投射到任意 UI。继续阅读：[绑定指南](docs/guide/binding.md) · [Cookbook](docs/cookbook/README.md) · [AriaTools](https://github.com/dqsjqian/AriaTools)。
+
 ## 🎯 与主流框架对比
 
 | | **Aria** | Qt | Flutter | React Native | SwiftUI |
@@ -27,7 +49,7 @@
 | **响应式引擎** | ✅ 自动依赖追踪（`Computed` 零配置） | ❌ 手动 `connect` 信号槽 | ✅ 但锁死在 Flutter 框架内 | ✅ 但锁死在 React 内 | ✅ 但锁死在 Apple 内 |
 | **C++20 协程** | ✅ `Task<T>` + `co_await` | ⚠️ `QCoroutine`（受限） | — | — | — |
 | **ABI 稳定** | ✅ 类型擦除层，主版本号内稳定 | ⚠️ 部分稳定 | — | — | — |
-| **UI 工具包** | ✅ 任意（Qt / AppKit / UIKit / JNI / Web / WASM） | ❌ 只有 Qt | ❌ 只有 Flutter UI | ❌ 只有 React 组件 | ❌ 只有 SwiftUI |
+| **UI 工具包** | ✅ 任意（已支持 Qt / AppKit / UIKit / JNI / HTTP；WASM 触发后再做） | ❌ 只有 Qt | ❌ 只有 Flutter UI | ❌ 只有 React 组件 | ❌ 只有 SwiftUI |
 | **同一 ViewModel 跨平台** | ✅ 一份 C++ 代码驱动 6 个平台 | ❌ 每个平台要 QML 重写 | ⚠️ Dart 跨平台但非原生 UI | ⚠️ JS 跨平台但非原生 UI | ❌ Apple only |
 | **Web 支持** | ✅ HTTP/SSE（服务端驱动）+ WASM（计划） | ❌ | ✅ Web | ❌ | ❌ |
 | **宏依赖** | 零宏 | 大量 `Q_OBJECT` / `SIGNAL` / `SLOT` | — | — | — |
@@ -104,7 +126,7 @@
   - GCC >= 12（Windows 下可走 MSYS2 UCRT64 工具链）
   - Clang >= 15（macOS/iOS 上 AppleClang 15+ 即可）
   - **MSVC v143 / Visual Studio 2022**（Windows，详见下文）
-- *(可选)* **Qt6** >= 6.4（用于 Qt6 适配器和 GUI 示例）
+- *(可选)* **Qt6** >= 6.4（用于 Qt6 适配器）
 
 > **Windows 同时支持 MSYS2 UCRT64（GCC）和 MSVC / Visual Studio 2022 两条工具链。** 团队栈里有哪个就用哪个 —— 同一棵源码树都能编出完整框架 + 测试 + 适配器，不需要分支或 fork。
 
@@ -200,58 +222,22 @@ target_link_libraries(my_app PRIVATE aria::core aria::async)
 
 即拷即用的模板在 [`templates/quickstart/`](templates/quickstart/)。
 
-## 💻 示例项目
+## 💻 旗舰示例
 
-aria 提供覆盖**每一个受支持 UI 工具包**的可运行示例，外加几个无界面、专门压核心的控制台示例。
-
-**UI 展示示例：**
-
-| # | 项目 | 工具包 | 演示内容 |
-|---|---|---|---|
-| 1 | **qt-showcase** | Qt6 (Widgets) | **总展厅 Demo**：一个应用、九个 Tab，覆盖框架全部公开能力 |
-| 2 | **macos-appkit-mvvm** | macOS AppKit (ObjC++) | 自定义 `IViewAdapter` 绑定原生 `NSTextField`/`NSButton` |
-| 3 | **ios-oc-uikit-mvvm** | iOS UIKit (ObjC++) | 自定义 `IViewAdapter` 绑定原生 UIKit 控件 |
-| 4 | **web-mvvm** | Web（HTTP/REST/SSE） | `HttpAdapter` 把 C++ ViewModel 暴露给浏览器，可选 HTTPS |
-| 5 | **android-jni-mvvm** | Android（JNI + Compose） | 从 Kotlin 驱动同一个 C++ ViewModel |
-
-**无界面 / 控制台示例**（`ARIA_BUILD_EXAMPLES=ON`）：
-
-| 项目 | 演示内容 |
-|------|----------|
-| **inspector-demo** | CLI 响应式图 flush 追踪器 |
-| **plugin-property-demo** | 跨 dylib 的 ABI 冒烟测试 |
-| **todomvc** | 无界面 TodoMVC：`ObservableList` + `FilteredList` + `Selection` |
-
-<details>
-<summary>📖 构建并运行示例</summary>
-
-```bash
-# 示例 1（Qt）
-cmake -S . -B build/flavors/qt-demo -DARIA_BUILD_QT6=ON
-cmake --build build/flavors/qt-demo -j
-./build/flavors/qt-demo/bin/ex_qt_showcase
-
-# 示例 4（web）—— 需要 HTTP 适配器
-cmake -S . -B build/flavors/web-demo -DARIA_BUILD_HTTP=ON
-cmake --build build/flavors/web-demo --target example_4_web_mvvm
-```
-
-示例 2、3 不参与 CMake 构建 —— 直接打开 Xcode 工程运行；示例 5 是 Android Studio / Gradle 工程（需 NDK r26+）。
-</details>
+[AriaTools](https://github.com/dqsjqian/AriaTools) 是唯一的旗舰跨平台示例，集中展示 Qt、iOS 和 Android 集成；Web 端持续完善中。Aria 仓库本身不再承载应用示例，框架行为由 `tests/acceptance/` 和各模块测试固定，文档只保留聚焦单一概念的最小片段。
 
 ## ⚙️ 构建选项
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `ARIA_BUILD_TESTS` | ON | 构建单元测试并注册到 ctest。 |
-| `ARIA_BUILD_EXAMPLES` | ON | 构建所有示例。 |
 | `ARIA_BUILD_BENCHMARK` | ON | 构建微基准测试。 |
 | `ARIA_BUILD_SHARED` | ON | runtime/binding 编译为动态库。 |
-| `ARIA_BUILD_QT6` | OFF | 构建 Qt6 适配器和 GUI 示例。 |
+| `ARIA_BUILD_QT6` | OFF | 构建 Qt6 适配器。 |
 | `ARIA_BUILD_APPKIT` | OFF | macOS AppKit 适配器（需 `APPLE`）。 |
 | `ARIA_BUILD_UIKIT` | OFF | iOS UIKit 适配器（需 `APPLE`）。 |
 | `ARIA_BUILD_JNI` | OFF | Android JNI 适配器（需 NDK r26+）。 |
-| `ARIA_BUILD_HTTP` | OFF | HTTP/REST/SSE 适配器 + Web 示例。 |
+| `ARIA_BUILD_HTTP` | OFF | 构建 HTTP/REST/SSE 适配器。 |
 | `ARIA_BUILD_WASM` | OFF | *(计划中)* WebAssembly 适配器。 |
 | `ARIA_ENABLE_ASAN` | OFF | AddressSanitizer。 |
 | `ARIA_ENABLE_UBSAN` | OFF | UndefinedBehaviorSanitizer。 |
@@ -301,9 +287,9 @@ Task<std::string> fetch_user(int id) {
 | Windows | Qt6 / WinUI | `aria-qt6` | ✅ MSYS2 UCRT64 + MSVC 2022 |
 | macOS | AppKit / Qt6 | `aria-qt6` / `aria-appkit` | ✅ 可用 |
 | Linux | Qt6 / GTK | `aria-qt6` | ✅ 可用 |
-| iOS | UIKit / SwiftUI bridge | `aria-uikit` | ✅ 可用（示例 3） |
+| iOS | UIKit / SwiftUI bridge | `aria-uikit` | ✅ 可用 |
 | Android | Compose / View | `aria-jni` | ✅ 就绪（NDK r26+） |
-| **Web（服务端驱动）** | **浏览器 HTML/JS** | **`aria-http`** | **✅ REST + SSE（示例 4）** |
+| **Web（服务端驱动）** | **浏览器 HTML/JS** | **`aria-http`** | **✅ REST + SSE** |
 | Web（浏览器内 C++） | DOM via WASM | `aria-wasm` | 🔜 计划中 |
 
 ## 🧪 测试状态
