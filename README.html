@@ -332,7 +332,6 @@ cmake --build build/flavors/release -j <span class="pl-k">&amp;&amp;</span> sudo
 <p dir="auto"><strong>方式 B —— 直接嵌入（不安装）</strong>：</p>
 <div class="highlight highlight-source-cmake" dir="auto"><pre class="notranslate"><span class="pl-c1">add_subdirectory</span>(<span class="pl-s">third_party/aria</span> <span class="pl-c1">EXCLUDE_FROM_ALL</span>)
 <span class="pl-c1">target_link_libraries</span>(<span class="pl-s">my_app</span> <span class="pl-c1">PRIVATE</span> <span class="pl-s">aria::core</span> <span class="pl-s">aria::async</span>)</pre></div>
-<p dir="auto">即拷即用的模板在 <a href="templates/quickstart/"><code class="notranslate">templates/quickstart/</code></a>。</p>
 <h2 dir="auto">💻 旗舰示例</h2>
 <p dir="auto"><a href="https://github.com/dqsjqian/AriaTools">AriaTools</a> 是唯一的旗舰跨平台示例，集中展示 Qt、iOS 和 Android 集成；Web 端持续完善中。Aria 仓库本身不再承载应用示例，框架行为由 <code class="notranslate">tests/acceptance/</code> 和各模块测试固定，文档只保留聚焦单一概念的最小片段。</p>
 <h2 dir="auto">⚙️ 构建选项</h2>
