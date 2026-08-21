@@ -4,7 +4,7 @@ Aria supports two distinct Android integration shapes. Use the typed `JniAdapter
 
 ## Typed View-backed path
 
-`JniAdapter` implements the same typed `IViewAdapter` surface as the other first-party adapters. Its host-side contract test pins the class shape; the View-backed runtime lab in AriaTools is the behavioral gate still being completed. For Android `View`-backed screens, construct the adapter and wire properties and commands through `BindingEngine`; do not replace typed values with a string-keyed property protocol.
+`JniAdapter` implements the same typed `IViewAdapter` surface as the other first-party adapters. Its host-side contract test pins the class shape; the View-backed runtime lab in AriaTools is the behavioral gate. For Android `View`-backed screens, construct the adapter and wire properties and commands through `BindingEngine`; do not replace typed values with a string-keyed property protocol.
 
 ```cpp
 // Called on the Android UI thread with real android.view.View objects.
@@ -26,7 +26,7 @@ adapter->notify_click(submit_view);
 
 `on_*_changed` installs the C++ subscription; the Java/Kotlin listener forwards the native event through the matching `notify_*` method. Listener ownership remains on Android while `BindingEngine` stays typed.
 
-`JniView` owns a JNI global reference, so its C++ wrapper must follow the native screen's lifetime. The end-to-end View-backed lab belongs to [AriaTools](https://github.com/dqsjqian/AriaTools), Aria's flagship cross-platform application for Qt, iOS, and Android. Its Web experience is a work in progress.
+`JniView` owns a JNI global reference, so its C++ wrapper must follow the native screen's lifetime. The end-to-end View-backed lab belongs to [AriaTools](https://github.com/dqsjqian/AriaTools), Aria's flagship cross-platform application for Qt, iOS, Android, and Web.
 
 ## Compose side-channel path
 

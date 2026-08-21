@@ -20,7 +20,7 @@ One shared core: Windows / macOS / Linux / iOS / Android / Web
 
 ## 🌟 Flagship example: AriaTools
 
-Start with [AriaTools](https://github.com/dqsjqian/AriaTools) to see Aria in a real application. It is Aria's single flagship cross-platform example, covering Qt, iOS, and Android; Web support is a work in progress. This repository now stays focused on the framework, acceptance tests, and minimal documentation snippets.
+Start with [AriaTools](https://github.com/dqsjqian/AriaTools) to see Aria in a real application. It is Aria's single flagship cross-platform example, driving Qt, iOS, Android, and Web from one C++ ViewModel. This repository now stays focused on the framework, acceptance tests, and minimal documentation snippets.
 
 ## 🚀 Aria in 30 seconds
 
@@ -247,7 +247,7 @@ target_link_libraries(my_app PRIVATE aria::core aria::async)
 
 ### Flagship example
 
-[AriaTools](https://github.com/dqsjqian/AriaTools) is the single flagship cross-platform example for Qt, iOS, and Android; its Web experience is a work in progress. The Aria repository no longer carries application examples. Framework behavior is pinned by `tests/acceptance/` and module tests, while these docs keep only focused, minimal snippets.
+[AriaTools](https://github.com/dqsjqian/AriaTools) is the single flagship cross-platform example, driving Qt, iOS, Android, and Web from one C++ ViewModel, with all four shells gated in CI. It is also the reference for both Android integration shapes: the Compose side-channel and the typed JniAdapter. The Aria repository no longer carries application examples. Framework behavior is pinned by `tests/acceptance/` and module tests, while these docs keep only focused, minimal snippets.
 
 ### Build options
 

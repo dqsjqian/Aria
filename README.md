@@ -20,7 +20,7 @@
 
 ## 🌟 旗舰示例：AriaTools
 
-想先看 Aria 如何落到真实应用？请从 [AriaTools](https://github.com/dqsjqian/AriaTools) 开始。它是 Aria 唯一的旗舰跨平台示例，覆盖 Qt、iOS 与 Android；Web 端持续完善中。本仓库只保留框架、验收测试和文档中的最小代码片段。
+想先看 Aria 如何落到真实应用？请从 [AriaTools](https://github.com/dqsjqian/AriaTools) 开始。它是 Aria 唯一的旗舰跨平台示例，同一份 C++ ViewModel 驱动 Qt、iOS、Android 与 Web 四端。本仓库只保留框架、验收测试和文档中的最小代码片段。
 
 ## 🚀 30 秒看懂 Aria
 
@@ -222,7 +222,7 @@ target_link_libraries(my_app PRIVATE aria::core aria::async)
 
 ## 💻 旗舰示例
 
-[AriaTools](https://github.com/dqsjqian/AriaTools) 是唯一的旗舰跨平台示例，集中展示 Qt、iOS 和 Android 集成；Web 端持续完善中。Aria 仓库本身不再承载应用示例，框架行为由 `tests/acceptance/` 和各模块测试固定，文档只保留聚焦单一概念的最小片段。
+[AriaTools](https://github.com/dqsjqian/AriaTools) 是唯一的旗舰跨平台示例，同一份 C++ ViewModel 驱动 Qt、iOS、Android 与 Web 四端，四端均由 CI 把关。它也是 Android 两种集成形态（Compose side-channel 与 typed JniAdapter）的参考实现。Aria 仓库本身不再承载应用示例，框架行为由 `tests/acceptance/` 和各模块测试固定，文档只保留聚焦单一概念的最小片段。
 
 ## ⚙️ 构建选项
 

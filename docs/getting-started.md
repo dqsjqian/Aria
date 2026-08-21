@@ -161,6 +161,6 @@ SwiftUI, Jetpack Compose, or HTML/DOM by swapping the adapter.
 ## Next steps
 
 - Read [`docs/architecture.md`](architecture.md) for the layering rationale.
-- Explore [AriaTools](https://github.com/dqsjqian/AriaTools), the flagship cross-platform application for Qt, iOS, and Android; its Web experience is a work in progress.
+- Explore [AriaTools](https://github.com/dqsjqian/AriaTools), the flagship cross-platform application for Qt, iOS, Android, and Web.
 - Browse `tests/acceptance/` for executable framework contracts and the focused snippets in these guides for individual concepts.
 - Run the benchmark: `./build/flavors/release/benchmark/aria_bench`.

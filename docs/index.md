@@ -7,7 +7,7 @@ A C++20 MVVM framework — one core, every platform.
 ## Getting Started
 
 - **[Getting Started →](getting-started.md)** — build, first Property, Computed, Command, ObservableList, Validation, Async, and a real ViewModel in 5 minutes.
-- **[AriaTools →](https://github.com/dqsjqian/AriaTools)** — the single flagship cross-platform application for Qt, iOS, and Android; Web integration is being completed there.
+- **[AriaTools →](https://github.com/dqsjqian/AriaTools)** — the single flagship cross-platform application for Qt, iOS, Android, and Web.
 
 ## Guides
 
