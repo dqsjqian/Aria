@@ -1,8 +1,7 @@
 # build-msvc.ps1 — Aria framework + tests + packaging on Visual Studio.
 #
 # All-in-one script: by default builds framework + tests + ctest + a
-# release package. Builds the framework libraries and tests only — does
-# NOT build examples (each demo has its own run-msvc.ps1).
+# release package. AriaTools is the separately maintained flagship sample.
 #
 # Default toolchain: Visual Studio (MSVC), located via vswhere. Supports
 # VS 2022 / 2026 (and any future version vswhere can find). The generator
@@ -22,8 +21,7 @@
 #   $env:ARIA_NO_QT6="1"
 #   $env:ARIA_VS_GENERATOR="Visual Studio 18 2026"  # override generator
 #
-# Notes: this script only builds the aria framework + tests; it does
-# NOT build examples. To run a demo use examples\1-qt-showcase\scripts\run-msvc.ps1.
+# AriaTools is the separately maintained flagship sample application.
 
 param(
     [string]$Mode = "default"
@@ -189,10 +187,6 @@ $DoCTest   = $false
 $DoPackage = $false
 $DoArchive = $false
 
-$CommonOpts = @(
-    "-DARIA_BUILD_EXAMPLES=OFF"
-)
-
 switch ($Mode) {
     "clean" {
         Write-Host "wiping $BuildDir/"
@@ -235,8 +229,6 @@ switch ($Mode) {
         exit 1
     }
 }
-
-$CMakeOpts += $CommonOpts
 
 # ── CMake ─────────────────────────────────────────────────────────────────────
 $cmake = Get-Command cmake.exe -ErrorAction SilentlyContinue

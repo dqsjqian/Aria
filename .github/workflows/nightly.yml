@@ -26,7 +26,6 @@ jobs:
           cmake -S . -B build/flavors/bench -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_TESTS=OFF \
-            -DARIA_BUILD_EXAMPLES=OFF \
             -DARIA_BUILD_BENCHMARK=ON \
             -DARIA_ENABLE_ASAN=OFF \
             -DARIA_ENABLE_UBSAN=OFF
@@ -85,8 +84,7 @@ jobs:
           cmake -S . -B build/flavors/tsan -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DARIA_ENABLE_TSAN=ON \
-            -DARIA_BUILD_TESTS=ON \
-            -DARIA_BUILD_EXAMPLES=OFF
+            -DARIA_BUILD_TESTS=ON
 
       - name: Build
         run: cmake --build build/flavors/tsan -j
@@ -126,7 +124,6 @@ jobs:
             -DARIA_ENABLE_ASAN=ON \
             -DARIA_ENABLE_UBSAN=ON \
             -DARIA_BUILD_TESTS=ON \
-            -DARIA_BUILD_EXAMPLES=OFF \
             -DARIA_BUILD_BENCHMARK=OFF
 
       - name: Build fuzzers

@@ -225,4 +225,4 @@ srv.Get("/api/status", [](const auto& req, auto& res) {
 
 - [View Binding →](../binding.md) — BindingEngine API reference
 - [RFC 0001 — HTTP Adapter →](../../rfc/0001-http-adapter.md)
-- [Demo 4 — Web MVVM →](../../../examples/4-web-mvvm/)
+- [AriaTools →](https://github.com/dqsjqian/AriaTools) — flagship cross-platform application; Web support is a work in progress

@@ -7,6 +7,7 @@ add_library(aria::binding ALIAS aria_binding)
 
 target_sources(aria_binding PRIVATE
     src/binding.cpp
+    src/view_adapter_base.cpp
     src/view_model.cpp
 )
 

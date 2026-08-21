@@ -16,14 +16,8 @@ project(aria
 # is documented at the top of scripts/build.sh:
 #
 #   build/ide/                IDE workspace
-#   build/flavors/<name>/     command-line + CI flavors, and the isolated
-#                             per-demo trees created by examples/<demo>/scripts/
-#                             (qt-demo / web-demo / their -msvc variants)
+#   build/flavors/<name>/     command-line + CI build flavors
 #   build/platforms/<name>/   cross-compilation targets
-#   build/examples/<name>/    MIRROR of this build's add_subdirectory examples
-#                             — never configure a standalone tree there (the
-#                             run scripts used to, which collided with the
-#                             mirror and recompiled the framework per demo)
 #   build/dist/               release artefacts (shared across flavors)
 #
 # Configuring straight into `build/` defeats two things that layout buys:
@@ -86,7 +80,6 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
 # ── Options ──────────────────────────────────────────────────────────────────
 option(ARIA_BUILD_TESTS      "Build tests"              ON)
-option(ARIA_BUILD_EXAMPLES   "Build examples"           ON)
 option(ARIA_BUILD_BENCHMARK  "Build benchmark"          ON)
 option(ARIA_BUILD_DOCS       "Build Doxygen docs"       OFF)
 option(ARIA_BUILD_SHARED     "Build runtime/binding as SHARED" ON)
@@ -124,8 +117,8 @@ add_library(aria::warnings ALIAS aria_warnings)
 # while keeping every other -Wl,-w* default in place.
 #
 # We attach it to the project-wide `aria_warnings` INTERFACE target so
-# every binary in the tree picks it up, including tests, examples, and
-# adapters. Linux / GNU ld and MSVC link.exe do not emit this warning,
+# every binary in the tree picks it up, including tests, acceptance gates,
+# and adapters. Linux / GNU ld and MSVC link.exe do not emit this warning,
 # so we gate strictly on Apple.
 if(APPLE)
     include(CheckLinkerFlag)
@@ -221,33 +214,11 @@ if(APPLE AND ARIA_BUILD_UIKIT)
     add_subdirectory(modules/adapters/uikit)
 endif()
 
-# ── Tests ────────────────────────────────────────────────────────────────────
+# ── Acceptance tests ─────────────────────────────────────────────────────────
 if(ARIA_BUILD_TESTS)
-    # doctest already pulled above; nothing to do here.
-endif()
-
-# ── Examples ─────────────────────────────────────────────────────────────────
-# Only the flagship Qt showcase is built via CMake.
-#
-# Example 2 (examples/2-macos-appkit-mvvm) is a self-contained Xcode
-# project targeting macOS AppKit + Objective-C++. It is not part of the
-# CMake build tree -- open its .xcodeproj in Xcode to build it.
-if(ARIA_BUILD_EXAMPLES)
-    add_subdirectory(examples/1-qt-showcase)
-    add_subdirectory(examples/inspector-demo)
-    # Cross-dylib ABI smoke (ROADMAP P2-A): host exe + plugin dylib that
-    # exercises aria::IProperty across a shared-library boundary. Only
-    # meaningful when the framework is built with shared libraries.
-    if(ARIA_BUILD_SHARED)
-        add_subdirectory(examples/plugin-property-demo)
-    endif()
-    # Headless TodoMVC: a full real-world ViewModel exercising the derived
-    # collection family (FilteredList / SortedList / MappedList) +
-    # Selection + Command, no GUI toolkit required.
-    add_subdirectory(examples/todomvc)
-    if(ARIA_BUILD_HTTP)
-        add_subdirectory(examples/4-web-mvvm)
-    endif()
+    # Cross-DSO and end-to-end contract gates that cannot be represented as
+    # ordinary in-process unit tests.
+    add_subdirectory(tests/acceptance)
 endif()
 
 # ── Benchmark ────────────────────────────────────────────────────────────────
@@ -427,7 +398,6 @@ message(STATUS "  Build type      : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard    : ${CMAKE_CXX_STANDARD}")
 message(STATUS "  Compiler        : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "  Tests           : ${ARIA_BUILD_TESTS}")
-message(STATUS "  Examples        : ${ARIA_BUILD_EXAMPLES}")
 message(STATUS "  Benchmark       : ${ARIA_BUILD_BENCHMARK}")
 message(STATUS "  Shared libs     : ${ARIA_BUILD_SHARED}")
 message(STATUS "  Qt6 adapter     : ${ARIA_BUILD_QT6}")

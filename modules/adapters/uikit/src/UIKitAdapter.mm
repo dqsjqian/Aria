@@ -5,8 +5,8 @@
 // into the signal. Subscriptions returned from on_*_changed / on_click
 // detach properly via SignalErased::disconnect_via_weak.
 
-#import "UIKitAdapter.hpp"
-#import "UIKitTableSource.hpp"
+#import "aria/adapters/uikit/UIKitAdapter.hpp"
+#import "aria/adapters/uikit/UIKitTableSource.hpp"
 
 #include "aria/abi/signal.hpp"
 #include "aria/abi/slot_factory.hpp"
@@ -19,6 +19,7 @@
 
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <unordered_map>
 #include <utility>
 #include <cstring>
@@ -81,8 +82,15 @@
     return self;
 }
 - (void)fire:(id)sender {
-    UISlider* s = (UISlider*)sender;
-    if (_cb) _cb((double)s.value);
+    double value = 0.0;
+    if ([sender isKindOfClass:[UISlider class]]) {
+        value = static_cast<double>(((UISlider*)sender).value);
+    } else if ([sender isKindOfClass:[UIStepper class]]) {
+        value = ((UIStepper*)sender).value;
+    } else {
+        return;
+    }
+    if (_cb) _cb(value);
 }
 @end
 
@@ -220,11 +228,39 @@ struct UIKitAdapter::Impl {
     std::mutex                                                                mu;
     std::unordered_map<Key, std::unique_ptr<Bridge>, KeyHash>                 bridges;
     std::unordered_map<const void*, std::vector<::aria::Subscription>>        destroy_subs;
+    // Handle → IView cache backing `view_for`. One UIKitView per UIView, so
+    // repeated `view_for(control)` calls share a single per-view
+    // subscription bucket inside BindingEngine.
+    std::unordered_map<const void*, std::unique_ptr<UIKitView>>               views;
 
     ~Impl() {
+        // Cached UIKitViews are moved out and destroyed AFTER the lock is
+        // released: ~UIKitView fires IView::on_destroy, whose handlers
+        // include our own `bridges.erase` lambda (which relocks `mu`) plus
+        // BindingEngine's bucket teardown and arbitrary user callbacks.
+        // Destroying them under the lock would self-deadlock on the first
+        // bridge handler. (Verified against the AppKit twin, where reverting
+        // this to a single locked `clear()` hangs modules/adapters/appkit/
+        // tests/test_appkit_view_for.mm.)
+        decltype(views) doomed;
+        {
+            std::lock_guard lk{mu};
+            doomed.swap(views);
+        }
+        doomed.clear();
         std::lock_guard lk{mu};
         bridges.clear();
         destroy_subs.clear();
+    }
+
+    // Destroy a cached view outside the lock, for the same reason as ~Impl.
+    [[nodiscard]] std::unique_ptr<UIKitView> extract_view(const void* key) {
+        std::lock_guard lk{mu};
+        auto it = views.find(key);
+        if (it == views.end()) return nullptr;
+        auto owned = std::move(it->second);
+        views.erase(it);
+        return owned;
     }
 
     template<class WireFn>
@@ -250,6 +286,32 @@ struct UIKitAdapter::Impl {
 
 UIKitAdapter::UIKitAdapter() : p_(std::make_unique<Impl>()) {}
 UIKitAdapter::~UIKitAdapter() = default;
+
+// ── view_for / release_view ────────────────────────────────────────────
+
+UIKitView& UIKitAdapter::view_for(UIView* view) {
+    if (!view)
+        throw std::invalid_argument("UIKitAdapter::view_for: view must not be nil");
+
+    const void* key = (__bridge const void*)view;
+    std::lock_guard lk{p_->mu};
+    auto it = p_->views.find(key);
+    if (it != p_->views.end()) return *it->second;
+
+    auto owned = std::make_unique<UIKitView>(view);
+    UIKitView* raw = owned.get();
+    p_->views.emplace(key, std::move(owned));
+    return *raw;
+}
+
+void UIKitAdapter::release_view(UIView* view) noexcept {
+    if (!view) return;
+    // Extract under the lock, destroy after it is released: ~UIKitView fires
+    // on_destroy, which reaches our own bridge cleanup (relocking `mu`) and
+    // then user callbacks.
+    auto doomed = p_->extract_view((__bridge const void*)view);
+    (void)doomed;
+}
 
 // ── Text ───────────────────────────────────────────────────────────────
 

@@ -4,7 +4,7 @@ Integrating Aria with iOS native UIKit applications. The UIKit adapter provides 
 
 **Include:** `#include "aria/adapters/uikit/UIKitAdapter.hpp"`
 
-> **Note:** This header is `.mm`-only — it imports `<UIKit/UIKit.h>`. Compile the consuming file as Objective-C++. The CMake target is INTERFACE because UIKit only links inside an iOS app target; the demo compiles the `.mm` directly.
+> **Note:** This header is `.mm`-only — it imports `<UIKit/UIKit.h>`. Compile the consuming file as Objective-C++. The CMake target is INTERFACE because UIKit only links inside an iOS app target; the consuming application compiles the `.mm` directly.
 
 ---
 
@@ -168,4 +168,4 @@ UIKit widgets must be accessed from the main thread. The adapter assumes all met
 
 - [View Binding →](../binding.md) — BindingEngine API reference
 - [AppKit Adapter →](appkit.md) — macOS counterpart
-- [Demo 3 — iOS UIKit MVVM →](../../../examples/3-ios-oc-uikit-mvvm/)
+- [AriaTools →](https://github.com/dqsjqian/AriaTools) — flagship cross-platform application (Qt, iOS, Android; Web in progress)

@@ -23,10 +23,12 @@ experience or prevents real regressions.
 
 ## Input: 2026-08 field feedback
 
-The current `Now` list is driven by a written review from an application
-author who built a 15-module, 4-platform app (Qt6 / UIKit / JNI+Compose)
-on top of Aria 1.1.0, plus a design study comparing Aria's reversible-
-effect story against Cordis.
+The `Landed` and `Now` lists below are driven by a written review from an
+application author who built a 15-module, 4-platform app
+(Qt6 / UIKit / JNI+Compose) on top of Aria 1.1.0, plus a design study
+comparing Aria's reversible-effect story against Cordis. The first pass of
+that triage has shipped; what is left in `Now` is mostly documentation and
+application guidance now owned by AriaTools.
 
 Two findings reframed the triage and are worth stating up front, because
 they change what the fix actually is:
@@ -34,17 +36,17 @@ they change what the fix actually is:
 - **Several reported "missing framework features" are shipped but
   undiscoverable.** `JniAdapter` already implements the full typed
   `IViewAdapter` contract and passes the shared conformance battery, yet
-  the reviewer wrote a string-protocol JNI bridge by hand — because
-  `examples/5-android-jni-mvvm` does exactly that, and
-  `docs/guide/adapters/jni.md` documents it as *the* pattern. A demo that
-  bypasses the adapter it is supposed to demonstrate is a worse defect
-  than a missing API.
+  the reviewer wrote a string-protocol JNI bridge by hand because the
+  former Android demo did exactly that, and `docs/guide/adapters/jni.md`
+  documented it as *the* pattern. A demo that bypasses the adapter it is
+  supposed to demonstrate is a worse defect than a missing API.
 - **Several "platform asymmetries" are demo asymmetries.** The reviewer
   contrasted Qt's `subs_attached_to(QObject*)` against a hand-rolled
-  process-global keepalive on iOS. `subs_attached_to` is not framework
-  API — it lives in `examples/1-qt-showcase/App/UiHelpers.h`. Neither
-  platform has it. The real gap is one missing `BindingEngine` entry
-  point, not per-platform work.
+  process-global keepalive on iOS. `subs_attached_to` was not framework
+  API — it lived in the former Qt showcase's local helpers. Neither
+  platform had it. The real gap was one missing `BindingEngine` entry
+  point, not per-platform work; it shipped as `BindingEngine::adopt` plus
+  a per-adapter `view_for`, and the demo helper is gone.
 
 Items the review asked for that Aria will **not** absorb are recorded in
 *Evaluated and declined* below, so they do not get re-proposed every time
@@ -62,200 +64,140 @@ The diagnostic worth keeping: in that app's Qt tip-calculator view, the
 binding block is nine `bind_*` calls and the surrounding hundred lines are
 widget construction, `view_for()` wrapping, and label back-fill. **The
 reactive core is not what costs users; the perimeter around it is.**
-Everything in `Adapter authoring ergonomics`, `First-contact
-documentation`, and `Adopt view-lifetime helpers into the framework`
-below comes from that observation rather than from the review, and is
+`Adapter authoring ergonomics` and `Adopt view-lifetime helpers into the
+framework` (both in `Landed`) and `First-contact documentation` (still in
+`Now`) come from that observation rather than from the review, and were
 prioritised on the same footing.
+
+---
+
+## Landed — 2026-08 triage, first pass
+
+Kept here (rather than deleted) because each entry answers a specific
+finding in the review above; a reader comparing the two sections can see
+what the response actually was.
+
+### Bind read-only reactive sources
+
+`aria::ReadOnlyReactive` / `ReadOnlyReactiveOf<T>` /
+`ReadOnlyReactiveOptional` in `aria/concepts.hpp` describe "readable +
+observable", which both `Property<T>` and `Computed<T>` satisfy. Every
+one-way binder now accepts them: `bind_*_oneway`, `bind_visible`,
+`bind_enabled`, `bind_text_projected`, `bind_optional_text`,
+`bind_text_converted_oneway`.
+
+The shipped `Property<T>&` overloads were kept alongside the new
+constrained templates, so existing symbols keep their ABI and passing a
+`Property` still selects the non-template overload. Two-way binders stay
+`Property`-only, and `test_binding_readonly_source.cpp` asserts the
+*absence* of a viable `bind_text(Computed&, view)` overload so a future
+refactor cannot silently widen it. The misleading `bind_text_projected`
+comment was corrected in the same change.
+
+### Public per-view subscription adoption
+
+`BindingEngine::adopt(IView&, Subscription)` exposes the per-view bucket
+that `bind_view_lifetime` already reached. A hand-written `on_changed`
+now gets exactly the lifetime a real binding has — released on
+view-destroy or engine teardown, whichever comes first.
+
+### Adopt view-lifetime helpers into the framework
+
+`view_for(handle)` moved into the adapters that own the `IView` subclass:
+`QtAdapter::view_for(QObject*)`, `AppKitAdapter::view_for(NSView*)`,
+`UIKitAdapter::view_for(UIView*)`. Each caches one wrapper per handle, so
+repeated calls share a single subscription bucket.
+
+The lifetime story differs per platform, deliberately: Qt evicts on
+`QObject::destroyed`; the ARC-based adapters retain their handle and so
+offer `release_view(handle)` for hosts that discard a control early.
+Teardown in all three destroys cached views *outside* the adapter mutex —
+`~AppKitView` fires `on_destroy`, which re-enters the adapter's own
+bridge cleanup. `test_appkit_view_for.mm` pins this: reverting that
+destructor to a single locked `clear()` deadlocks the suite.
+
+The former demos shrank as intended — the Qt showcase lost
+`subs_attached_to` and its `view_for` keepalive, and both the AppKit and
+UIKit controllers lost their `std::vector<std::unique_ptr<…View>>`
+members.
+
+### Adapter authoring ergonomics
+
+`ViewAdapterBase` (`aria/binding/view_adapter_base.hpp`) defaults all 25
+operations to the compliant L-39 unsupported path — warn through
+`runtime::Logger` under the stable `<platform>_adapter` category, then
+return a safe default — so a new adapter overrides only `platform_name()` plus
+what it genuinely supports. `report_unsupported` is `virtual` for hosts
+that would rather throw during bring-up. `IViewAdapter` is unchanged and
+the four first-party adapters still derive from it directly. Cookbook
+recipe 8 now starts from the base and states that the conformance
+battery ships with the public headers.
+
+### Bridge `IDispatcher` to `IExecutor`
+
+`aria::runtime::DispatcherExecutor` / `DispatcherScheduler` in
+`aria/runtime/dispatcher_executor.hpp`. The former Qt showcase consumed
+the framework versions and its local `App/Executors.h` was removed.
+
+### Make the executor-injection contract diagnosable
+
+The three `AsyncCommand` executor errors now name the remedy rather than
+just the violation, and the ordering constraint is contract **L-5b** in
+`docs/reference/lifecycle.md` (executors and timers before any
+`AsyncCommand`-owning view model). No bootstrap class — see *Evaluated
+and declined*.
+
+### Complete the binding quick reference
+
+`docs/guide/binding.md` now lists every shipped binding with its
+direction and accepted source types, including the previously omitted
+`bind_*_oneway` numeric family, `bind_text_converted*`,
+`bind_view_lifetime` and `adopt`, plus the two rules that explain the
+table (one-way takes any read-only source; two-way takes `Property`
+only).
+
+### First-contact documentation and flagship example boundary
+
+`README.md` / `README.en.md` now put a complete `Property` → `Computed` →
+`BindingEngine` example immediately after the AriaTools link, before the
+comparison, architecture, and toolchain material. AriaTools is the single
+flagship application; Aria keeps focused snippets and executable contract
+tests rather than a second application suite.
+
+### Correct JNI guidance
+
+`docs/guide/adapters/jni.md` now separates the typed `JniAdapter` path for
+addressable Android `View` objects from the Compose side-channel path and
+includes a worked `BindingEngine` example. The host-side interface contract is
+pinned in Aria; the end-to-end View-backed behavioral lab is owned by AriaTools.
+
+### Retire application examples without losing verification
+
+The former `examples/` tree is removed. Its contract value moved into tests:
+TodoMVC became a core integration test, cross-DSO `IProperty` moved to
+`tests/acceptance/cross_dylib_iproperty`, and UIKit conformance became an
+independent simulator target. User-facing integration lives in AriaTools.
+
+### UIKit simulator CI
+
+The shared adapter conformance battery now builds and runs as
+`test_uikit_conformance` inside an iOS simulator. Moving it out of the example
+app exposed and fixed two real integration defects: the target omitted
+CoreGraphics, and the double callback treated every sender as `UISlider`
+instead of supporting `UIStepper` as advertised.
+
+### Documentation state pass
+
+README Markdown/HTML mirrors, architecture, guides, scripts, package layout,
+CI, and this roadmap now agree: Qt6/AppKit/UIKit/JNI/HTTP are shipped opt-in
+adapters; WASM and Swift/SwiftUI remain triggered work; application examples
+live in AriaTools.
 
 ---
 
 ## Now — small, concrete, high-confidence
 
 These should be done before adding broad new surface area.
-
-### Bind read-only reactive sources
-
-`BindingEngine` takes `Property<T>&` everywhere, so a `Computed<T>`
-cannot be bound at all — despite the `bind_text_projected` comment block
-in `modules/binding/include/aria/binding/binding_engine.hpp` explicitly
-advertising "a `Computed`'s formatted output" as a supported case. Every
-derived display value therefore falls back to a hand-written
-`on_changed` plus a caller-owned subscription, which is what pushed the
-reviewer into the global-keepalive workaround.
-
-`Computed<T>` already exposes `get()` / `on_changed()` — the same shape
-the engine needs. The work is to bind against that shape instead of the
-concrete `Property<T>`:
-
-- introduce a read-only reactive-source concept covering `Property<T>`
-  and `Computed<T>`;
-- accept it in the one-way bindings (`*_oneway`, `bind_text_projected`,
-  `bind_optional_text`, `bind_visible`, `bind_enabled`);
-- leave two-way bindings `Property`-only — a computed value has no
-  write-back path, and that should stay a compile error.
-
-Fix the misleading comment in the same change.
-
-### Public per-view subscription adoption
-
-The engine already owns a per-view subscription bucket keyed on
-`IView::on_destroy`, and `bind_view_lifetime` already reaches it — but
-only to register a teardown callback. There is no way for a caller to
-hand an arbitrary `Subscription` to that bucket, so anyone who writes a
-manual `on_changed` has to invent their own storage. Both the Qt demo
-(`subs_attached_to`) and the reviewer's iOS layer (a process-global
-`std::vector<Subscription>` that never releases) exist purely to fill
-this hole.
-
-Expose the existing bucket:
-
-```cpp
-void adopt(IView& view, Subscription s);   // released on view-destroy
-```
-
-This is a small addition over machinery that already ships, it removes
-the leak class outright, and it lets the Qt demo drop its own helper.
-
-### Adapter authoring ergonomics
-
-*(Maintainer self-review — not raised in the field report.)*
-
-`IViewAdapter` declares 25 pure virtuals: text, bool, int, int64, uint64,
-float, double each with `set_` / `get_` / `on_*_changed`, plus
-`set_visible`, `set_enabled`, `on_click`, `platform_name`. There is no
-base class. An author who only needs text and click must still write all
-25, and there is no compile-time help toward the L-39 contract — every
-unsupported path must hand-roll its own `warn_unsupported_`, exactly as
-`docs/cookbook/08-writing-a-view-adapter.md` spells out by hand.
-
-This is a real barrier to the framework's central promise. "Bring your
-own UI host" is only credible if hosting costs an afternoon, and today
-the floor is 25 methods regardless of ambition.
-
-Add an opt-in base that defaults every operation to the compliant
-unsupported path (warn via the callback boundary, return a safe default),
-so an adapter overrides only what it genuinely supports:
-
-- keep `IViewAdapter` unchanged — it is ABI-stable and shipped;
-- add the base alongside it, no behavioural change to existing adapters;
-- migrate the cookbook recipe to start from the base and shrink to the
-  operations being demonstrated.
-
-Related: the `adapter_conformance` battery is already installed with the
-public headers, so third-party adapters can verify themselves — this is
-shipped and only needs to be stated in the recipe.
-
-### First-contact documentation
-
-*(Maintainer self-review — not raised in the field report.)*
-
-`README.md` reaches its first line of Aria code at **line 260**, under
-"Hello, world". Ahead of it: a competitor comparison table, a
-ten-module architecture diagram, environment requirements, build
-scripts, a Windows toolchain section, and build options. A reader
-evaluating whether the reactive model suits them has to scroll past all
-of it.
-
-The field report's "all my API knowledge came from reading source" has
-the same root as the `jni.md` defect: the material exists and is not
-positioned where a newcomer meets it.
-
-- lead with the smallest complete `Property` → `Computed` → binding
-  example, then the comparison and architecture material;
-- link `docs/guide/binding.md` and the cookbook from that example, since
-  both already answer the follow-up questions;
-- keep the build and toolchain sections — move them below first contact.
-
-Cheap, and it compounds with every other documentation item here.
-
-### Adopt view-lifetime helpers into the framework
-
-*(Maintainer self-review — generalises one reported symptom.)*
-
-Both shipped GUI demos independently grew the same two helpers:
-`view_for(native_handle)` to wrap a platform object as an `IView`, and a
-per-owner subscription store. The reviewer's app grew a third and fourth
-copy (`QtViewFactory`, `IosUi`), and its iOS copy leaks by construction.
-
-When every consumer writes the same wrapper, the framework has the wrong
-seam. `BindingEngine::adopt` above fixes the subscription half. The
-`view_for` half belongs in each platform adapter, which already owns the
-`IView` subclass and its handle-to-view cache:
-
-- give each adapter a documented `view_for`-equivalent entry point;
-- have the Qt and UIKit demos consume it and delete their local copies —
-  demos shrinking is the acceptance criterion.
-
-Explicitly **not** in scope: widget factories (`make_label`,
-`make_stack_vc`). Those are UI toolkit surface and stay in application
-code — see *Evaluated and declined*.
-
-### Bridge `IDispatcher` to `IExecutor`
-
-`IDispatcher` derives from `IDelayedScheduler`; `IExecutor` is a separate
-branch. Anything that needs a UI executor — `AsyncCommand` most of all —
-cannot take a platform dispatcher directly, so every host writes the same
-two forwarders. Aria ships them only inside a demo
-(`examples/1-qt-showcase/App/Executors.h`), which means each new
-application either copies them or rediscovers the need.
-
-Promote them to framework API next to `IDispatcher` (they are
-dispatcher-generic, not Qt-specific), and have the demo consume the
-framework version.
-
-### Make the executor-injection contract diagnosable
-
-Constructing an `AsyncCommand` before a real UI executor is installed
-fails with:
-
-> `AsyncCommand: cannot use InlineExecutor as the graph-thread executor
-> when worker runs on a different thread.`
-
-The statement is accurate and tells the reader nothing about what to do.
-Two cheap fixes:
-
-- rewrite the message to name the remedy (install a main-thread
-  `IExecutor` — e.g. the dispatcher bridge above — before constructing
-  `AsyncCommand` view models);
-- document the ordering constraint in `docs/reference/lifecycle.md`:
-  platform executors and timers must be installed **before** any
-  `AsyncCommand`-owning view model is constructed.
-
-Document the constraint; do not add a bootstrap/orchestrator class to
-enforce it (see *Evaluated and declined*).
-
-### Correct the JNI adapter guidance
-
-`examples/5-android-jni-mvvm` does not use `JniAdapter`. Its bridge
-pushes every property through `onPropertyChanged(String, String?)` into a
-`Map<String, String>` StateFlow, and `docs/guide/adapters/jni.md`
-presents that side-channel as the Android architecture. Readers
-reasonably conclude Aria has no typed Android binding, and rebuild the
-string protocol at application scale — losing type safety, list
-structure, and compile-time command checking in the process.
-
-The adapter is real and conformance-tested. The documentation is wrong
-about it. Required:
-
-- state in `jni.md` that `JniAdapter` is the typed, supported path for
-  Android `View`-backed UI, with a worked `BindingEngine` example;
-- keep the side-channel pattern documented, but scoped honestly: it is
-  the answer for **Compose**, which has no addressable view object to
-  bind to — not a general substitute for the adapter;
-- update the demo to bind at least one screen through `JniAdapter` so the
-  example proves the claim.
-
-This is documentation and example work, not new framework surface, and it
-is the highest-leverage item in this list.
-
-### Complete the binding quick reference
-
-The `docs/guide/binding.md` quick-reference table omits shipped API
-(`bind_text_converted`, `bind_float*`, `bind_view_lifetime`) and never
-mentions `Computed` at all. The reviewer read adapter and engine headers
-to reconstruct the surface. Once the read-only-source work lands, make
-the table exhaustive and state the direction and accepted source type for
-every entry.
 
 ### Publish generated API reference
 
@@ -270,35 +212,6 @@ infrastructure only:
 
 Do **not** build a custom docs site unless the generated reference proves
 insufficient.
-
-### Documentation state pass
-
-Keep shipped/planned status consistent across:
-
-- `README.md` / `README.en.md` and their tracked HTML mirrors;
-- `docs/architecture.md`;
-- `docs/index.md`;
-- this roadmap;
-- the backlog section in `CHANGELOG.md`.
-
-The important statuses today are:
-
-- shipped first-class adapters: Qt6, AppKit, UIKit, JNI, HTTP;
-- planned / triggered only: WASM, Swift / SwiftUI;
-- explicitly out of scope: declarative UI DSL, persistence, distributed
-  reactivity, full plugin framework, generic application framework.
-
-### Larger real-application case study
-
-Add one non-trivial example or written case study that exercises forms,
-list filtering/sorting/selection, async commands/resources, validation,
-errors, cancellation, and view lifetime. This is more valuable than more
-abstract API surface because it validates ergonomics end-to-end.
-
-Keep it small enough to maintain; it should be a representative app, not
-a product.
-
----
 
 ## Next — useful, but not urgent
 
@@ -344,13 +257,6 @@ implementation and needs no new API.
 
 Note: full dependency-graph-ordered teardown is a larger design and is
 **not** in scope here — see *Evaluated and declined*.
-
-### UIKit simulator CI
-
-The UIKit conformance battery should eventually run automatically on an
-iOS simulator. This is a quality gate, not a feature. Use it to prevent
-adapter regressions; do not let it expand into a mobile app test
-platform.
 
 ### Race-aware async trace
 
@@ -432,8 +338,8 @@ do not change it speculatively.
 Trigger: real plugin or binary-adapter pressure beyond the existing
 `IProperty<T>` smoke.
 
-The existing plugin-property demo is enough for current validation. Do
-not turn it into a plugin framework.
+The `tests/acceptance/cross_dylib_iproperty` acceptance test is enough for
+current validation. Do not turn it into a plugin framework.
 
 ### Enum two-way binding
 
@@ -502,9 +408,10 @@ Declined — every item is on the existing `Won't do` list (module systems,
 plugin runtime, generic application framework). A module system is the
 defining feature of the application shell that sits *above* Aria, and it
 is reasonable for that shell to own it. The C++ side of dynamic loading
-is also already addressed at the layer that matters: `plugin-property-demo`
-shows `extern "C"` + `IProperty<T>` type erasure crossing a `dylib`
-boundary, which is the ABI-safe primitive. Composing modules on top of
+is also already addressed at the layer that matters:
+`tests/acceptance/cross_dylib_iproperty` proves `extern "C"` +
+`IProperty<T>` type erasure crossing a `dylib` boundary, which is the
+ABI-safe primitive. Composing modules on top of
 that primitive is application work.
 
 Toolchain probing (`vswhere`, `xcode-select`, NDK paths) is likewise
@@ -517,7 +424,8 @@ startup sequence — inject executors, construct the core, load modules,
 register views.
 
 Declined as designed, accepted as documentation. The underlying
-constraint is real and is in `Now`: executors must be installed before
+constraint is real and is now documented as contract L-5b in
+`docs/reference/lifecycle.md`: executors must be installed before
 `AsyncCommand`-owning view models are constructed. But the sequence the
 request describes includes module loading and view registration, neither
 of which Aria owns — the class would have to reach into application
@@ -532,14 +440,16 @@ Requested: constrain binding direction via VM-declared metadata (a
 `BINDINGS` block) so juniors cannot pick the wrong direction.
 
 Declined. Direction is already encoded in the API surface —
-`bind_text_oneway` versus `bind_text`, and after the `Now` work a
-`Computed` source will make two-way binding a compile error rather than a
-convention. A parallel declaration layer would need macros or codegen,
+`bind_text_oneway` versus `bind_text`, and since the read-only-source
+work landed a `Computed` source makes two-way binding a compile error
+rather than a convention. A parallel declaration layer would need macros
+or codegen,
 duplicate information the call site already carries, and can drift out of
 sync with it.
 
 If the naming is the actual complaint, fix the naming and the reference
-table (both in `Now`) — not the binding model.
+table (the table is now exhaustive — see `docs/guide/binding.md`) — not
+the binding model.
 
 ### Widget factories and control creation
 
@@ -634,10 +544,10 @@ Declined — Aria already has all three properties, assembled differently:
 
 A `Scope` type would be a fourth spelling of ownership alongside
 `Subscription`, `SubscriptionBag`, and the `ViewModel` tree. Two of the
-three concrete gaps the study cited are addressed in `Now` by smaller
-means — `BindingEngine::adopt` for view-scoped subscriptions, ordered
-`Container` teardown for service ordering — without adding a competing
-lifetime primitive.
+three concrete gaps the study cited are answered by smaller means —
+`BindingEngine::adopt` for view-scoped subscriptions (landed), ordered
+`Container` teardown for service ordering (`Next`) — without adding a
+competing lifetime primitive.
 
 ### Type-safe service registry (beyond ordering)
 

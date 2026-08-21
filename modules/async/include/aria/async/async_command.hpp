@@ -136,16 +136,21 @@ inline void check_executor_safety_runtime(IExecutor& ui, IExecutor& worker) {
     if (!ui.is_safe_graph_executor()) {
         throw std::invalid_argument(
             "AsyncCommand: ui executor is not safe to use as the "
-            "graph-thread executor. Override "
-            "IExecutor::is_safe_graph_executor() in your subclass, or "
-            "use MainThreadExecutor.");
+            "graph-thread executor. Remedy: install a main-thread "
+            "IExecutor before constructing AsyncCommand-owning view "
+            "models -- use MainThreadExecutor, or wrap your platform "
+            "dispatcher with aria::runtime::DispatcherExecutor "
+            "(aria/runtime/dispatcher_executor.hpp). Third-party "
+            "executors must override IExecutor::caps() to advertise "
+            "SchedulerCaps::GraphSafe.");
     }
     if (!worker.is_safe_worker_executor()) {
         throw std::invalid_argument(
             "AsyncCommand: worker executor is not safe to host worker "
-            "tasks. Override IExecutor::is_safe_worker_executor() in "
-            "your subclass, or use ThreadPoolExecutor / "
-            "MainThreadExecutor.");
+            "tasks. Remedy: pass a ThreadPoolExecutor (or "
+            "MainThreadExecutor for single-threaded hosts) as the worker. "
+            "Third-party executors must override IExecutor::caps() to "
+            "advertise SchedulerCaps::WorkerSafe.");
     }
     auto* ui_inline     = dynamic_cast<InlineExecutor*>(&ui);
     auto* worker_inline = dynamic_cast<InlineExecutor*>(&worker);
@@ -156,7 +161,13 @@ inline void check_executor_safety_runtime(IExecutor& ui, IExecutor& worker) {
             "thread. The final co_await schedule_on(ui) would "
             "inline-resume on the worker thread and write reactive "
             "Properties from there, tripping the graph thread-affinity "
-            "invariant. Use MainThreadExecutor for the ui parameter.");
+            "invariant. Remedy: install a real main-thread executor "
+            "BEFORE constructing this view model -- MainThreadExecutor "
+            "in tests / console apps, or "
+            "aria::runtime::DispatcherExecutor{main_dispatcher()} in a "
+            "GUI host (aria/runtime/dispatcher_executor.hpp). See "
+            "docs/reference/lifecycle.md for the startup ordering "
+            "contract.");
     }
 }
 

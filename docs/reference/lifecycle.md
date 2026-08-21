@@ -138,6 +138,52 @@ If the user passes `InlineExecutor` as `ui` while the worker is not
 inline, the compile-time `static_assert` and the runtime
 `check_executor_safety_runtime` both reject it.
 
+### L-5b: Startup ordering — executors and timers before view models
+
+**Platform executors and delayed schedulers MUST be installed before
+any `AsyncCommand`-owning view model is constructed.**
+
+`AsyncCommand` validates its executors in its constructor, not on first
+execution. Constructing a view model that owns one before a real
+main-thread `IExecutor` exists therefore throws `std::invalid_argument`
+at construction time:
+
+> `AsyncCommand: cannot use InlineExecutor as the graph-thread executor
+> when worker runs on a different thread. Remedy: install a real
+> main-thread executor BEFORE constructing this view model …`
+
+Correct host startup order:
+
+1. create the platform dispatcher (`QtDispatcher`, `SimpleDispatcher`, …);
+2. wrap it for the async layer — `aria::runtime::DispatcherExecutor` for
+   `IExecutor`, `aria::runtime::DispatcherScheduler` for
+   `IDelayedScheduler` (both in `aria/runtime/dispatcher_executor.hpp`);
+3. construct view models, passing those executors in;
+4. build views and bind.
+
+```cpp
+// Order of member declaration = order of construction in the host shell.
+std::shared_ptr<QtDispatcher> dispatcher;   // 1  platform dispatcher
+runtime::DispatcherExecutor   ui_exec;      // 2  IExecutor  view of it
+runtime::DispatcherScheduler  delay;        // 2  IDelayedScheduler view of it
+async::ThreadPoolExecutor     worker;
+
+// 3  view models — constructed only after the executors above exist
+vm_login  = std::make_shared<LoginVm>(ui_exec, worker);   // owns AsyncCommand
+vm_search = std::make_shared<SearchVm>(delay);            // owns debounce
+
+// 4  views + bindings
+auto* view = build_view(*vm_login, engine);
+```
+
+In tests and console applications `MainThreadExecutor` plays the role of
+step 2 — it is already `GraphSafe | MainThread | Pumpable`.
+
+Aria states this ordering contract; the host enforces it. There is
+deliberately no bootstrap/orchestrator class: the startup sequence a real
+application needs also covers module loading and view registration,
+neither of which Aria owns.
+
 ### L-6: IScheduler / IDelayedScheduler timing contract
 
 Every scheduler abstraction in the framework virtually inherits from
@@ -862,6 +908,7 @@ its diagnostic value. Adapters are hot paths only on the
 | A8 | `ObservableList` slots holding cycles (slot.item points back at itself or each other) | Never released, leak | Avoid on the business side; the framework does not police it |
 | A9 | The same `Subscription` moved-from multiple times / destructed across threads | move-only forbids copy, but cross-thread move can still UAF (reactive backend) | Hold on the graph thread; if needed, post a reset task through the dispatcher |
 | A10 | Destroying a Reaction node currently being scheduled inside a reactive flush | The round vector holds raw pointers — potential UAF | Don't `bag.clear()` your own Effect from inside that Effect's body |
+| A11 | An adapter destroying its cached `IView` wrappers while holding its own mutex | `~IView` fires `on_destroy`, whose handlers include the adapter's own bridge cleanup — which re-locks that mutex and self-deadlocks | Move the cache out under the lock, then destroy it after the lock is released (see `QtAdapter` / `AppKitAdapter` / `UIKitAdapter` teardown, and `test_appkit_view_for.mm`) |
 
 ---
 

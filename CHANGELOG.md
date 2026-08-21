@@ -17,6 +17,81 @@ Aria is a modern C++20 MVVM framework — cross-platform, layered,
 coroutine-first. Everything below is implemented, tested and shipped in
 the current tree.
 
+### 2026-08-21 — bindable derived values, adapter-owned views, adapter base
+
+First pass over the 2026-08 field-review triage (see `docs/ROADMAP.md`
+→ *Landed*). All additive; no existing API changed behaviour.
+
+* **`Computed<T>` is bindable.** New concepts in `aria/concepts.hpp` —
+  `ReadOnlyReactive`, `ReadOnlyReactiveOf<T>`,
+  `ReadOnlyReactiveOptional` — describe "readable + observable", which
+  both `Property<T>` and `Computed<T>` satisfy. Every one-way binder now
+  accepts them: `bind_*_oneway` (text / bool / int / int64 / uint64 /
+  float / double), `bind_visible`, `bind_enabled`,
+  `bind_text_projected`, `bind_optional_text`,
+  `bind_text_converted_oneway`. A derived display value no longer needs a
+  mirror `Property` plus a hand-written `on_changed`.
+
+  The shipped `Property<T>&` overloads were kept next to the new
+  constrained templates, so exported symbols keep their ABI and a
+  `Property` argument still selects the non-template overload. **Two-way
+  binders remain `Property`-only** — a computed value has no write-back
+  path, so `bind_text(computed, view)` stays a compile error, asserted
+  statically in `test_binding_readonly_source.cpp`.
+
+* **`BindingEngine::adopt(IView&, Subscription)`** hands an arbitrary
+  subscription to the view's per-view bucket, released on view-destroy or
+  engine teardown. This is the escape hatch for anything the typed
+  `bind_*` surface does not cover, and it removes the "process-global
+  subscription vector that never releases" workaround.
+
+* **Adapters own the handle → `IView` mapping.**
+  `QtAdapter::view_for(QObject*)`, `AppKitAdapter::view_for(NSView*)` and
+  `UIKitAdapter::view_for(UIView*)` cache one wrapper per native handle,
+  so repeated calls share a single subscription bucket. Qt evicts on
+  `QObject::destroyed`; the ARC-based adapters retain their handle and add
+  `release_view(handle)` for hosts that discard a control early. All
+  three destroy cached views outside the adapter mutex, because view
+  teardown re-enters the adapter's own bridge cleanup.
+
+* **`ViewAdapterBase`** (`aria/binding/view_adapter_base.hpp`) — opt-in
+  base defaulting all 25 `IViewAdapter` operations to the compliant L-39
+  unsupported path (warn through `runtime::Logger` under the stable
+  `<platform>_adapter` category, then return a safe default). A new adapter overrides `platform_name()` plus only what
+  its toolkit supports. `report_unsupported` is `virtual`.
+  `IViewAdapter` itself is unchanged.
+
+* **`DispatcherExecutor` / `DispatcherScheduler`**
+  (`aria/runtime/dispatcher_executor.hpp`) bridge `IDispatcher` to
+  `IExecutor` / `IDelayedScheduler`. Previously these lived only inside
+  the Qt demo, so every host copied them.
+
+* **Diagnosable executor injection.** The three `AsyncCommand` executor
+  errors now name the remedy, not just the violation, and the startup
+  ordering constraint is contract **L-5b** in
+  `docs/reference/lifecycle.md`: platform executors and timers must be
+  installed before any `AsyncCommand`-owning view model is constructed.
+
+* **Docs.** `docs/guide/binding.md`'s quick reference is now exhaustive
+  (previously omitted the `bind_*_oneway` numerics,
+  `bind_text_converted*`, `bind_view_lifetime` and `adopt`, and never
+  mentioned `Computed`). Cookbook recipe 8 starts from `ViewAdapterBase`
+  and states that the conformance battery ships with the public headers.
+
+* **One flagship application instead of two demo suites.** User-facing
+  integration scenarios now live only in
+  [AriaTools](https://github.com/dqsjqian/AriaTools). The former
+  `examples/` tree is removed from Aria; its contract value moved into
+  module tests and `tests/acceptance/`: the TodoMVC derived-collection
+  workflow is a core test, cross-DSO `IProperty` remains a real shared-
+  library gate, and UIKit conformance runs as a standalone simulator
+  target rather than inside a sample app.
+
+* **UIKit conformance exposed two hidden integration defects.** The CMake
+  target now links CoreGraphics explicitly, and its double-value callback
+  reads both `UISlider` and `UIStepper` senders correctly instead of
+  unconditionally treating every `UIControl` as a slider.
+
 ### 2026-06-09 — submodule-friendly build + HTTP escape hatch
 
 Aria is now safe to consume via `add_subdirectory()` from a parent CMake

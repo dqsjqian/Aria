@@ -14,7 +14,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Mode B — vendored as a sub-folder (good for trying it out without installing):
 add_subdirectory(../.. aria
-    EXCLUDE_FROM_ALL  # don't build aria's own tests/examples
+    EXCLUDE_FROM_ALL  # don't build aria's own tests and optional targets
 )
 
 add_executable(my_app main.cpp)

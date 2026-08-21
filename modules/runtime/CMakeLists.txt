@@ -21,8 +21,12 @@ target_include_directories(aria_runtime PUBLIC
 
 target_compile_features(aria_runtime PUBLIC cxx_std_20)
 
+# aria::async is a header-only INTERFACE target that only depends on
+# aria::core, so linking it here creates no cycle. Needed by
+# include/aria/runtime/dispatcher_executor.hpp, which bridges
+# IDispatcher to async::IExecutor.
 target_link_libraries(aria_runtime
-    PUBLIC aria::core aria::abi Threads::Threads
+    PUBLIC aria::core aria::abi aria::async Threads::Threads
     PRIVATE aria::warnings
 )
 

@@ -39,6 +39,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 
@@ -109,6 +110,42 @@ public:
     [[nodiscard]] std::string_view platform_name() const noexcept override {
         return "appkit";
     }
+
+    // ── Handle → IView ──────────────────────────────────────────────────
+    /// Wrap a native `NSView*` as an `IView` owned by this adapter.
+    ///
+    /// Every host used to hand-roll this: allocate an `AppKitView`, then
+    /// park it in a `std::vector<std::unique_ptr<AppKitView>>` because
+    /// `BindingEngine` takes `IView&` and does not own its views. The
+    /// adapter already keeps a per-view registry for its ObjC signal
+    /// bridges, so it is the natural owner.
+    ///
+    ///     engine.bind_text(vm.name, adapter->view_for(nameField));
+    ///
+    /// Calling `view_for` twice for the same `NSView*` returns the *same*
+    /// `AppKitView`, so multiple bindings on one control share a single
+    /// per-view subscription bucket in `BindingEngine`.
+    ///
+    /// Lifetime — differs from the Qt adapter, deliberately:
+    /// `AppKitView` retains its `NSView*` via ARC, so a cached view keeps
+    /// the control alive and there is no "native handle died first" event
+    /// to evict on. Entries therefore live until the adapter is destroyed
+    /// (which fires each `IView`'s destroy signal and releases the
+    /// bindings), or until `release_view` is called explicitly for a
+    /// control the host is discarding early.
+    ///
+    /// Passing `nil` is a programming error and throws
+    /// `std::invalid_argument`.
+    [[nodiscard]] AppKitView& view_for(NSView* view);
+
+    /// Drop the cached `AppKitView` for `view`, if any.
+    ///
+    /// Fires that view's destroy signal, so `BindingEngine` releases every
+    /// binding wired to it, and releases the adapter's ARC reference to the
+    /// control. Use this when a host tears down part of its UI while
+    /// keeping the adapter alive (a closed panel, a recycled row). Calling
+    /// it for an unknown view is a harmless no-op.
+    void release_view(NSView* view) noexcept;
 
     // ── Text ────────────────────────────────────────────────────────────
     void                 set_text(::aria::binding::IView& v, std::string_view text) override;

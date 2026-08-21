@@ -44,3 +44,23 @@ target_link_libraries(test_appkit_table_source PRIVATE
 target_compile_options(test_appkit_table_source PRIVATE -fobjc-arc)
 
 add_test(NAME appkit_table_source COMMAND test_appkit_table_source)
+
+# ── view_for / release_view ──────────────────────────────────────────────
+# Handle → IView ownership moved from every host's local keepalive vector
+# into the adapter. Separate doctest entry point (own main).
+
+add_executable(test_appkit_view_for
+    test_appkit_view_for.mm
+)
+
+target_link_libraries(test_appkit_view_for PRIVATE
+    aria::adapters::appkit
+    aria::core
+    aria::binding
+    aria::async
+    doctest::doctest
+)
+
+target_compile_options(test_appkit_view_for PRIVATE -fobjc-arc)
+
+add_test(NAME appkit_view_for COMMAND test_appkit_view_for)

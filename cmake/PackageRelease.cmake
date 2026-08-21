@@ -13,16 +13,15 @@
 #   ├── lib/                    # static libs + import libs
 #   ├── bin/                    # DLLs (Windows)
 #   ├── cmake/aria/          # CMake package config
-#   ├── examples/               # example source code
 #   ├── LICENSE
 #   ├── README.md
 #   └── CHANGELOG.md
 
 # Output directory for the packaged release tree.
 #
-# Defaults to <repo>/build/dist/tree/ — a sibling of build/flavors/ and
-# build/examples/, sitting under a dedicated build/dist/ namespace so it
-# never collides with any flavor's CMake build dir. The archive target
+# Defaults to <repo>/build/dist/tree/ under a dedicated build/dist/
+# namespace, so it never collides with any flavor's CMake build dir. The
+# archive target
 # below puts .tar.gz / .zip into build/dist/archives/.
 get_filename_component(ARIA_REPO_ROOT_DIR "${PROJECT_SOURCE_DIR}" ABSOLUTE)
 set(ARIA_RELEASE_DIR "${ARIA_REPO_ROOT_DIR}/build/dist/tree"
@@ -41,23 +40,22 @@ add_custom_target(package-release
     COMMENT "Packaging aria release to ${ARIA_RELEASE_DIR}"
 )
 
+# Always start from an empty tree. `cmake --install` updates files in place and
+# never removes files that disappeared from the source package; without this,
+# retired content (such as the former examples/ tree) would survive forever in
+# build/dist/tree and leak into release archives.
+add_custom_command(TARGET package-release PRE_BUILD
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${ARIA_RELEASE_DIR}"
+    COMMENT "  - cleaning previous release tree"
+)
+
 # Step 2a: cmake install into release/ (always use Release config)
 add_custom_command(TARGET package-release POST_BUILD
     COMMAND ${CMAKE_COMMAND} --build "${CMAKE_BINARY_DIR}" --target install --config Release
     COMMENT "  - installing targets"
 )
 
-# Step 2b: copy examples source (always — examples sources live in the repo
-# regardless of ARIA_BUILD_EXAMPLES; they let consumers see end-to-end
-# integration patterns without having to clone the repo).
-add_custom_command(TARGET package-release POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${PROJECT_SOURCE_DIR}/examples"
-        "${ARIA_RELEASE_DIR}/examples"
-    COMMENT "  - copying examples"
-)
-
-# Step 2c: copy top-level docs
+# Step 2b: copy top-level docs
 foreach(doc_file LICENSE README.md README.en.md CHANGELOG.md)
     if(EXISTS "${PROJECT_SOURCE_DIR}/${doc_file}")
         add_custom_command(TARGET package-release POST_BUILD
@@ -127,7 +125,6 @@ add_custom_command(TARGET package-release POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E echo "    lib/        - static libraries + import libs"
     COMMAND ${CMAKE_COMMAND} -E echo "    bin/        - shared libraries, DLLs on Windows"
     COMMAND ${CMAKE_COMMAND} -E echo "    cmake/      - CMake package configuration"
-    COMMAND ${CMAKE_COMMAND} -E echo "    examples/   - example source code"
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "  Usage in consumer CMake:"
     COMMAND ${CMAKE_COMMAND} -E echo "    find_package(aria REQUIRED PATHS /path/to/release/cmake)"

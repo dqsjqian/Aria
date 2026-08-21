@@ -270,18 +270,79 @@ See adapter guides for platform-specific implementations:
 
 ## Quick Reference
 
-| Method | Direction | Types |
-|--------|-----------|-------|
-| `bind_text` | Two-way | `Property<string>` ↔ text input |
-| `bind_text_oneway` | VM→View | `Property<string>` → label |
-| `bind_text_projected` | VM→View | `Property<T>` → label via `T→string` |
-| `bind_optional_text` | VM→View | `Property<optional<T>>` → label (nullopt → empty_text) |
-| `bind_bool` | Two-way | `Property<bool>` ↔ checkbox |
-| `bind_int` | Two-way | `Property<int>` ↔ spin box |
-| `bind_double` | Two-way | `Property<double>` ↔ slider |
-| `bind_visible` | One-way | `Property<bool>` → visibility |
-| `bind_enabled` | One-way | `Property<bool>` → enabled |
-| `bind_command` | View→VM | `Command<>` ↔ button |
+Every binding the engine ships, with its direction and the source types it
+accepts. Two rules explain the whole table:
+
+- **One-way (VM→View) bindings accept any read-only reactive source** —
+  `Property<T>` *or* `Computed<T>` (formally, anything satisfying
+  `aria::ReadOnlyReactive`). A derived value needs no mirror property.
+- **Two-way bindings accept `Property<T>` only.** A `Computed` has no
+  write-back path, so passing one is a compile error rather than a silently
+  dropped edit.
+
+### Scalar bindings
+
+| Method | Direction | Source | View channel |
+|--------|-----------|--------|--------------|
+| `bind_text` | Two-way | `Property<string>` | text input |
+| `bind_text_oneway` | VM→View | `Property<string>` / `Computed<string>` | label text |
+| `bind_bool` | Two-way | `Property<bool>` | checkbox / switch |
+| `bind_bool_oneway` | VM→View | `Property<bool>` / `Computed<bool>` | checkbox / switch |
+| `bind_int` | Two-way | `Property<int>` | spin box / slider |
+| `bind_int_oneway` | VM→View | `Property<int>` / `Computed<int>` | spin box / progress bar |
+| `bind_int64` | Two-way | `Property<int64_t>` | 64-bit numeric input |
+| `bind_int64_oneway` | VM→View | `Property<int64_t>` / `Computed<int64_t>` | 64-bit numeric display |
+| `bind_uint64` | Two-way | `Property<uint64_t>` | unsigned numeric input |
+| `bind_uint64_oneway` | VM→View | `Property<uint64_t>` / `Computed<uint64_t>` | unsigned numeric display |
+| `bind_float` | Two-way | `Property<float>` | slider / opacity |
+| `bind_float_oneway` | VM→View | `Property<float>` / `Computed<float>` | slider / opacity |
+| `bind_double` | Two-way | `Property<double>` | slider / double spin box |
+| `bind_double_oneway` | VM→View | `Property<double>` / `Computed<double>` | numeric display |
+
+### Text projection and conversion
+
+| Method | Direction | Source | Notes |
+|--------|-----------|--------|-------|
+| `bind_text_projected` | VM→View | any `ReadOnlyReactive` of `T` | renders via `T → string`; the everyday "formatted label" binding |
+| `bind_optional_text` | VM→View | any `ReadOnlyReactive` of `optional<T>` | renders `*opt` via `T → string`; `nullopt` shows `empty_text` |
+| `bind_text_converted` | Two-way | `Property<T>` | full `Converter<T, string>`, parses text back into `T` |
+| `bind_text_converted_oneway` | VM→View | any `ReadOnlyReactive` of `T` | uses only the converter's `to_view` |
+
+### State, commands, lifetime
+
+| Method | Direction | Source | Notes |
+|--------|-----------|--------|-------|
+| `bind_visible` | VM→View | `Property<bool>` / `Computed<bool>` | inherently one-way — the view never writes visibility back |
+| `bind_enabled` | VM→View | `Property<bool>` / `Computed<bool>` | inherently one-way |
+| `bind_command` | View→VM | `Command<Args...>` | click → `execute(args...)`; also drives `enabled` from `can_execute(args...)` |
+| `bind_view_lifetime` | — | `std::function<void()>` | fires once on view-destroy (or engine teardown); use to cancel in-flight async work |
+| `adopt` | — | `Subscription` | hands an arbitrary subscription to the view's per-view bucket, released on view-destroy |
+
+> **When no binding fits**, write the `on_changed` by hand and hand the
+> resulting `Subscription` to `adopt(view, std::move(sub))`. That keeps the
+> lifetime story identical to a real binding — released on view-destroy — and
+> avoids the usual workaround of a long-lived subscription vector that never
+> releases anything.
+>
+> Composite labels are the common case: a binding has exactly one source, so
+> a label reading *two* values either gets a `Computed` on the ViewModel that
+> combines them (then it is a one-line `bind_text_oneway`), or stays a manual
+> `on_changed` + `adopt`.
+
+### Binding a derived value
+
+```cpp
+// ViewModel
+Property<double> bill{20.0};
+Property<int>    people{2};
+Computed<double> per_person{[this] { return bill.get() / people.get(); }};
+
+// View — Computed binds directly; no mirror Property, no manual on_changed.
+engine.bind_text_projected(vm.per_person, label,
+    [](double v) { return std::format("¥ {:.2f}", v); });
+
+engine.bind_text(vm.per_person, input);   // ✗ compile error: not writable
+```
 
 ---
 

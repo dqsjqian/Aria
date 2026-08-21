@@ -13,12 +13,8 @@
 # guard for direct `add_subdirectory()` use, but the canonical entry
 # is via the option.
 #
-# Existing Xcode example projects (examples/2-macos-appkit-mvvm) that
-# compile the .mm via their own build phases continue to work — the
-# headers expose the same `AppKitAdapter` / `AppKitView` types in the
-# global namespace via `using` aliases, and the .mm file is harmless
-# to compile twice (the AppKit symbols only matter for one final link
-# unit).
+# Consumers link this target directly. The public namespace and aliases
+# remain stable for source compatibility.
 
 if(NOT APPLE)
     return()

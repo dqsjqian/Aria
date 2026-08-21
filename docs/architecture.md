@@ -102,7 +102,7 @@ Translates between view-models (Property/Command) and platform widgets via
 `IViewAdapter`. Each adapter implements a small set of read/write/observe
 operations; `BindingEngine` glues them to bind one-way and two-way.
 
-#### Adapter conformance & demo wiring
+#### Adapter conformance & application wiring
 
 Qt6, AppKit and UIKit are all **production-grade adapters**:
 
@@ -122,21 +122,12 @@ Qt6, AppKit and UIKit are all **production-grade adapters**:
   is the single contract pinning all three adapters: 12 cases /
   25 assertions covering text / bool / int / double two-way, click,
   command + can_execute → enabled, view-destroy safety, and
-  feedback-loop suppression for converter-based bindings. AppKit
-  runs as the `appkit_conformance` ctest target; UIKit is fired from
-  `examples/3-ios-oc-uikit-mvvm`'s `application:didFinishLaunchingWithOptions:`
-  via `UIKitConformanceRunner` (env `ARIA_SKIP_CONFORMANCE=1` skips).
-* The two showcase apps — `examples/2-macos-appkit-mvvm` and
-  `examples/3-ios-oc-uikit-mvvm` — went from "half-framework" (using
-  `Property::on_changed` directly but hand-rolling click via
-  `objc_setAssociatedObject` / `target/action` and main-thread
-  marshalling via `dispatch_async`) to **full BindingEngine wiring**.
-  Each `RootViewController` now owns a single
-  `BindingEngine{adapter}` and routes VM↔View through
-  `bind_text_oneway(prop, view)` / `bind_command(cmd, view, tag)`. The
-  command path automatically wires `cmd.observe_can_execute →
-  set_enabled`, eliminating the per-button reentrancy bool the
-  earlier hand-written code needed.
+  feedback-loop suppression for converter-based bindings. Platform
+  conformance coverage belongs in tests rather than application demos.
+* [AriaTools](https://github.com/dqsjqian/AriaTools) is the flagship
+  cross-platform application for Qt, iOS, and Android (Web support is a
+  work in progress). It owns end-to-end application wiring, while this
+  repository keeps adapter contracts and minimal focused snippets.
 * Saturating int64/uint64 → int narrowing for native widgets that
   top out at `int` (NSStepper, UIStepper, QSpinBox) lives in
   `modules/binding/include/aria/binding/detail/numeric_saturate.hpp`

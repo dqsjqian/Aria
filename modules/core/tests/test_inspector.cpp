@@ -49,6 +49,23 @@ TEST_CASE("GraphInspector: to_dot emits a well-formed digraph") {
     CHECK(dot.back() == '\n');
 }
 
+TEST_CASE("GraphInspector: to_text renders every reachable node") {
+    Property<int> price(10);
+    price.set_debug_name("price");
+    Computed<int> doubled([&] { return price.get() * 2; });
+    doubled.set_debug_name("doubled");
+    (void)doubled.get();
+
+    const std::string text =
+        GraphInspector::to_text({static_cast<const Node*>(&doubled)});
+
+    CHECK(text.find("[Source] price") != std::string::npos);
+    CHECK(text.find("[Derivation] doubled") != std::string::npos);
+    CHECK(text.find("depth=") != std::string::npos);
+    CHECK(text.find("state=Clean") != std::string::npos);
+    CHECK(text.ends_with("\n"));
+}
+
 TEST_CASE("GraphInspector: to_json is parseable and captures versions") {
     Property<int> p(0);
     p.set_debug_name("p");

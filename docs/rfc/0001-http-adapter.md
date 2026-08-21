@@ -247,10 +247,10 @@ adapter (or a different framework — be honest about the limit).
 * **Unit tests** (`tests/test_http_adapter.cpp` — doctest):
   registry round-trip, shadow state set/get, subscription lifecycle,
   custom command registration, start/stop on ephemeral port.
-* **Integration test** (deferred): spawn the example, use libcurl
+* **Integration test** (deferred): spawn a minimal test host, use libcurl
   to hit each REST endpoint and `EventSource`-equivalent to read the
   SSE stream.
-* **Manual**: `examples/4-web-mvvm` is a working bidirectional demo.
+* **Manual**: exercise the adapter from a focused local test host; the flagship application's Web support in [AriaTools](https://github.com/dqsjqian/AriaTools) is still a work in progress.
 
 ## Future work (deferred, not blocking acceptance)
 

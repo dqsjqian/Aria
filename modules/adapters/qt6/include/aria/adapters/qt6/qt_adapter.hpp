@@ -1,11 +1,13 @@
 #pragma once
 
 #include "aria/abi/export.hpp"
+#include "aria/binding/binding_engine.hpp"
 #include "aria/binding/view_adapter.hpp"
 #include "qt_view.hpp"
 
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 
 namespace aria::adapters::qt6 {
 
@@ -30,6 +32,29 @@ public:
     [[nodiscard]] std::string_view platform_name() const noexcept override {
         return "qt6";
     }
+
+    // ── Handle → IView ─────────────────────────────────────────────────────
+    /// Wrap a native `QObject*` (typically a QWidget) as an `IView` owned
+    /// by this adapter.
+    ///
+    /// Every host used to hand-roll this: allocate a `QtView`, then park it
+    /// in some keepalive container because `BindingEngine` takes `IView&`
+    /// and does not own its views. The adapter already needs a per-object
+    /// registry (see the signal bridges), so it is the right owner.
+    ///
+    ///     be.bind_text(vm.name, adapter->view_for(nameEdit));
+    ///
+    /// Lifetime: the returned reference stays valid until the QObject is
+    /// destroyed (Qt's `destroyed` signal drops the entry, after the
+    /// `IView` destroy signal has fired and released every binding) or
+    /// until the adapter itself is destroyed. Calling `view_for` twice for
+    /// the same object returns the *same* `QtView`, so multiple bindings on
+    /// one widget share a single per-view subscription bucket in
+    /// `BindingEngine`.
+    ///
+    /// Passing `nullptr` is a programming error and throws
+    /// `std::invalid_argument`.
+    [[nodiscard]] QtView& view_for(QObject* obj);
 
     // ── Text ───────────────────────────────────────────────────────────────
     void set_text(binding::IView& v, std::string_view text) override;

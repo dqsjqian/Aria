@@ -5,6 +5,8 @@ set(CMAKE_AUTOMOC ON)
 add_executable(test_qt6
     test_main.cpp
     test_qt_adapter.cpp
+    test_qt_view_for.cpp
+    test_qt_demo_patterns.cpp
     test_list_model.cpp
     test_qt_conformance.cpp
 )

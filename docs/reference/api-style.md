@@ -515,8 +515,8 @@ Reasons:
 
 Aria follows semantic versioning (currently `1.1.0`); **during evolution
 we keep no deprecated aliases**. Every P0/P1 closure breaks all call
-sites outright in the same commit, and migrates the in-tree examples
-/ adapters / tests in that commit too.
+sites outright in the same commit, and migrates the adapters, tests,
+and documentation snippets in that commit too.
 
 Reasons:
 - A deprecated alias is "tomorrow's debt".
@@ -532,8 +532,7 @@ Per [[memory:j61ttodt]]:
   contain version literals like `v2.x`, `since 1.x`, `v1.x`.
 - Version evolution lives only in `CHANGELOG.md` and `README.md`.
 - Comments, documentation, and tests MUST be in English. Chinese is
-  permitted only inside `examples/` (per-demo source) and the
-  Chinese localised README files (`README.md` /
+  permitted only in the Chinese localised README files (`README.md` /
   `README.html`).
 
 ---
@@ -548,7 +547,7 @@ Before merging any PR, self-review:
 [ ] Template entries have BOTH a concept constraint AND a one-line static_assert
 [ ] Naming follows PascalCase types / snake_case functions / trailing_underscore_ members
 [ ] No new deprecated aliases
-[ ] No version literals in source; no Chinese comments / docs / tests outside examples/ and README.* (Chinese defaults)
+[ ] No version literals in source; no Chinese comments / docs / tests outside README.* (Chinese defaults)
 [ ] Exception what() satisfies the What/Where/How recipe
 [ ] detail/testing namespaces stay in their lanes: detail does NOT appear in public signatures
 [ ] Consistent with the relevant L-N in lifecycle.md; if there's a conflict, fix lifecycle.md first

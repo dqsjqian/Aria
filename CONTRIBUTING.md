@@ -19,7 +19,7 @@ build, test, and submit changes.
 - CMake >= 3.20
 - A full C++20 compiler: GCC >= 12, Clang >= 15 (AppleClang 15+), or
   MSVC v143 (VS 2022)
-- *(optional)* Qt6 >= 6.4 for the Qt adapter / showcase
+- *(optional)* Qt6 >= 6.4 for the Qt adapter
 
 ## Build & test
 
@@ -38,7 +38,7 @@ To change what gets built, just re-run `cmake -B build/flavors/<name>` with
 the option flipped; CMake updates the existing cache in place:
 
 ```bash
-cmake -B build/flavors/dev -DARIA_BUILD_EXAMPLES=ON   # add examples to the same tree
+cmake -B build/flavors/dev -DARIA_BUILD_QT6=ON   # enable an adapter in the same tree
 cmake --build build/flavors/dev -j
 ctest --test-dir build/flavors/dev --output-on-failure
 ```
@@ -49,11 +49,10 @@ Common options (all default to the value shown; flip on the existing
 | Option | Default | Effect |
 |---|---|---|
 | `ARIA_BUILD_TESTS` | `ON` | unit/fuzz suites + `ctest` |
-| `ARIA_BUILD_EXAMPLES` | `ON` | `examples/*` (Qt showcase auto-skips without `ARIA_BUILD_QT6`) |
 | `ARIA_BUILD_BENCHMARK` | `ON` | `benchmark/` |
-| `ARIA_BUILD_SHARED` | `ON` | runtime/binding as SHARED (required by the cross-dylib ABI smoke) |
-| `ARIA_BUILD_QT6` | `OFF` | Qt6 adapter + `examples/1-qt-showcase` |
-| `ARIA_BUILD_HTTP` | `OFF` | HTTP/REST/SSE adapter + `examples/4-web-mvvm` |
+| `ARIA_BUILD_SHARED` | `ON` | runtime/binding as SHARED (required by the cross-dylib acceptance test) |
+| `ARIA_BUILD_QT6` | `OFF` | Qt6 adapter |
+| `ARIA_BUILD_HTTP` | `OFF` | HTTP/REST/SSE adapter |
 | `ARIA_ENABLE_ASAN` / `_UBSAN` / `_TSAN` | `OFF` | sanitizer passes (use a *throwaway* tree only here, e.g. `build-asan/`, since the flags change the ABI) |
 
 > The one legitimate reason to keep a second tree is a sanitizer/ABI-altering

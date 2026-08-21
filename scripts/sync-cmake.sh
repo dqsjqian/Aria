@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# sync-cmake.sh — Auto-detect .cpp files on disk that are not referenced
-# by any CMakeLists.txt in their module / example.
+# sync-cmake.sh — Auto-detect module source files that are not referenced
+# by the corresponding CMakeLists.txt.
 #
 # Usage:
 #   ./scripts/sync-cmake.sh              # scan and report
@@ -13,13 +13,8 @@
 #   - modules/<mod>/src/*.cpp           against modules/<mod>/CMakeLists.txt
 #   - modules/<mod>/tests/*.cpp         against modules/<mod>/tests/CMakeLists.txt
 #     (falls back to the module CMakeLists if tests/CMakeLists.txt is missing)
-#   - examples/<ex>/**/*.cpp  (recursive)  against examples/<ex>/CMakeLists.txt
-#     GLOB / GLOB_RECURSE patterns in the CMakeLists count as "covered" —
-#     so GLOB'd example projects (demo1) won't produce false positives.
 #
-# Non-goals:
-#   - Xcode-only examples (no CMakeLists.txt) are skipped silently.
-#   - Headers are not checked (only .cpp).
+# Headers are not checked (only .cpp/.mm implementation files).
 
 set -eo pipefail
 
@@ -32,7 +27,6 @@ ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 
 MODULES_DIR="${PROJECT_DIR}/modules"
-EXAMPLES_DIR="${PROJECT_DIR}/examples"
 
 # ── Helper: is this .cpp file covered by the given CMakeLists.txt? ──────────
 # Coverage rules:
@@ -132,37 +126,5 @@ if [[ -d "$MODULES_DIR/adapters" ]]; then
         fi
     done
 fi
-
-# ── Scan examples/ (recursive) ───────────────────────────────────────────────
-info "Scanning examples/"
-
-shopt -s nullglob
-for ex_dir in "$EXAMPLES_DIR"/*/; do
-    ex_name=$(basename "$ex_dir")
-    cmake_file="${ex_dir}CMakeLists.txt"
-    if [[ ! -f "$cmake_file" ]]; then
-        info "  Example '$ex_name': no CMakeLists.txt (Xcode project?) — skipped"
-        continue
-    fi
-
-    missing=""
-    while IFS= read -r f; do
-        [[ -f "$f" ]] || continue
-        rel="${f#$ex_dir}"
-        if ! is_covered "$f" "$cmake_file"; then
-            missing="${missing}  + ${rel}"$'\n'
-        fi
-    done < <(find "$ex_dir" -type f -name '*.cpp' -not -path '*/build/*')
-
-    if [[ -n "$missing" ]]; then
-        warn "Example '$ex_name':"
-        printf '%s' "$missing"
-        echo "  → Add to $cmake_file"
-        echo ""
-    else
-        ok "Example '$ex_name': all sources referenced"
-    fi
-done
-shopt -u nullglob
 
 ok "Scan complete."
