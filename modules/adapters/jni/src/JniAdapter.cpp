@@ -109,7 +109,7 @@ struct JniAdapter::Impl {
     JavaVM* vm = nullptr;
 
     std::mutex                                                         mu;
-    std::unordered_map<Key, std::unique_ptr<Bridge>, KeyHash>          bridges;
+    std::unordered_map<Key, std::shared_ptr<Bridge>, KeyHash>          bridges;
     std::unordered_map<const void*, std::vector<::aria::Subscription>> destroy_subs;
 
     ~Impl() {
@@ -124,6 +124,12 @@ struct JniAdapter::Impl {
         JNIEnv* e = nullptr;
         vm->GetEnv(reinterpret_cast<void**>(&e), JNI_VERSION_1_6);
         return e;
+    }
+
+    std::shared_ptr<Bridge> bridge(const void* view, char kind) {
+        std::lock_guard lk{mu};
+        auto it = bridges.find(Key{view, kind});
+        return it == bridges.end() ? nullptr : it->second;
     }
 };
 
@@ -197,7 +203,7 @@ std::string JniAdapter::get_text(::aria::binding::IView& v) {
     if (!o || !cb) return {};
     std::lock_guard lk{p_->mu};
     auto& br = p_->bridges[Impl::Key{o, 't'}];
-    if (!br) br = std::make_unique<Bridge>();
+    if (!br) br = std::make_shared<Bridge>();
     auto id = br->sig.connect(make_slot(
         [cb = std::move(cb)](void* args) {
             cb(*static_cast<std::string_view*>(args));
@@ -238,7 +244,7 @@ bool JniAdapter::get_bool(::aria::binding::IView& v) {
     if (!o || !cb) return {};
     std::lock_guard lk{p_->mu};
     auto& br = p_->bridges[Impl::Key{o, 'b'}];
-    if (!br) br = std::make_unique<Bridge>();
+    if (!br) br = std::make_shared<Bridge>();
     auto id = br->sig.connect(make_slot(
         [cb = std::move(cb)](void* args) { cb(*static_cast<bool*>(args)); }));
     auto weak = br->sig.weak_handle();
@@ -277,7 +283,7 @@ int JniAdapter::get_int(::aria::binding::IView& v) {
     if (!o || !cb) return {};
     std::lock_guard lk{p_->mu};
     auto& br = p_->bridges[Impl::Key{o, 'i'}];
-    if (!br) br = std::make_unique<Bridge>();
+    if (!br) br = std::make_shared<Bridge>();
     auto id = br->sig.connect(make_slot(
         [cb = std::move(cb)](void* args) { cb(*static_cast<int*>(args)); }));
     auto weak = br->sig.weak_handle();
@@ -351,7 +357,7 @@ double JniAdapter::get_double(::aria::binding::IView& v) {
     if (!o || !cb) return {};
     std::lock_guard lk{p_->mu};
     auto& br = p_->bridges[Impl::Key{o, 'd'}];
-    if (!br) br = std::make_unique<Bridge>();
+    if (!br) br = std::make_shared<Bridge>();
     auto id = br->sig.connect(make_slot(
         [cb = std::move(cb)](void* args) { cb(*static_cast<double*>(args)); }));
     auto weak = br->sig.weak_handle();
@@ -389,14 +395,11 @@ void JniAdapter::set_enabled(::aria::binding::IView& v, bool enabled) {
 
 ::aria::Subscription JniAdapter::on_click(::aria::binding::IView& v,
         std::function<void()> cb) {
-    // Click events require a Java-side OnClickListener that calls back
-    // into native code; the Aria Android SDK installs it. The C++ side
-    // registers the slot onto a per-view Bridge here.
     jobject o = native_of(v);
     if (!o || !cb) return {};
     std::lock_guard lk{p_->mu};
     auto& br = p_->bridges[Impl::Key{o, 'c'}];
-    if (!br) br = std::make_unique<Bridge>();
+    if (!br) br = std::make_shared<Bridge>();
     auto id = br->sig.connect(make_slot(
         [cb = std::move(cb)](void*) { cb(); }));
     auto weak = br->sig.weak_handle();
@@ -407,6 +410,35 @@ void JniAdapter::set_enabled(::aria::binding::IView& v, bool enabled) {
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
+}
+
+void JniAdapter::notify_text_changed(::aria::binding::IView& v,
+                                     std::string_view value) {
+    if (auto bridge = p_->bridge(native_of(v), 't')) bridge->sig.emit(&value);
+}
+void JniAdapter::notify_bool_changed(::aria::binding::IView& v, bool value) {
+    if (auto bridge = p_->bridge(native_of(v), 'b')) bridge->sig.emit(&value);
+}
+void JniAdapter::notify_int_changed(::aria::binding::IView& v, int value) {
+    if (auto bridge = p_->bridge(native_of(v), 'i')) bridge->sig.emit(&value);
+}
+void JniAdapter::notify_int64_changed(::aria::binding::IView& v,
+                                      std::int64_t value) {
+    notify_int_changed(v, static_cast<int>(value));
+}
+void JniAdapter::notify_uint64_changed(::aria::binding::IView& v,
+                                       std::uint64_t value) {
+    notify_int_changed(v, static_cast<int>(value));
+}
+void JniAdapter::notify_float_changed(::aria::binding::IView& v, float value) {
+    notify_double_changed(v, static_cast<double>(value));
+}
+void JniAdapter::notify_double_changed(::aria::binding::IView& v,
+                                       double value) {
+    if (auto bridge = p_->bridge(native_of(v), 'd')) bridge->sig.emit(&value);
+}
+void JniAdapter::notify_click(::aria::binding::IView& v) {
+    if (auto bridge = p_->bridge(native_of(v), 'c')) bridge->sig.emit(nullptr);
 }
 
 }  // namespace aria::adapters::jni

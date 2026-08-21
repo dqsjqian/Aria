@@ -92,6 +92,13 @@ First pass over the 2026-08 field-review triage (see `docs/ROADMAP.md`
   reads both `UISlider` and `UIStepper` senders correctly instead of
   unconditionally treating every `UIControl` as a slider.
 
+* **JNI managed-event ingress.** `JniAdapter::notify_*` completes the
+  Java/Kotlin → C++ half of two-way binding. Android listeners retain native
+  listener ownership and forward text/bool/numeric/click events through the
+  same `JniView` wrapper used by `BindingEngine`; unbound channels are safe
+  no-ops. The bridge snapshots shared ownership before emitting, so view
+  teardown cannot invalidate an in-flight callback.
+
 ### 2026-06-09 — submodule-friendly build + HTTP escape hatch
 
 Aria is now safe to consume via `add_subdirectory()` from a parent CMake

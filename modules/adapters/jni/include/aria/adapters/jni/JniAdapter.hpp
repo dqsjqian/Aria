@@ -147,6 +147,21 @@ public:
     ::aria::Subscription on_click(::aria::binding::IView& v,
         std::function<void()> cb) override;
 
+    // ── Java/Kotlin event ingress ───────────────────────────────────────
+    // Android listeners live on the managed side. They call these methods
+    // from JNI to fan a native View event into the subscriptions installed
+    // by on_*_changed / on_click. Pass the same JniView wrapper that was
+    // bound through BindingEngine; notifications for unbound channels are
+    // harmless no-ops.
+    void notify_text_changed(::aria::binding::IView& v, std::string_view value);
+    void notify_bool_changed(::aria::binding::IView& v, bool value);
+    void notify_int_changed(::aria::binding::IView& v, int value);
+    void notify_int64_changed(::aria::binding::IView& v, std::int64_t value);
+    void notify_uint64_changed(::aria::binding::IView& v, std::uint64_t value);
+    void notify_float_changed(::aria::binding::IView& v, float value);
+    void notify_double_changed(::aria::binding::IView& v, double value);
+    void notify_click(::aria::binding::IView& v);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> p_;
