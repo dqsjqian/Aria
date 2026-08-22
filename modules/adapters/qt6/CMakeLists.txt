@@ -1,4 +1,4 @@
-# Qt6 adapter — only built when ARIA_BUILD_QT6=ON.
+# Qt6 adapter - only built when ARIA_BUILD_QT6=ON.
 #
 # Linux/MSYS2:   pacman -S mingw-w64-ucrt-x86_64-qt6-base    (Win)
 #                apt install qt6-base-dev libqt6widgets6-dev (Ubuntu)
@@ -53,7 +53,7 @@ target_include_directories(aria_qt6 PUBLIC
 
 target_compile_features(aria_qt6 PUBLIC cxx_std_20)
 
-# Disable Qt's "emit"/"signals"/"slots" macros — they collide with our
+# Disable Qt's "emit"/"signals"/"slots" macros - they collide with our
 # SignalErased::emit() method and any user method named `signals`/`slots`.
 # Use Q_EMIT / Q_SIGNALS / Q_SLOTS instead inside Qt code that we author.
 target_compile_definitions(aria_qt6 PUBLIC QT_NO_KEYWORDS)
