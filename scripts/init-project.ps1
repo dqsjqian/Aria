@@ -196,6 +196,24 @@ $QtTaskArgs
             "problemMatcher": []
         },
         {
+            "label": "aria: configure (TSan)",
+            "type": "shell",
+            "command": "cmake",
+            "args": ["-S", "`${workspaceFolder}", "-B", "`${workspaceFolder}/build/flavors/tsan", "-G", "$Generator", "-DCMAKE_BUILD_TYPE=Debug", "-DARIA_ENABLE_TSAN=ON", "-DARIA_BUILD_TESTS=ON"],
+            "options": { "env": { "PATH": "$PathEnvEsc" } },
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "aria: ctest (TSan)",
+            "type": "shell",
+            "command": "powershell",
+            "args": ["-NoProfile", "-Command", "cmake --build build/flavors/tsan -j; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; `$env:TSAN_OPTIONS='halt_on_error=1'; ctest --test-dir build/flavors/tsan --output-on-failure --timeout 600"],
+            "options": { "env": { "PATH": "$PathEnvEsc" } },
+            "dependsOn": ["aria: configure (TSan)"],
+            "problemMatcher": []
+        },
+        {
             "label": "aria: docs",
             "type": "shell",
             "command": "cmake",
