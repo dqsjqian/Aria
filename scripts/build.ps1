@@ -17,6 +17,7 @@
 #     │     ├── release\
 #     │     ├── debug\
 #     │     ├── asan\
+#     │     ├── tsan\
 #     │     └── tsan-gate\
 #     ├── platforms\            cross-compilation targets
 #     │     └── android\      scripts\build.ps1 android (NDK cross-build)
@@ -40,7 +41,9 @@
 #   scripts\build.ps1 debug          # Debug framework + tests
 #   scripts\build.ps1 tests          # Release framework + tests + ctest (no package)
 #   scripts\build.ps1 asan           # Debug + AddressSanitizer + UBSan
+#   scripts\build.ps1 tsan           # Debug + ThreadSanitizer
 #   scripts\build.ps1 pack-zip       # Default flow plus build\packages\aria-*.zip
+#   scripts\build.ps1 tsan-gate      # Pre-release TSan gate (CHANGELOG promises every release is TSan-clean)
 #   scripts\build.ps1 android        # Android NDK cross-build (JNI adapter)
 #   scripts\build.ps1 clean          # Wipe build\
 #
@@ -308,6 +311,32 @@ switch ($Mode) {
         if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir }
         exit 0
     }
+    "tsan-gate" {
+        # Release-verification gate: reconfigure into a side build dir
+        # under TSan, build the test binaries, run all of them. Halts
+        # on the first race report. CHANGELOG promises every release
+        # is TSan-clean; this is the script that enforces it.
+        Write-Host "> release-gate: TSan stress"
+        New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
+        & cmake -S . -B $BuildDir `
+            -DCMAKE_BUILD_TYPE=Debug `
+            -DARIA_ENABLE_TSAN=ON `
+            -DARIA_ENABLE_ASAN=OFF `
+            -DARIA_ENABLE_UBSAN=OFF `
+            -DARIA_BUILD_QT6=OFF
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & cmake --build $BuildDir `
+            --target test_async test_binding test_core test_abi test_runtime `
+            -j $Jobs
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $env:TSAN_OPTIONS = "halt_on_error=1 history_size=7"
+        foreach ($t in @("test_async", "test_binding", "test_core", "test_abi", "test_runtime")) {
+            & (Join-Path $BuildDir "bin\$t.exe")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
+        Write-Host "[OK] TSan release-gate green"
+        exit 0
+    }
     "android" {
         # Android NDK cross-build: configure with Android toolchain,
         # build the JNI adapter + core libraries.
@@ -385,6 +414,11 @@ switch ($Mode) {
                        "-DARIA_ENABLE_ASAN=ON",
                        "-DARIA_ENABLE_UBSAN=ON")
     }
+    "tsan"    {
+        $CMakeOpts = @("-DCMAKE_BUILD_TYPE=Debug",
+                       "-DARIA_BUILD_TESTS=ON",
+                       "-DARIA_ENABLE_TSAN=ON")
+    }
     "tests"   {
         $CMakeOpts = @("-DCMAKE_BUILD_TYPE=Release", "-DARIA_BUILD_TESTS=ON")
         $DoCTest = $true
@@ -397,7 +431,7 @@ switch ($Mode) {
     }
     default {
         Write-Host "unknown mode: $Mode"
-        Write-Host "valid: (none) | release | debug | tests | asan | pack-zip | android | clean"
+        Write-Host "valid: (none) | release | debug | tests | asan | tsan | pack-zip | tsan-gate | android | clean"
         exit 1
     }
 }
