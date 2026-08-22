@@ -167,6 +167,7 @@ scripts/build.sh clean
 scripts\build.ps1            # release
 scripts\build.ps1 tests
 scripts\build.ps1 asan
+scripts\build.ps1 tsan       # debug + ThreadSanitizer (not available on MSVC, see below)
 
 # Windows — MSVC / Visual Studio 2022
 scripts\build-msvc.ps1       # release  (build/flavors/msvc/ tree)
