@@ -58,6 +58,35 @@ try {
         [Environment]::SetEnvironmentVariable("PATH", $pathValue)
     }
 
+    # Strip MSYS2/MinGW directories from PATH and make CMake blind to them.
+    # CMake derives search prefixes from PATH, so a lingering
+    # <msys64>\<sub>\bin lets find_package/find_path resolve MSYS2 packages
+    # during the MSVC configure. Observed failure: Qt's FindWrapVulkanHeaders
+    # -> find_package(Vulkan) picked up MSYS2's vulkan headers, injecting
+    # mingw-w64 CRT headers (corecrt.h / math.h with __asm__) into the MSVC
+    # compilation and exploding inside vcruntime.h with hundreds of errors.
+    $msysPrefixes = @($env:PATH -split ';' |
+        Where-Object { $_.Trim() -match 'msys64|mingw' } |
+        ForEach-Object { Split-Path -Parent ($_.Trim()) } |
+        Sort-Object -Unique)
+    if ($msysPrefixes) {
+        $env:PATH = (@($env:PATH -split ';' |
+            Where-Object { $_.Trim() -and ($_.Trim() -notmatch 'msys64|mingw') }) -join ';')
+    }
+    # Belt and suspenders: even with PATH scrubbed, also hard-ignore the
+    # well-known MSYS2 install roots so no other discovery vector
+    # (env CMAKE_PREFIX_PATH, registry, etc.) can leak MinGW artifacts in.
+    $ignoreCandidates = @($msysPrefixes)
+    foreach ($root in @("D:\worksoft\msys64", "C:\msys64", "D:\msys64")) {
+        foreach ($sub in @("ucrt64", "mingw64", "clang64")) {
+            $ignoreCandidates += (Join-Path $root $sub)
+        }
+    }
+    $CMakeIgnorePrefixes = @($ignoreCandidates |
+        Where-Object { $_ -and (Test-Path (Join-Path $_ "include")) } |
+        ForEach-Object { $_ -replace '\\', '/' } |
+        Sort-Object -Unique)
+
     # Auto-detect Visual Studio and set up MSVC environment.
     # vcvars64.bat cannot be sourced in this context; manually populate
     # the variables CMake needs to find the MSVC toolchain.
@@ -265,10 +294,28 @@ function Find-Qt6 {
 $Qt6Dir = Find-Qt6
 if ($Qt6Dir) {
     Write-Host "Qt6 detected at $Qt6Dir -- adapter enabled"
-    $CMakeOpts += @("-DARIA_BUILD_QT6=ON", "-DCMAKE_PREFIX_PATH=$Qt6Dir")
+    # Pin Qt6_DIR explicitly. CMAKE_PREFIX_PATH alone does NOT override a
+    # Qt6_DIR already cached in the build dir: if an earlier configure ever
+    # resolved Qt6 to the MSYS2/MinGW kit (e.g. via PATH-derived search
+    # prefixes), every later MSVC build silently compiles Qt headers against
+    # mingw-w64 CRT headers and explodes inside vcruntime.h. The cache-force
+    # -DQt6_DIR wins over the stale cache entry and keeps the toolchains
+    # isolated. (cmake/Qt6 adapter also hard-fails on cross-toolchain kits.)
+    $Qt6ConfigDir = (Join-Path $Qt6Dir "lib\cmake\Qt6") -replace '\\', '/'
+    $CMakeOpts += @(
+        "-DARIA_BUILD_QT6=ON",
+        "-DCMAKE_PREFIX_PATH=$($Qt6Dir -replace '\\', '/')",
+        "-DQt6_DIR=$Qt6ConfigDir"
+    )
 }
 
 # ── Configure ────────────────────────────────────────────────────────────────
+if ($CMakeIgnorePrefixes) {
+    $CMakeOpts += @(
+        "-DCMAKE_IGNORE_PREFIX_PATH=$($CMakeIgnorePrefixes -join ';')",
+        "-DCMAKE_IGNORE_PATH=$(($CMakeIgnorePrefixes | ForEach-Object { "$_/include"; "$_/lib" }) -join ';')"
+    )
+}
 Write-Host "configuring ($Mode)..."
 $cfgArgs = @("-S", $RepoRoot, "-B", $BuildDir, "-G", $Generator) + $CMakeOpts
 & $cmakePath @cfgArgs
