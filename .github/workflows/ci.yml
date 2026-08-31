@@ -106,12 +106,14 @@ jobs:
 
       - name: Run simulator tests
         run: |
-          DEVICE="aria-uikit-${{ github.run_id }}"
-          UDID=$(xcrun simctl create "$DEVICE" \
-            "$(xcrun simctl list devicetypes -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["identifier"] for x in d["devicetypes"] if x["name"].startswith("iPhone")))')" \
-            "$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["identifier"] for x in d["runtimes"] if x["isAvailable"] and x["platform"] == "iOS"))')")
-          trap 'xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true; xcrun simctl delete "$UDID" >/dev/null 2>&1 || true' EXIT
-          xcrun simctl boot "$UDID"
+          # Reuse a device the runner already has. Creating one from
+          # "first iPhone devicetype x first available iOS runtime" is
+          # not a valid pairing in general — a newer runtime drops older
+          # iPhone models — and `simctl create` then fails with
+          # `code=403 Incompatible device`. Selection logic lives in a
+          # script so it can be run and debugged locally.
+          UDID=$(python3 scripts/pick-ios-simulator.py)
+          xcrun simctl boot "$UDID" || true
           xcrun simctl bootstatus "$UDID" -b
           xcrun simctl spawn "$UDID" \
             "$PWD/build/platforms/uikit-test/bin/Debug/test_uikit_conformance.app/test_uikit_conformance"

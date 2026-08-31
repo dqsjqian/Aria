@@ -5,6 +5,7 @@
 // bench_common library.
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <iomanip>
@@ -15,6 +16,34 @@
 namespace aria_bench {
 
 using clk = std::chrono::high_resolution_clock;
+
+/// Accumulator that keeps a benchmarked expression from being optimised
+/// away, without `volatile`.
+///
+/// The obvious spelling is `volatile long long sink; sink += x;`, and
+/// that is what these benches used to do. C++20 deprecated compound
+/// assignment on volatile-qualified types, so AppleClang rejects it
+/// under `-Wdeprecated-volatile -Werror` — which meant the macOS CI job
+/// could not build the bench targets at all.
+///
+/// `std::atomic` with `memory_order_relaxed` serves the same purpose
+/// here: the compiler may not elide the store, so the producing
+/// expression stays live, and relaxed ordering on a single-threaded
+/// accumulator adds no fence. Only feed it inside the loop; read it
+/// once afterwards.
+class Sink {
+public:
+    void feed(long long v) noexcept {
+        acc_.fetch_add(v, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] long long value() const noexcept {
+        return acc_.load(std::memory_order_relaxed);
+    }
+
+private:
+    std::atomic<long long> acc_{0};
+};
 
 template<typename Fn>
 inline double measure_ns(int iterations, Fn&& fn) {
