@@ -11,12 +11,17 @@
     "AsyncCommand<int,int>::execute round-trip": 9300,
     "ObservableList::push_back (no observers)": 900,
     "FilteredList: source push_back (n=10k)": 41000,
-    "SortedList: source push_back random (n=10k)": 55000
+    "SortedList: source push_back random (n=10k)": 55000,
+    "has_trace_sink() only (no sink)": 25,
+    "publish_trace gated, no sink (D-24 fast path)": 26,
+    "publish_trace ungated, no sink (AD2 anti-pattern)": 72,
+    "publish_trace gated, sink installed (slow path)": 190
   },
   "hosts": {
     "macos-arm64": {
       "_baseline_machine": "Apple M-series, macOS 14+, AppleClang 17+, Release",
       "_baseline_note": "Ceilings = quiet-host P99 × ._jitter_policy multiplier. Captured 2026-06-09 on an idle M-series host (no other heavy processes). On a busy developer machine these numbers will trip — that is intentional: a noisy machine should not anchor the regression budget. Use `scripts/check-bench.sh --runs 5` to take best-of-N and cancel local jitter, or run on a CI-grade quiet host.",
+      "_trace_sink_note": "TraceSink rows captured 2026-08-31, same policy (sub-100ns => x3.0). Measured P99: gate 8.1, fast path 8.5, ungated 23.9, slow path 63.3. The ordering matters more than the absolute values: fast path must stay within noise of the bare gate (D-24), and the ungated row must stay visibly above it or the AD2 gating convention has stopped buying anything.",
       "metrics": {
         "Property<int>::set(i)": 80,
         "IProperty::set_any(std::any{i})": 90,
@@ -25,7 +30,11 @@
         "AsyncCommand<int,int>::execute round-trip": 11000,
         "ObservableList::push_back (no observers)": 900,
         "FilteredList: source push_back (n=10k)": 41000,
-        "SortedList: source push_back random (n=10k)": 60000
+        "SortedList: source push_back random (n=10k)": 60000,
+        "has_trace_sink() only (no sink)": 25,
+        "publish_trace gated, no sink (D-24 fast path)": 26,
+        "publish_trace ungated, no sink (AD2 anti-pattern)": 72,
+        "publish_trace gated, sink installed (slow path)": 190
       }
     }
   }
