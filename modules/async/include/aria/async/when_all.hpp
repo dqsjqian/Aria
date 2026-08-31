@@ -26,9 +26,11 @@
 #include "aria/async/task.hpp"
 #include "aria/async/cancellation.hpp"
 #include "aria/async/detail/race_slot.hpp"
+#include "aria/async/detail/race_trace.hpp"
 
 #include <atomic>
 #include <coroutine>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -103,6 +105,11 @@ Task<void> drive_one(Task<T> task,
         slot->error = std::current_exception();
     }
     if (remaining->fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        // Last participant home: when_all has no losers, so completion
+        // IS the arbitration outcome (D-31.1). A participant that threw
+        // does not change which event fires — the failure surfaces
+        // through await_resume.
+        publish_race_trace(race_source::kWhenAll, race_op::kWon);
         if (auto h = parent->load()) h.resume();
     }
 }
@@ -135,6 +142,9 @@ public:
 
     void await_suspend(std::coroutine_handle<> caller) {
         parent_->store(caller);
+        detail::publish_race_trace(detail::race_source::kWhenAll,
+                                   detail::race_op::kStart,
+                                   sizeof...(Ts));
         // Spawn drivers as fully-detached coroutines.  Each driver owns its
         // own coroutine frame via Task::start_detached — no need for the
         // awaiter to keep them alive, and no leaks.
@@ -148,6 +158,13 @@ public:
     }
 
     Result await_resume() {
+        // Guarded by the same condition as await_ready: a zero-task
+        // when_all never suspends, so it never armed a race and must not
+        // publish an unpaired race_end.
+        if constexpr (sizeof...(Ts) > 0) {
+            detail::publish_race_trace(detail::race_source::kWhenAll,
+                                       detail::race_op::kEnd);
+        }
         std::exception_ptr first_err;
         std::apply([&](auto&... slot) {
             (((slot->error && !first_err) ? first_err = slot->error : nullptr), ...);
@@ -196,6 +213,7 @@ Task<void> drive_any_basic_(Task<T> task,
                 slot->winner_index = idx;
                 slot->result.template emplace<1>();   // void success
                 slot->publish(/*winner=*/1);
+                publish_race_trace(race_source::kWhenAny, race_op::kWon, idx);
                 slot->notify_winner_resume();
             }
         } else {
@@ -204,6 +222,7 @@ Task<void> drive_any_basic_(Task<T> task,
                 slot->winner_index = idx;
                 slot->result.template emplace<1>(std::move(v));
                 slot->publish(/*winner=*/1);
+                publish_race_trace(race_source::kWhenAny, race_op::kWon, idx);
                 slot->notify_winner_resume();
             }
         }
@@ -212,6 +231,9 @@ Task<void> drive_any_basic_(Task<T> task,
             slot->winner_index = idx;
             slot->result.template emplace<2>(std::current_exception());
             slot->publish(/*winner=*/1);
+            // Still the winner, just with a failure; the exception
+            // surfaces through await_resume rather than as its own event.
+            publish_race_trace(race_source::kWhenAny, race_op::kWon, idx);
             slot->notify_winner_resume();
         }
     }
@@ -229,10 +251,18 @@ Task<void> drive_any_cancellable_(Factory factory,
                                   std::shared_ptr<std::vector<std::shared_ptr<CancellationSource>>> all_sources)
 {
     auto cancel_losers = [all_sources, idx]() {
+        std::uint64_t signalled = 0;
         for (std::size_t i = 0; i < all_sources->size(); ++i) {
             if (i == idx) continue;
-            if (auto& s = (*all_sources)[i]; s) s->cancel();
+            if (auto& s = (*all_sources)[i]; s) {
+                s->cancel();
+                ++signalled;
+            }
         }
+        // One event per race, not per loser (D-31.1): `generation`
+        // carries how many losers were actually signalled.
+        publish_race_trace(race_source::kWhenAnyCancellable,
+                           race_op::kLoserCancel, signalled);
     };
 
     CancellationToken tok = src->token();
@@ -244,6 +274,8 @@ Task<void> drive_any_cancellable_(Factory factory,
                 slot->winner_index = idx;
                 slot->result.template emplace<1>();
                 slot->publish(/*winner=*/1);
+                publish_race_trace(race_source::kWhenAnyCancellable,
+                                   race_op::kWon, idx);
                 cancel_losers();
                 slot->notify_winner_resume();
             }
@@ -253,6 +285,8 @@ Task<void> drive_any_cancellable_(Factory factory,
                 slot->winner_index = idx;
                 slot->result.template emplace<1>(std::move(v));
                 slot->publish(/*winner=*/1);
+                publish_race_trace(race_source::kWhenAnyCancellable,
+                                   race_op::kWon, idx);
                 cancel_losers();
                 slot->notify_winner_resume();
             }
@@ -262,6 +296,8 @@ Task<void> drive_any_cancellable_(Factory factory,
             slot->winner_index = idx;
             slot->result.template emplace<2>(std::current_exception());
             slot->publish(/*winner=*/1);
+            publish_race_trace(race_source::kWhenAnyCancellable,
+                               race_op::kWon, idx);
             cancel_losers();
             slot->notify_winner_resume();
         }
@@ -305,6 +341,9 @@ public:
     }
 
     bool await_suspend(std::coroutine_handle<> caller) noexcept {
+        detail::publish_race_trace(detail::race_source::kWhenAny,
+                                   detail::race_op::kStart,
+                                   tasks_.size());
         // Start all driver coroutines. Each captures `slot_` so the
         // shared race state lives as long as needed. If any driver
         // synchronously resolves the slot, our await_suspend tail
@@ -323,6 +362,12 @@ public:
     }
 
     Result await_resume() {
+        // An empty task list short-circuits await_ready and never armed a
+        // race, so it must not publish an unpaired race_end.
+        if (!tasks_.empty()) {
+            detail::publish_race_trace(detail::race_source::kWhenAny,
+                                       detail::race_op::kEnd);
+        }
         Result r;
         r.index = slot_->winner_index;
         auto& v = slot_->result;
@@ -374,6 +419,9 @@ public:
     }
 
     bool await_suspend(std::coroutine_handle<> caller) noexcept {
+        detail::publish_race_trace(detail::race_source::kWhenAnyCancellable,
+                                   detail::race_op::kStart,
+                                   factories_.size());
         for (std::size_t i = 0; i < factories_.size(); ++i) {
             detail::drive_any_cancellable_<T, Factory>(
                 std::move(factories_[i]), i, slot_, (*sources_)[i], sources_)
@@ -389,6 +437,10 @@ public:
     }
 
     Result await_resume() {
+        if (!factories_.empty()) {
+            detail::publish_race_trace(detail::race_source::kWhenAnyCancellable,
+                                       detail::race_op::kEnd);
+        }
         Result r;
         r.index = slot_->winner_index;
         auto& v = slot_->result;
