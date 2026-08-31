@@ -27,9 +27,9 @@ int main() {
     {
         Property<int> p(42);
         const int N = 10'000'000;
-        volatile long long sink = 0;
-        double ns = measure_ns(N, [&](int) { sink += p.get(); });
-        (void)sink;
+        aria_bench::Sink sink;
+        double ns = measure_ns(N, [&](int) { sink.feed(p.get()); });
+        (void)sink.value();
         row("Property<int>::get()", ns, N);
     }
 
@@ -44,24 +44,24 @@ int main() {
     // Property::set 1 observer
     {
         Property<int> p(0);
-        volatile long long sink = 0;
-        auto sub = p.on_changed([&](const int& v) { sink += v; });
+        aria_bench::Sink sink;
+        auto sub = p.on_changed([&](const int& v) { sink.feed(v); });
         const int N = 1'000'000;
         double ns = measure_ns(N, [&](int i) { p.set(i); });
-        (void)sink;
+        (void)sink.value();
         row("Property<int>::set() with 1 observer", ns, N);
     }
 
     // Property::set 10 observers
     {
         Property<int> p(0);
-        volatile long long sink = 0;
+        aria_bench::Sink sink;
         std::vector<Subscription> subs;
         for (int i = 0; i < 10; ++i)
-            subs.push_back(p.on_changed([&](const int& v) { sink += v; }));
+            subs.push_back(p.on_changed([&](const int& v) { sink.feed(v); }));
         const int N = 500'000;
         double ns = measure_ns(N, [&](int i) { p.set(i); });
-        (void)sink;
+        (void)sink.value();
         row("Property<int>::set() with 10 observers", ns, N);
     }
 
@@ -83,13 +83,13 @@ int main() {
         Computed<int> c3([&]{ return c2.get() * 2; });
         Computed<int> c4([&]{ return c3.get() + 1; });
         Computed<int> c5([&]{ return c4.get() * 2; });
-        volatile long long sink = 0;
+        aria_bench::Sink sink;
         const int N = 200'000;
         double ns = measure_ns(N, [&](int i) {
             a.set(i);
-            sink += c5.get();
+            sink.feed(c5.get());
         });
-        (void)sink;
+        (void)sink.value();
         row("Computed chain x5 (auto-tracked)", ns, N);
     }
 
@@ -97,11 +97,11 @@ int main() {
     {
         struct E { int v; };
         EventBus bus;
-        volatile long long sink = 0;
-        auto sub = bus.subscribe<E>([&](const E& e) { sink += e.v; });
+        aria_bench::Sink sink;
+        auto sub = bus.subscribe<E>([&](const E& e) { sink.feed(e.v); });
         const int N = 1'000'000;
         double ns = measure_ns(N, [&](int i) { bus.publish(E{i}); });
-        (void)sink;
+        (void)sink.value();
         row("EventBus::publish (1 subscriber)", ns, N);
     }
 
@@ -122,8 +122,8 @@ int main() {
     // Batch update vs individual writes
     {
         Property<int> p(0);
-        volatile long long sink = 0;
-        auto sub = p.on_changed([&](const int& v) { sink += v; });
+        aria_bench::Sink sink;
+        auto sub = p.on_changed([&](const int& v) { sink.feed(v); });
 
         const int N = 100'000;
         double ns_indiv = measure_ns(N, [&](int i) {
@@ -134,7 +134,7 @@ int main() {
                 for (int j = 0; j < 10; ++j) p.set(i * 10 + j);
             });
         });
-        (void)sink;
+        (void)sink.value();
         row("10 sets individually (notify each)", ns_indiv, N);
         row("10 sets in reactive::batch (notify once)", ns_batch, N);
         std::cout << "  -> batch speedup: " << std::fixed << std::setprecision(2)
@@ -163,12 +163,12 @@ int main() {
         (void)stable.get();
 
         const int N = 200'000;
-        volatile long long sink = 0;
+        aria_bench::Sink sink;
         double ns_stable = measure_ns(N, [&](int i) {
             tick.set(i);
-            sink += stable.get();
+            sink.feed(stable.get());
         });
-        (void)sink;
+        (void)sink.value();
         row("Computed recompute, STABLE deps (8/8 same)", ns_stable, N);
 
         int window = 0;
@@ -186,9 +186,9 @@ int main() {
         double ns_churn = measure_ns(N, [&](int i) {
             window = (window + 1) % kPool;
             tick.set(i);
-            sink += churn.get();
+            sink.feed(churn.get());
         });
-        (void)sink;
+        (void)sink.value();
         row("Computed recompute, CHURN deps (different 8/128)", ns_churn, N);
         std::cout << "  -> churn overhead vs stable: " << std::fixed
                   << std::setprecision(2)
@@ -205,14 +205,14 @@ int main() {
     // -------------------------------------------------------------------
     {
         Property<int> p(0);
-        volatile long long sink = 0;
-        auto sub = p.on_changed([&](const int& v) { sink += v; });
+        aria_bench::Sink sink;
+        auto sub = p.on_changed([&](const int& v) { sink.feed(v); });
 
         constexpr int kSamples      = 256;
         constexpr int kOpsPerSample = 1'000;
         auto stats = measure_percentiles(kSamples, kOpsPerSample,
             [&](int i) { p.set(i); });
-        (void)sink;
+        (void)sink.value();
         row_pct("Property<int>::set() + 1 observer", stats);
     }
     {
@@ -222,13 +222,13 @@ int main() {
         Computed<int> c3([&]{ return c2.get() * 2; });
         Computed<int> c4([&]{ return c3.get() + 1; });
         Computed<int> c5([&]{ return c4.get() * 2; });
-        volatile long long sink = 0;
+        aria_bench::Sink sink;
 
         constexpr int kSamples      = 128;
         constexpr int kOpsPerSample = 500;
         auto stats = measure_percentiles(kSamples, kOpsPerSample,
-            [&](int i) { a.set(i); sink += c5.get(); });
-        (void)sink;
+            [&](int i) { a.set(i); sink.feed(c5.get()); });
+        (void)sink.value();
         row_pct("Computed chain x5 (auto-tracked)", stats);
     }
 

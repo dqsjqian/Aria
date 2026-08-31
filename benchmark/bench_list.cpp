@@ -87,13 +87,13 @@ int main() {
     // observe + push_back (single-listener fanout)
     {
         ObservableList<Plain> list;
-        volatile long long sink = 0;
+        aria_bench::Sink sink;
         auto sub = list.observe([&](const ListChange<Plain>& ch) {
-            sink += ch.item ? ch.item->v : 0;
+            sink.feed(ch.item ? ch.item->v : 0);
         });
         const int N = 100'000;
         double ns = measure_ns(N, [&](int i) { list.push_back(make(i)); });
-        (void)sink;
+        (void)sink.value();
         row("ObservableList::push_back + 1 observer", ns, N);
     }
 
