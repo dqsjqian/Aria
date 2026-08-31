@@ -893,6 +893,49 @@ its diagnostic value. Adapters are hot paths only on the
 
 ---
 
+### L-40: Container teardown is reverse registration order
+
+`runtime::Container` releases its registrations in **reverse
+registration order**, in both `clear()` and `~Container()`. A service
+registered *after* its dependency is therefore destroyed *before* it, so
+the rule for hosts is one sentence: **register providers before
+consumers.**
+
+Two further guarantees hold during teardown:
+
+1. **Each value is destroyed with the container mutex released.** A
+   service destructor MAY call back into the container (`resolve` /
+   `has` / `register_*`) without self-deadlocking. This is the same
+   hazard as A11 — an owner destroying its values while holding its own
+   lock, where the value's destructor re-enters that owner.
+2. **Entries not yet reached are still resolvable.** While entry *N* is
+   being destroyed, entries *1..N-1* remain registered, so a consumer's
+   destructor can still reach a provider registered before it.
+
+Singleton registrations and factory registrations share **one** teardown
+order; they are not two independently cleared tables. Re-registering a
+type replaces the value and destroys the previous one immediately (also
+outside the lock) but **keeps the type's original position** — the
+instance behind the type changed, the dependency order did not.
+
+**Scope limit — this is registration order, not the resolution graph.**
+Aria does not record who resolved whom during construction, so a
+consumer registered *before* the provider it resolves still tears down in
+the wrong order. That is a caller-side bug the container cannot detect.
+Full dependency-graph-ordered teardown is deliberately out of scope (see
+`docs/ROADMAP.md` → *Evaluated and declined*).
+
+`Container` has no `global()` accessor — every instance is explicitly
+owned by its caller — so this contract is per-instance and introduces no
+process-wide state.
+
+Pinned by `test_container.cpp`; reverting teardown to forward order (or
+to `unordered_map::clear()`) fails five of its cases, including the
+re-entrant-destructor case, which deadlocks rather than merely
+mis-ordering.
+
+---
+
 ## 4. Anti-patterns
 
 | # | Anti-pattern | Consequence | Correct approach |
