@@ -82,7 +82,7 @@ jobs:
   # had no CI gate.
   # ────────────────────────────────────────────────────────────────────
   uikit:
-    name: UIKit conformance (iOS Simulator)
+    name: UIKit conformance + table source (iOS Simulator)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -99,10 +99,12 @@ jobs:
             -DARIA_BUILD_BENCHMARK=OFF \
             -DARIA_BUILD_SHARED=OFF
 
-      - name: Build conformance target
-        run: cmake --build build/platforms/uikit-test --config Debug --target test_uikit_conformance
+      - name: Build simulator test targets
+        run: |
+          cmake --build build/platforms/uikit-test --config Debug --target test_uikit_conformance
+          cmake --build build/platforms/uikit-test --config Debug --target test_uikit_table_source
 
-      - name: Run conformance in simulator
+      - name: Run simulator tests
         run: |
           DEVICE="aria-uikit-${{ github.run_id }}"
           UDID=$(xcrun simctl create "$DEVICE" \
@@ -113,6 +115,11 @@ jobs:
           xcrun simctl bootstatus "$UDID" -b
           xcrun simctl spawn "$UDID" \
             "$PWD/build/platforms/uikit-test/bin/Debug/test_uikit_conformance.app/test_uikit_conformance"
+          # The list/table bridge is a separate binary so a table
+          # regression names itself here instead of hiding inside
+          # "conformance". Same simulator, same boot.
+          xcrun simctl spawn "$UDID" \
+            "$PWD/build/platforms/uikit-test/bin/Debug/test_uikit_table_source.app/test_uikit_table_source"
 
   # ────────────────────────────────────────────────────────────────────
   # Ubuntu — gcc + clang matrix, plus Qt6 dev packages

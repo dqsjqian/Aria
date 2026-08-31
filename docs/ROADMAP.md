@@ -75,7 +75,8 @@ prioritised on the same footing.
 
 Kept here (rather than deleted) because each entry answers a specific
 finding in the review above; a reader comparing the two sections can see
-what the response actually was.
+what the response actually was. Entries promoted out of `Next` later in
+the cycle are appended at the end and say so.
 
 ### Bind read-only reactive sources
 
@@ -193,6 +194,124 @@ CI, and this roadmap now agree: Qt6/AppKit/UIKit/JNI/HTTP are shipped opt-in
 adapters; WASM and Swift/SwiftUI remain triggered work; application examples
 live in AriaTools.
 
+### Deterministic `Container` teardown
+
+Promoted out of `Next` on 2026-08-31 — the only entry in this section that
+came from maintainer self-review rather than the field report.
+
+`Container` stored singletons in an `unordered_map` and destroyed them
+via `clear()`, so teardown order was unspecified: a service holding a
+reference to another service could observe a destroyed dependency, and
+whether it did depended on hash order.
+
+Teardown now walks a recorded registration order back-to-front, in both
+`clear()` and `~Container()` — the destructor previously inherited the
+`unordered_map` order for callers that never called `clear()`. Singletons
+and factories share one order rather than being two independently cleared
+tables, and re-registering a type replaces the instance while keeping its
+original position.
+
+Each value is destroyed with the container mutex released, so a service
+destructor may re-enter the container without self-deadlocking (the A11
+hazard one layer down), and entries not yet reached stay resolvable. No
+new API: the change is contained in the existing implementation, with the
+guarantee stated as contract **L-40** in `docs/reference/lifecycle.md` and
+pinned by five cases in `test_container.cpp` — forward order fails four of
+them and deadlocks the fifth.
+
+Full dependency-graph-ordered teardown remains out of scope; see
+*Evaluated and declined*.
+
+### Race-aware async trace
+
+Promoted out of `Next` on 2026-08-31.
+
+`with_timeout`, `when_any`, `when_any_cancellable` and `when_all` already
+arbitrated a race internally but published nothing, so "who won, and why
+did the others stop" was the one async question tooling could not answer —
+while every reactive flush and binding dispatch was already visible.
+
+Six events under the existing `TraceCategory::Async`, specified as
+**D-31.1** in `docs/reference/diagnostics.md`: `race_start` / `race_won` /
+`race_timeout` / `race_loser_cancel` / `race_parent_cancel` / `race_end`.
+No new category and no new payload field — `source` names the combinator
+and `generation` carries the per-op number (participant count, winner
+index, losers signalled).
+
+The event count does not grow with participant count: exactly one of
+`race_won` / `race_timeout` / `race_parent_cancel` fires per race (the
+publish sites sit inside the already-taken CAS branch, and a late loser
+publishes nothing), and `race_loser_cancel` is one event per race rather
+than one per loser. The `has_trace_sink()` gate lives once in
+`aria/async/detail/race_trace.hpp` instead of at each of the ten
+arbitration points, which also makes a misspelled op a compile error
+rather than an event no filter matches.
+
+No DevTools UI, per the original note — the trace data is complete and
+testable first. Six cases in `test_async_diagnostics.cpp` pin the op
+spellings, the ordering guarantees, the `generation` semantics, and the
+no-sink path; misspelling one op fails four of them.
+
+### JNI list source
+
+Promoted out of `Next` on 2026-08-31.
+
+Qt6, UIKit and AppKit each shipped a list/table source; JNI shipped none,
+and the reviewer's workaround was to join list items with `"\n"` and split
+them back in Kotlin, which discards item identity, per-row diffing and
+selection.
+
+`JniListSource<T>` now consumes the same `ListSourceOf<L, T>` concept as
+the other three and maps `ListChange<T>` onto
+`notifyItemInserted` / `notifyItemRemoved` / `notifyItemChanged` /
+`notifyItemMoved` / `notifyDataSetChanged`, with rows kept as
+`std::shared_ptr<T>`. Scope stayed identical to the other three: no new
+collection model, no Compose-specific API.
+
+The one structural difference is forced by the platform and turned into
+an advantage. RecyclerView.Adapter lives on the managed side and cannot be
+held as a widget pointer, so the notification target is a `NotifySink`
+callable rather than a handle — which means `JniListSource` needs no
+`<jni.h>` and **its diffing runs in the ordinary host `ctest`**
+(`jni_list_source`, registered under `modules/core/tests/`). Only
+`JniRecyclerNotifier`, which drives `notifyItem*` through a real VM, stays
+NDK-bound and static-asserted. Before this, the whole JNI adapter was
+invisible to a host build, so a list bridge placed in it would have had no
+executed assertions at all.
+
+Thread marshalling was deliberately left out — Aria owns no looper
+abstraction, and adding one would exceed an adapter's remit; a producer
+that emits off-main wraps `sink()` in a `Handler` post, and the row is
+resolved at emit time so a deferred sink still sees the right item.
+
+### Derived collections → UI adapter wiring
+
+Promoted out of `Next` on 2026-08-31 — **mostly as a correction**. The
+entry asked to "make `FilteredList`, `SortedList`, and `MappedList` easy
+to consume from existing list/table adapters"; auditing the four adapters
+showed that had already shipped. All four take the source through
+`requires ::aria::ListSourceOf<L, T>`, so every derived list — including
+`DistinctList`, `PagedList` and `GroupedList`, which the entry did not
+even mention — already binds with no manual sync layer. The roadmap was
+describing work that no longer existed.
+
+What the audit *did* find was a verification gap, which is the part that
+needed doing: `UIKitTableSource` was the only one of the four bridges with
+**no test at all** (Qt6 had `test_list_model.cpp`, AppKit
+`test_appkit_table_source.mm`, JNI `test_jni_list_source.cpp`), so its row
+arithmetic and its derived-list support were carried entirely by review.
+
+`test_uikit_table_source.mm` closes that: six cases covering every
+`ListChange` variant, `shared_ptr` identity across a Move, out-of-range
+`at()`, `FilteredList`, `MappedList<Source, Target>` identity
+preservation, and teardown detaching from both the table and the source.
+It is a separate binary from `test_uikit_conformance` so a table
+regression names itself in CI rather than hiding inside "conformance", and
+the `uikit` CI job now builds and runs both simulator targets.
+
+Verified in an actual iOS simulator, not just compiled: 6/6 cases, 43
+assertions. Breaking `apply_move_`'s insertion index fails three of them.
+
 ---
 
 ## Now — small, concrete, high-confidence
@@ -217,56 +336,6 @@ insufficient.
 
 These are real framework improvements, but should be scheduled only after
 `Now` is clean.
-
-### Derived collections → UI adapter wiring
-
-Make `FilteredList`, `SortedList`, and `MappedList` easy to consume from
-existing list/table adapters so business code does not need a manual sync
-layer.
-
-Scope should stay adapter-level: no new collection model unless an
-existing adapter cannot express the contract.
-
-### JNI list source
-
-Qt6, UIKit, and AppKit each ship a list/table source
-(`ObservableListModel`, `ObservableTableSource`); JNI ships none. The
-reviewer's workaround was to join list items with `"\n"` and split them
-back in Kotlin, which discards item identity, per-row diffing, and
-selection.
-
-Add a JNI list source mirroring the existing adapter contract
-(`RecyclerView.Adapter` on the Kotlin side, `ListChange` diffing on the
-C++ side). Keep the scope identical to the other three — no new
-collection model, no Compose-specific API.
-
-Sequenced after the JNI documentation fix, because a list source nobody
-can find repeats the current failure.
-
-### Deterministic `Container` teardown
-
-`Container` stores singletons in an `unordered_map` and destroys them via
-`clear()`, so teardown order is unspecified. A service holding a
-reference to another service can therefore observe a destroyed
-dependency, and the failure is timing-dependent — the worst kind to
-debug.
-
-Record registration order and destroy in reverse (providers outlive
-consumers). This is contained inside the existing `Container`
-implementation and needs no new API.
-
-Note: full dependency-graph-ordered teardown is a larger design and is
-**not** in scope here — see *Evaluated and declined*.
-
-### Race-aware async trace
-
-`with_timeout`, `when_any`, and `when_all` already have race arbitration.
-Expose winner / loser-cancel / timeout-mode events through the existing
-`TraceSink` so async debugging has the same observability as reactive and
-binding flows.
-
-Do **not** build a DevTools UI for this as part of the task; first make
-the trace data complete and testable.
 
 ### Common widget binding polish
 
@@ -595,3 +664,12 @@ A roadmap item should stay only if it has at least one of these:
 
 Otherwise it is a distraction and should be moved to `Won't do` or
 removed.
+
+**Check the code before working an item.** *Derived collections → UI
+adapter wiring* sat in `Next` after the work had already shipped — all
+four adapters took `ListSourceOf` — so the roadmap was asking for
+something that existed. An item is a claim about the tree, and a stale
+claim is worse than no entry: it invites re-implementing shipped API. If
+an audit shows an item is already done, the correct action is to move it
+to `Landed` saying so, and to record whatever the audit *did* turn up
+(here: the untested UIKit bridge) as the real remaining work.
