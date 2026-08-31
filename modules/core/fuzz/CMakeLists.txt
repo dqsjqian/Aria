@@ -9,6 +9,15 @@ add_executable(aria_fuzz
     fuzz_async_command_dtor.cpp
     fuzz_when_any_race.cpp
     fuzz_coroutine_scope_drain.cpp
+    # Diagnostic-protocol invariants (docs/reference/diagnostics.md §7).
+    fuzz_trace_sink_install_race.cpp
+    fuzz_trace_sink_throw_swallow.cpp
+    fuzz_trace_sink_scoped_nesting.cpp
+    # Error-model invariants (docs/reference/error-model.md §7).
+    fuzz_error_from_exception_table.cpp
+    fuzz_error_property_equality_gate.cpp
+    fuzz_validator_field_path.cpp
+    fuzz_async_command_cancellation_no_error.cpp
 )
 
 target_include_directories(aria_fuzz PRIVATE
@@ -19,6 +28,10 @@ target_link_libraries(aria_fuzz PRIVATE
     aria::core
     aria::async
     aria::binding
+    # The global trace-sink slot lives in aria_runtime
+    # (runtime/src/diagnostics_sink.cpp), which the trace-sink fuzzers
+    # drive directly.
+    aria::runtime
     doctest::doctest
     aria::warnings
 )
