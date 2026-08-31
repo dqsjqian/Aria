@@ -185,7 +185,7 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 2
 fi
 
-# The five bench targets we ship. Any new bench_*.cpp must register
+# The bench targets we ship. Any new bench_*.cpp must register
 # itself here AND in benchmark/CMakeLists.txt AND, if it emits a
 # row_pct line, in thresholds.json.
 benches=(
@@ -194,6 +194,7 @@ benches=(
     aria_bench_async_command
     aria_bench_list
     aria_bench_derived_list
+    aria_bench_trace_sink
 )
 
 # Capture combined bench output to a temp file so awk and the summary

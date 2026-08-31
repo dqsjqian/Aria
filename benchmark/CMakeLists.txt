@@ -15,6 +15,7 @@ set(_bench_targets
     aria_bench_derived_list  # FilteredList / SortedList / MappedList
     aria_bench_async_command # AsyncCommand / Task / executor
     aria_bench_iproperty     # IProperty type-erased vs template-direct
+    aria_bench_trace_sink    # TraceSink D-24 zero-overhead contract
 )
 
 add_executable(aria_bench_command       bench_command.cpp)
@@ -22,6 +23,7 @@ add_executable(aria_bench_list          bench_list.cpp)
 add_executable(aria_bench_derived_list  bench_derived_list.cpp)
 add_executable(aria_bench_async_command bench_async_command.cpp)
 add_executable(aria_bench_iproperty     bench_iproperty.cpp)
+add_executable(aria_bench_trace_sink    bench_trace_sink.cpp)
 
 foreach(_t IN LISTS _bench_targets)
     target_link_libraries(${_t} PRIVATE

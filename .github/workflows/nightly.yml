@@ -40,7 +40,8 @@ jobs:
               aria_bench_command \
               aria_bench_async_command \
               aria_bench_list \
-              aria_bench_derived_list
+              aria_bench_derived_list \
+              aria_bench_trace_sink
 
       - name: Run benches and check P99 ceilings
         # check-bench.sh does the whole job:

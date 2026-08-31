@@ -70,7 +70,14 @@ TEST_CASE("L-37 fuzz: AsyncCommand dtor races with execute, no UAF / leak") {
             // iteration -- this exercises both the "dtor before
             // execute" path and the "dtor after execute" path.
             if (rng.coin(0.7)) {
-                cmd.execute(static_cast<int>(rng.u32()));
+                // Bounded so the action body's `x * 2` cannot overflow.
+                // A full-range u32 cast to int yields large negatives,
+                // and doubling those is signed overflow — real UB that
+                // UBSan aborts on, which took the whole fuzz binary
+                // down under the asan flavor. The argument value is
+                // incidental here: what this fuzzer races is the dtor
+                // against execute(), not the arithmetic.
+                cmd.execute(static_cast<int>(rng.u32(0, 1'000'000)));
             }
             // dtor at end of scope: must not crash regardless.
         }

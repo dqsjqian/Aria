@@ -31,7 +31,7 @@ protocol:
 | Category | When it fires | Primary publishers |
 |---|---|---|
 | `Reactive`   | Graph flush / Pull / Recomputed / SkipClean / Round boundaries | `Graph::flush` |
-| `Async`      | AsyncCommand / AsyncResource lifecycle | `classify_async_exception` / Invocation ctor/dtor / AsyncResource fetch |
+| `Async`      | AsyncCommand / AsyncResource lifecycle, async race arbitration | `classify_async_exception` / Invocation ctor/dtor / AsyncResource fetch / `with_timeout` / `when_any` / `when_all` |
 | `Binding`    | BindingEngine VM↔View dispatch | `BindingEngine::dispatch_to_view_` / `view.on_destroy` callback |
 | `Command`    | Synchronous `Command<Args...>` and `Command<>` execution | `Command::execute` / `notify_can_execute_changed` |
 | `Validation` | Validator rule evaluation and pending transitions | `Validator::run_` / `begin_pending` / `finish_pending_` |
@@ -179,6 +179,59 @@ branch:
 / `fetch_start` / `fetch_finish` / `stale_drop` / `cancelled` /
 `timeout` / `failure`. `generation` is that fetch's `gen` counter.
 
+### D-31.1: Async race arbitration
+
+`with_timeout`, `when_any`, `when_any_cancellable` and `when_all`
+already arbitrate a race internally; these events expose **who won,
+who lost, and why**, so async debugging has the same observability as
+the reactive and binding flows.
+
+`source` identifies the combinator, not the user's work:
+
+| source | Published by |
+|---|---|
+| `with_timeout` | both the cooperative (`OnTimeout::Cancel`) and fail-fast (`OnTimeout::Fail`) paths |
+| `when_any` | `when_any(std::vector<Task<T>>)` |
+| `when_any_cancellable` | `when_any_cancellable(factories)` |
+| `when_all` | `when_all(tasks...)` |
+
+| op | When | generation | error field |
+|---|---|---|---|
+| `race_start`         | Arbitration armed: participants spawned, deadline (if any) scheduled. | participant count (`when_all` / `when_any`); `0` for `with_timeout`, which always has exactly one inner task plus a deadline | — |
+| `race_won`           | A participant claimed the race and published a result. | winner index (0-based) for the `when_any` family; `0` for `with_timeout`, where the only participant is the inner task | — |
+| `race_timeout`       | The deadline claimed the race before the inner task did. | `0` | `Error::timeout("with_timeout")` |
+| `race_loser_cancel`  | Losers were asked to cancel after a winner emerged. Emitted **once per race**, not once per loser. | number of losers signalled | — |
+| `race_parent_cancel` | An engaged parent token cancelled the race; beats a concurrent deadline. | `0` | `Error::cancellation(...)` |
+| `race_end`           | Arbitration finished and the awaiting coroutine is about to resume. | `0` | — |
+
+Ordering guarantees a consumer may rely on:
+
+- `race_start` precedes every other event of that race.
+- Exactly **one** of `race_won` / `race_timeout` / `race_parent_cancel`
+  fires per race — they are the three mutually exclusive outcomes of one
+  CAS. A losing participant that finishes later publishes nothing.
+- `race_loser_cancel` (when it fires at all) follows the outcome event,
+  because losers are only signalled once a winner exists.
+- `with_timeout` in `OnTimeout::Cancel` mode does **not** publish
+  `race_loser_cancel`: there is exactly one participant, and cancelling
+  it *is* the timeout. That asymmetry is deliberate — see the "Footgun"
+  note in `timeout.hpp`.
+- `when_all` has no losers by construction, so it publishes only
+  `race_start` / `race_won` / `race_end`. Its `race_won` fires when the
+  last participant completes; a participant that threw does not change
+  which event fires, because `when_all` reports failure through
+  `await_resume`, not through arbitration.
+
+**Why arbitration events and not per-participant events**: a race with N
+participants would otherwise emit O(N) events on a hot path for a
+question ("who won?") that has exactly one answer. The publish sites sit
+inside the already-taken CAS branch, so no event is emitted on the
+uncontended fast path.
+
+The events are published from **whichever thread won the race** — a
+timer thread for `race_timeout`, a worker thread for `race_won`. Sinks
+must already assume this (AD5).
+
 ### D-32: Binding
 
 `BindingEngine::dispatch_to_view_` produces one of:
@@ -262,14 +315,51 @@ The following subsystems are deliberately out of the unified sink:
 
 ---
 
-## 7. P0-ε target mapping (TODO)
+## 7. Verification targets
 
-| Invariant | fuzzer |
-|---|---|
-| Install/clear sink does not race | `trace_sink_install_race_fuzzer` |
-| 1M `publish_trace` calls with no sink installed have negligible latency | `trace_sink_zero_overhead_bench` |
-| Sink throws don't propagate | `trace_sink_throw_swallow_fuzzer` |
-| Nested `ScopedTraceSink` installs/restores correctly | `trace_sink_scoped_nesting_fuzzer` |
+Each diagnostic-protocol invariant has an executable owner. All four
+targets below are implemented and run in the ordinary suites — the
+fuzzers as part of `aria_fuzz` (ctest `fuzz_tests`), the bench as part of
+`scripts/check-bench.sh`.
+
+| Invariant | Owner | Where |
+|---|---|---|
+| D-21 install/clear never lets publish touch a destroyed sink | `fuzz_trace_sink_install_race` | `modules/core/fuzz/fuzz_trace_sink_install_race.cpp` |
+| D-22 sink throws do not propagate | `fuzz_trace_sink_throw_swallow` | `modules/core/fuzz/fuzz_trace_sink_throw_swallow.cpp` |
+| D-23 nested `ScopedTraceSink` restores in reverse order | `fuzz_trace_sink_scoped_nesting` | `modules/core/fuzz/fuzz_trace_sink_scoped_nesting.cpp` |
+| D-24 zero-overhead fast path | `aria_bench_trace_sink` | `benchmark/bench_trace_sink.cpp` |
+
+Notes on what these actually assert, because the naive version of each
+passes vacuously:
+
+- **D-21** runs a publisher thread against an installer thread. Every
+  sink owns a heap guard that flips on destruction, so a sink invoked
+  after its own destruction is a counted failure rather than a read of
+  freed memory that only ASan might notice. The race needs a swap to
+  land *between* the snapshot load and the invocation, which no
+  single-threaded test produces.
+- **D-22** throws from the sink on a rotating schedule, including a type
+  that does **not** derive from `std::exception` (the contract is
+  `catch (...)`), across all four publish overloads, and checks the slot
+  is still installed afterwards — an escaping exception must not clear
+  the sink as a side effect.
+- **D-23** builds a random-depth scope stack and asserts, at every
+  unwind step, which sink is exposed. A bare `install_trace_sink` is
+  injected mid-stack: it was current only between one scope's
+  construction and the next's, so exactly one scope saved it and it
+  reappears exactly once. The expected sink per level is *computed*,
+  because the intuitive guess ("the bare sink stays visible for every
+  deeper level") is true only in the special case
+  `bare_at + 1 == depth - 1`.
+- **D-24** is a comparison, not an absolute number: the gated no-sink
+  path must sit within noise of a bare `has_trace_sink()` call, and the
+  ungated variant must stay visibly above it — otherwise the AD2 gating
+  convention has stopped buying anything and this document is
+  misleading. Measured on an idle M-series host: gate 7.9ns p99, fast
+  path 8.5ns, ungated 10.2ns, installed sink 37.8ns.
+
+Iteration counts follow `fuzz_support.hpp`: 50k per fuzzer by default,
+`ARIA_FUZZ_ITERS=1000000` for nightly / pre-release runs.
 
 ---
 
