@@ -1,4 +1,4 @@
-# build-msvc.ps1 — Aria framework + tests + packaging on Visual Studio.
+# build-msvc.ps1 - Aria framework + tests + packaging on Visual Studio.
 #
 # All-in-one script: by default builds framework + tests + ctest + a
 # release package. AriaTools is the separately maintained flagship sample.
@@ -33,6 +33,15 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Split-Path -Parent $ScriptDir
 $OriginalDir = Get-Location
 
+# Normalize console output to UTF-8 for the whole run. CMake and the
+# packaging custom commands switch the console codepage to 65001 mid-run;
+# unless [Console]::OutputEncoding matches, PowerShell decodes the later
+# MSBuild banners (UTF-8 bytes) as GBK and prints mojibake like
+# "<mojibake>.NET Framework MSBuild ...". Pin both to UTF-8 up front and
+# restore the caller's encoding on exit.
+$OrigConsoleEncoding = [Console]::OutputEncoding
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
+
 try {
     # Remove MSYS2/GCC environment overrides that confuse MSVC
     foreach ($e in @("INCLUDE", "LIB", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH")) {
@@ -42,13 +51,15 @@ try {
         }
     }
 
-    # ── 修复 MSBuild v180 (VS 2026) 的 Path/PATH 大小写冲突 bug ──────────
-    # .NET 的 ProcessStartInfo.EnvironmentVariables 是区分大小写的
-    # StringDictionary。如果进程环境块里同时有 "Path"/"PATH"/"path" 等
-    # 多个大小写变体（某些父进程如 WorkBuddy 会创建多个），MSBuild 调用
-    # CL.exe 时会抛 ArgumentException "已添加项"，导致 CMake 的编译器
-    # 识别失败 ("The CXX compiler identification is unknown")。
-    # 解法：逐个删除所有 PATH 变体，只保留一个统一的大写 "PATH"。
+    # -- MSBuild v180 (VS 2026) Path/PATH case-conflict bug ------------------
+    # .NET's ProcessStartInfo.EnvironmentVariables is a case-sensitive
+    # StringDictionary. If the process environment block holds several case
+    # variants ("Path"/"PATH"/"path" -- some parent processes such as
+    # WorkBuddy create them), MSBuild throws ArgumentException ("An item
+    # with the same key has already been added") when spawning CL.exe,
+    # which breaks CMake's compiler identification ("The CXX compiler
+    # identification is unknown").
+    # Fix: drop every PATH variant, then keep a single upper-case "PATH".
     $pathVariants = [System.Environment]::GetEnvironmentVariables().Keys | Where-Object { $_ -ieq "path" }
     if ($pathVariants.Count -gt 1) {
         $pathValue = [Environment]::GetEnvironmentVariable("PATH")
@@ -58,13 +69,42 @@ try {
         [Environment]::SetEnvironmentVariable("PATH", $pathValue)
     }
 
+    # Strip MSYS2/MinGW directories from PATH and make CMake blind to them.
+    # CMake derives search prefixes from PATH, so a lingering
+    # <msys64>\<sub>\bin lets find_package/find_path resolve MSYS2 packages
+    # during the MSVC configure. Observed failure: Qt's FindWrapVulkanHeaders
+    # -> find_package(Vulkan) picked up MSYS2's vulkan headers, injecting
+    # mingw-w64 CRT headers (corecrt.h / math.h with __asm__) into the MSVC
+    # compilation and exploding inside vcruntime.h with hundreds of errors.
+    $msysPrefixes = @($env:PATH -split ';' |
+        Where-Object { $_.Trim() -match 'msys64|mingw' } |
+        ForEach-Object { Split-Path -Parent ($_.Trim()) } |
+        Sort-Object -Unique)
+    if ($msysPrefixes) {
+        $env:PATH = (@($env:PATH -split ';' |
+            Where-Object { $_.Trim() -and ($_.Trim() -notmatch 'msys64|mingw') }) -join ';')
+    }
+    # Belt and suspenders: even with PATH scrubbed, also hard-ignore the
+    # well-known MSYS2 install roots so no other discovery vector
+    # (env CMAKE_PREFIX_PATH, registry, etc.) can leak MinGW artifacts in.
+    $ignoreCandidates = @($msysPrefixes)
+    foreach ($root in @("D:\worksoft\msys64", "C:\msys64", "D:\msys64")) {
+        foreach ($sub in @("ucrt64", "mingw64", "clang64")) {
+            $ignoreCandidates += (Join-Path $root $sub)
+        }
+    }
+    $CMakeIgnorePrefixes = @($ignoreCandidates |
+        Where-Object { $_ -and (Test-Path (Join-Path $_ "include")) } |
+        ForEach-Object { $_ -replace '\\', '/' } |
+        Sort-Object -Unique)
+
     # Auto-detect Visual Studio and set up MSVC environment.
     # vcvars64.bat cannot be sourced in this context; manually populate
     # the variables CMake needs to find the MSVC toolchain.
     #
     # Supports any VS version vswhere can find (2022, 2026, ...). The
     # generator string is derived from the VS major version + year, NOT
-    # hardcoded — so this script does not break when a new VS ships.
+    # hardcoded - so this script does not break when a new VS ships.
     $vsWhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
     if (-not (Test-Path $vsWhere)) {
         # Fallback: vswhere sometimes lives under Common7
@@ -126,7 +166,7 @@ try {
         $msvc = $msvcDirs | Select-Object -First 1
 
         # Windows Kits: read from registry (HKLM\...\Windows Kits\Installed Roots\KitsRoot10).
-        # Do NOT hardcode "C:\Program Files (x86)\Windows Kits\10" — on machines
+        # Do NOT hardcode "C:\Program Files (x86)\Windows Kits\10" - on machines
         # where the SDK is installed to D:\Windows Kits\10 the hardcoded path
         # silently points at a nonexistent dir and breaks UCRT include/lib resolution.
         $kitsRoot = $null
@@ -145,7 +185,7 @@ try {
         }
         # SDK version dirs live under Include/ (e.g. Include\10.0.28000.0),
         # NOT under the Windows Kits\10 root. Listing the root only gives
-        # Include/, Lib/, bin/ — none match ^\d.
+        # Include/, Lib/, bin/ - none match ^\d.
         $kitsDirs = Get-ChildItem "$kitsRoot\Include" -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d' } | Sort-Object Name -Descending
         if (-not $kitsDirs) {
             Write-Error "Windows Kits at $kitsRoot has no SDK version dirs under Include/. Install the Windows 10/11 SDK."
@@ -165,7 +205,7 @@ try {
     }
 
     # Derive the CMake generator from the detected VS version.
-    # e.g. VS 2026 → "Visual Studio 18 2026", VS 2022 → "Visual Studio 17 2022".
+    # e.g. VS 2026 -> "Visual Studio 18 2026", VS 2022 -> "Visual Studio 17 2022".
     # Allow $env:ARIA_VS_GENERATOR to override (for exotic setups).
     if ($env:ARIA_VS_GENERATOR) {
         $Generator = $env:ARIA_VS_GENERATOR
@@ -182,7 +222,7 @@ try {
     $BuildDir = "build/flavors/msvc"
     $Jobs = if ($env:NUMBER_OF_PROCESSORS) { $env:NUMBER_OF_PROCESSORS } else { 4 }
 
-# ── Mode → CMake options ─────────────────────────────────────────────────────
+# -- Mode -> CMake options -----------------------------------------------------
 $DoCTest   = $false
 $DoPackage = $false
 $DoArchive = $false
@@ -230,13 +270,13 @@ switch ($Mode) {
     }
 }
 
-# ── CMake ─────────────────────────────────────────────────────────────────────
+# -- CMake ---------------------------------------------------------------------
 $cmake = Get-Command cmake.exe -ErrorAction SilentlyContinue
 if (-not $cmake) { $cmake = Get-Command cmake -ErrorAction SilentlyContinue }
 if (-not $cmake) { Write-Error "cmake not found. https://cmake.org/download/"; exit 1 }
 $cmakePath = $cmake.Source
 
-# ── Qt6 (auto-detect, framework adapter + tests need it) ─────────────────────
+# -- Qt6 (auto-detect, framework adapter + tests need it) ---------------------
 function Find-Qt6 {
     if ($env:ARIA_NO_QT6 -eq "1") { return $null }
     if ($env:QT_DIR) {
@@ -265,16 +305,34 @@ function Find-Qt6 {
 $Qt6Dir = Find-Qt6
 if ($Qt6Dir) {
     Write-Host "Qt6 detected at $Qt6Dir -- adapter enabled"
-    $CMakeOpts += @("-DARIA_BUILD_QT6=ON", "-DCMAKE_PREFIX_PATH=$Qt6Dir")
+    # Pin Qt6_DIR explicitly. CMAKE_PREFIX_PATH alone does NOT override a
+    # Qt6_DIR already cached in the build dir: if an earlier configure ever
+    # resolved Qt6 to the MSYS2/MinGW kit (e.g. via PATH-derived search
+    # prefixes), every later MSVC build silently compiles Qt headers against
+    # mingw-w64 CRT headers and explodes inside vcruntime.h. The cache-force
+    # -DQt6_DIR wins over the stale cache entry and keeps the toolchains
+    # isolated. (cmake/Qt6 adapter also hard-fails on cross-toolchain kits.)
+    $Qt6ConfigDir = (Join-Path $Qt6Dir "lib\cmake\Qt6") -replace '\\', '/'
+    $CMakeOpts += @(
+        "-DARIA_BUILD_QT6=ON",
+        "-DCMAKE_PREFIX_PATH=$($Qt6Dir -replace '\\', '/')",
+        "-DQt6_DIR=$Qt6ConfigDir"
+    )
 }
 
-# ── Configure ────────────────────────────────────────────────────────────────
+# -- Configure ----------------------------------------------------------------
+if ($CMakeIgnorePrefixes) {
+    $CMakeOpts += @(
+        "-DCMAKE_IGNORE_PREFIX_PATH=$($CMakeIgnorePrefixes -join ';')",
+        "-DCMAKE_IGNORE_PATH=$(($CMakeIgnorePrefixes | ForEach-Object { "$_/include"; "$_/lib" }) -join ';')"
+    )
+}
 Write-Host "configuring ($Mode)..."
 $cfgArgs = @("-S", $RepoRoot, "-B", $BuildDir, "-G", $Generator) + $CMakeOpts
 & $cmakePath @cfgArgs
 if ($LASTEXITCODE -ne 0) { Write-Error "CMake configure failed"; exit $LASTEXITCODE }
 
-# ── Build ────────────────────────────────────────────────────────────────────
+# -- Build --------------------------------------------------------------------
 Write-Host "building ($BuildConfig)..."
 # MSBuild v18 (VS 2026) has a child-node timeout bug (MSB4166) that crashes
 # multi-process builds. Disable node reuse and force /m:1 (single process)
@@ -285,7 +343,7 @@ $env:MSBUILDDISABLENODEREUSE = "1"
 & $cmakePath --build $BuildDir --config $BuildConfig -- /m:1
 if ($LASTEXITCODE -ne 0) { Write-Error "Build failed"; exit $LASTEXITCODE }
 
-# ── Test ─────────────────────────────────────────────────────────────────────
+# -- Test ---------------------------------------------------------------------
 if ($DoCTest) {
     Write-Host "running ctest..."
     # DLL search paths: unified bin/ output + Qt bin + VC runtime
@@ -293,7 +351,7 @@ if ($DoCTest) {
         (Join-Path $BuildDir "bin\$BuildConfig")
     )
     if ($Qt6Dir) { $testPath += (Join-Path $Qt6Dir "bin") }
-    # VC++ runtime (vcruntime140.dll etc.) — use the VS path we detected
+    # VC++ runtime (vcruntime140.dll etc.) - use the VS path we detected
     # at the top of the script, NOT a hardcoded "2022" glob (which misses
     # VS 2026 installs on machines without 2022).
     if ($vsPath) {
@@ -302,7 +360,7 @@ if ($DoCTest) {
     }
     $env:PATH = ($testPath -join ";") + ";" + $env:PATH
 
-    # Use the ctest that ships next to the cmake we found — MSYS2's ctest
+    # Use the ctest that ships next to the cmake we found - MSYS2's ctest
     # does POSIX path translation that mangles Windows DLL search paths.
     $ctestPath = Join-Path (Split-Path -Parent $cmakePath) "ctest.exe"
     if (-not (Test-Path $ctestPath)) {
@@ -317,14 +375,14 @@ if ($DoCTest) {
     if ($proc.ExitCode -ne 0) { Write-Error "Tests failed"; exit $proc.ExitCode }
 }
 
-# ── Package ──────────────────────────────────────────────────────────────────
+# -- Package ------------------------------------------------------------------
 if ($DoPackage) {
     Write-Host "packaging release..."
     & $cmakePath --build $BuildDir --target package-release --config $BuildConfig -- /m:1
     if ($LASTEXITCODE -ne 0) { Write-Error "Package failed"; exit $LASTEXITCODE }
 }
 
-# ── Optional archive ─────────────────────────────────────────────────────────
+# -- Optional archive ---------------------------------------------------------
 if ($DoArchive) {
     Write-Host "creating archive..."
     & $cmakePath --build $BuildDir --target package-archive --config $BuildConfig -- /m:1
@@ -341,4 +399,5 @@ if ($DoPackage) { Write-Host "  Package  : $RepoRoot\$BuildDir\release\" }
 
 } finally {
     Set-Location $OriginalDir
+    try { [Console]::OutputEncoding = $OrigConsoleEncoding } catch { }
 }
