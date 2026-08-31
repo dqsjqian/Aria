@@ -381,11 +381,21 @@ jobs:
       - name: Run clang-tidy across modules/*/include
         run: |
           set -euo pipefail
-          shopt -s globstar nullglob
           # Whole-project surface: every aria/*.hpp under each module's
           # public include tree. Drives off compile_commands.json for
           # consistent flags.
-          files=(modules/*/include/aria/**/*.hpp)
+          #
+          # Collected with `find` rather than a `**` glob: this job runs
+          # on macOS, where /bin/bash is 3.2 and `shopt -s globstar` fails
+          # outright ("invalid shell option name"). Under `set -e` that
+          # aborted the step before any linting happened, so the gate had
+          # never actually inspected a header — it only ever reported the
+          # shopt failure. The sanity check below was already correct; it
+          # just never got the chance to run.
+          files=()
+          while IFS= read -r f; do
+            files+=("$f")
+          done < <(find modules/*/include/aria -name '*.hpp' -type f | sort)
           if [[ ${#files[@]} -eq 0 ]]; then
             echo "No aria headers found — sanity check failed."
             exit 1
