@@ -17,6 +17,20 @@ namespace aria::runtime {
 ///   - register_transient<I, Impl>()   : new instance every resolve()
 ///   - register_factory<I>(fn)         : custom factory function
 ///   - register_instance<I>(ptr)       : pre-built singleton
+///
+/// **Teardown order (contract L-40)**: `clear()` and `~Container()`
+/// release registrations in **reverse registration order**, so a service
+/// registered after its dependency is destroyed before it. Register
+/// providers before consumers and the container will not hand a
+/// destroyed dependency to a destructor. Re-registering a type keeps its
+/// original position — the instance changed, not the dependency order.
+///
+/// Each registration is destroyed with the internal mutex released, so a
+/// service destructor may call back into the container (`resolve` /
+/// `has` / `register_*`) without deadlocking. Note that reverse order
+/// only mirrors registration, not the resolution graph; a consumer that
+/// was registered *before* the provider it resolves is still a bug on
+/// the caller's side.
 class ARIA_RUNTIME_API Container {
 public:
     Container();
@@ -69,6 +83,8 @@ public:
         return do_has_(typeid(Interface));
     }
 
+    /// Release every registration in reverse registration order (L-40).
+    /// Each value is destroyed with the internal mutex released.
     void clear();
 
 private:
