@@ -10,8 +10,13 @@
 #include <doctest/doctest.h>
 
 #include "aria/adapters/jni/JniAdapter.hpp"
+#include "aria/adapters/jni/JniListSource.hpp"
+#include "aria/adapters/jni/JniRecyclerNotifier.hpp"
 #include "aria/binding/view_adapter.hpp"
+#include "aria/observable_list.hpp"
 
+#include <functional>
+#include <string>
 #include <string_view>
 #include <type_traits>
 
@@ -56,6 +61,45 @@ static_assert(requires(JniAdapter& adapter, IView& view, std::string_view text) 
     adapter.notify_text_changed(view, text);
     adapter.notify_click(view);
 }, "JniAdapter must expose Java/Kotlin event ingress for two-way binding");
+
+// ── 6. RecyclerView list bridge contract ─────────────────────────────────
+//
+// `JniListSource<T>`'s diffing is exercised for real by
+// `test_jni_list_source` (registered under modules/core/tests so it runs
+// on any host — it has no <jni.h> dependency). What can only be checked
+// under the NDK is the JNI half: that `JniRecyclerNotifier` compiles
+// against a real `<jni.h>` and that its sink actually fits the shape
+// `JniListSource` expects. Without this TU those two headers would be
+// header-only files nothing includes, and a broken jni.h call in them
+// would ship undetected.
+
+using ::aria::adapters::jni::JniListSource;
+using ::aria::adapters::jni::JniRecyclerNotifier;
+using ::aria::adapters::jni::RecyclerNotification;
+
+struct ListRow {
+    std::string title;
+};
+
+static_assert(std::is_constructible_v<JniRecyclerNotifier, JNIEnv*, jobject>,
+              "JniRecyclerNotifier must be constructible from (JNIEnv*, jobject)");
+static_assert(!std::is_copy_constructible_v<JniRecyclerNotifier>,
+              "JniRecyclerNotifier owns a JNI global ref and must be non-copyable");
+static_assert(!std::is_copy_constructible_v<JniListSource<ListRow>>,
+              "JniListSource owns a Subscription and must be non-copyable");
+
+// The notifier's sink must be assignable to the list source's sink type —
+// the seam between the host-testable half and the JNI half.
+static_assert(std::is_convertible_v<
+                  decltype(std::declval<JniRecyclerNotifier&>().sink()),
+                  JniListSource<ListRow>::NotifySink>,
+              "JniRecyclerNotifier::sink() must satisfy JniListSource::NotifySink");
+
+// The bridge must accept any ListSourceOf<L, T>, not just ObservableList.
+static_assert(std::is_constructible_v<JniListSource<ListRow>,
+                                      ::aria::ObservableList<ListRow>&,
+                                      JniListSource<ListRow>::NotifySink>,
+              "JniListSource must bind to an ObservableList via ListSourceOf");
 
 }  // namespace
 
