@@ -68,6 +68,28 @@ TEST_CASE("when_all: real parallelism (wall time ≈ max, not sum)") {
     std::atomic<bool> done{false};
     std::atomic<int> sum{0};
 
+    // Measure a sequential baseline on this machine first, then require
+    // the parallel run to beat it by a clear margin.
+    //
+    // A fixed ceiling (this was `elapsed < 130`, against a ~150ms
+    // sequential cost) is not portable: under ASan/UBSan a loaded CI
+    // runner spent 169ms on the same parallel work and the assertion
+    // failed while `when_all` was behaving correctly. The threshold was
+    // the bug — "runs in parallel" does not imply "finishes within 130ms
+    // on every machine".
+    //
+    // Deriving the budget from a measured baseline keeps the assertion
+    // meaningful while letting it scale with whatever the host and its
+    // sanitizers cost. Three 50ms sleeps: sequential is ~150ms, parallel
+    // ~50ms, so "under 80% of sequential" still fails loudly if the
+    // tasks ever serialise (verified: forcing sequential awaits reports
+    // 159ms against a 140ms budget) and passes on a machine several
+    // times slower than this one.
+    auto seq_t0 = ck::steady_clock::now();
+    for (int i = 0; i < 3; ++i) std::this_thread::sleep_for(ck::milliseconds{50});
+    const auto sequential_ms =
+        ck::duration_cast<ck::milliseconds>(ck::steady_clock::now() - seq_t0).count();
+
     run_parallel_sum(pool, done, sum).start_detached_();
 
     auto t0 = ck::steady_clock::now();
@@ -76,7 +98,11 @@ TEST_CASE("when_all: real parallelism (wall time ≈ max, not sum)") {
     // Give detached wrapper coroutine time to finish before the pool destructor runs.
     std::this_thread::sleep_for(ck::milliseconds{30});
     CHECK(sum.load() == 6);
-    CHECK(elapsed < 130);   // sequential would be 150+
+
+    const auto budget_ms = (sequential_ms * 8) / 10;
+    INFO("parallel=", elapsed, "ms sequential baseline=", sequential_ms,
+         "ms budget=", budget_ms, "ms");
+    CHECK(elapsed < budget_ms);
 }
 
 TEST_CASE("when_all: rethrows the first exception") {
@@ -129,12 +155,25 @@ TEST_CASE("when_any: fastest among real-time waiters wins") {
     static std::atomic<bool> done{false};
     static std::atomic<int>  result{0};
     done = false; result = 0;
+    // Spread the sleeps wide apart on purpose.
+    //
+    // These were 100 / 20 / 60ms, and under ASan/UBSan on a loaded CI
+    // runner the 100ms task won — reported as `CHECK(1 == 99)`. Nothing
+    // was wrong with `when_any`: a 40ms gap is not a reliable ordering
+    // signal once sanitizer instrumentation and a contended scheduler
+    // are in play, because wakeup jitter approaches the gap itself.
+    //
+    // With 20ms against 300ms and 500ms the winner is unambiguous unless
+    // the machine stalls for a quarter second, at which point a failure
+    // is real news rather than noise. Runtime is bounded by the winner
+    // (~20ms) plus the drain wait, not by the losers, so widening the
+    // gap costs the suite almost nothing.
     struct Helper {
         static Task<void> body(IExecutor& pool) {
             std::vector<Task<int>> tasks;
-            tasks.push_back(sleep_then_any(pool,  1, 100));
+            tasks.push_back(sleep_then_any(pool,  1, 500));
             tasks.push_back(sleep_then_any(pool, 99,  20));
-            tasks.push_back(sleep_then_any(pool,  3,  60));
+            tasks.push_back(sleep_then_any(pool,  3, 300));
             auto r = co_await when_any(std::move(tasks));
             REQUIRE(r.value.has_value());
             result = r.value.value();
@@ -143,12 +182,15 @@ TEST_CASE("when_any: fastest among real-time waiters wins") {
     };
     ThreadPoolExecutor pool(4);
     Helper::body(pool).start_detached_();
-    auto deadline = ck::steady_clock::now() + ck::milliseconds{500};
+    // Deadline covers the winner, not the losers.
+    auto deadline = ck::steady_clock::now() + ck::seconds{5};
     while (!done.load() && ck::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(ck::milliseconds{2});
     }
+    REQUIRE(done.load());   // separates "wrong winner" from "timed out"
     CHECK(result.load() == 99);
-    std::this_thread::sleep_for(ck::milliseconds{150});  // let losers drain
+    // Let the losers drain before the pool is destroyed.
+    std::this_thread::sleep_for(ck::milliseconds{600});
 }
 
 TEST_CASE("when_any: throwing first task surfaces the exception") {
