@@ -261,7 +261,11 @@ inline void run_float_two_way_via_double_view(Harness& h) {
     auto adapter = h.make_adapter();
 
     adapter->set_float(v, 2.5f);
-    CHECK(adapter->get_float(v) == doctest::Approx(2.5f));
+    // Widen explicitly: `Approx` holds a double, so comparing a float
+    // against it promotes implicitly, and -Wdouble-promotion flags that
+    // from inside doctest's comparison template. See the same note in
+    // test_binding_readonly_source.cpp.
+    CHECK(static_cast<double>(adapter->get_float(v)) == doctest::Approx(2.5));
 }
 
 // ═══════════════════════════════════════════════════════════════════════

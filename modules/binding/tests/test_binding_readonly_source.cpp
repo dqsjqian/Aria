@@ -148,13 +148,20 @@ TEST_CASE("bind_bool_oneway / bind_int64_oneway / bind_uint64_oneway / "
     CHECK(v_bool.flag);
     CHECK(v_i64.i64 == 1000);
     CHECK(v_u64.u64 == 7u);
-    CHECK(v_f32.f32 == doctest::Approx(0.5f));
+    // Compare as double explicitly. `doctest::Approx` holds a double, so
+    // `float == Approx` promotes the left operand implicitly, and
+    // -Wdouble-promotion (enabled in CLANG_WARNINGS / GCC_WARNINGS)
+    // reports it from *inside* doctest's comparison template, where no
+    // local edit can silence it. Widening at the call site removes the
+    // promotion rather than hiding it. Note that dropping the `f` suffix
+    // would not help: the float-typed left operand is what gets promoted.
+    CHECK(static_cast<double>(v_f32.f32) == doctest::Approx(0.5));
 
     n = 4;
     CHECK_FALSE(v_bool.flag);
     CHECK(v_i64.i64 == 4000);
     CHECK(v_u64.u64 == 28u);
-    CHECK(v_f32.f32 == doctest::Approx(2.0f));
+    CHECK(static_cast<double>(v_f32.f32) == doctest::Approx(2.0));
 }
 
 // ── Projected / converted / optional ───────────────────────────────────────
