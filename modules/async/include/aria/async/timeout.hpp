@@ -67,6 +67,8 @@
 #include "aria/async/cancellation.hpp"
 #include "aria/async/virtual_time_executor.hpp"  // for IDelayedScheduler
 #include "aria/async/detail/race_slot.hpp"
+#include "aria/async/detail/race_trace.hpp"
+#include "aria/error.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -178,6 +180,11 @@ auto with_timeout_impl_(std::optional<CancellationToken> parent,
         int expected = 0;
         if (winner->compare_exchange_strong(expected, 2)) {
             inner_src->cancel();
+            // D-31.1: the deadline claimed the race. Cancelling the sole
+            // participant IS the timeout here, so no separate
+            // race_loser_cancel is published.
+            publish_race_trace(race_source::kWithTimeout, race_op::kTimeout, 0,
+                               ::aria::Error::timeout("with_timeout"));
         }
     });
 
@@ -189,26 +196,62 @@ auto with_timeout_impl_(std::optional<CancellationToken> parent,
         parent->on_cancel([inner_src]{ inner_src->cancel(); });
     }
 
+    publish_race_trace(race_source::kWithTimeout, race_op::kStart);
+
     try {
         if constexpr (std::is_void_v<R>) {
             co_await invoke_factory(factory, inner_tok);
             int expected = 0;
-            winner->compare_exchange_strong(expected, 1);
-            if (parent && parent->is_cancelled()) throw OperationCancelled{};
+            const bool inner_won = winner->compare_exchange_strong(expected, 1);
+            if (parent && parent->is_cancelled()) {
+                publish_race_trace(race_source::kWithTimeout,
+                                   race_op::kParentCancel, 0,
+                                   ::aria::Error::cancellation("with_timeout"));
+                publish_race_trace(race_source::kWithTimeout, race_op::kEnd);
+                throw OperationCancelled{};
+            }
+            if (inner_won) {
+                publish_race_trace(race_source::kWithTimeout, race_op::kWon);
+            }
+            publish_race_trace(race_source::kWithTimeout, race_op::kEnd);
             co_return;
         } else {
             R value = co_await invoke_factory(factory, inner_tok);
             int expected = 0;
-            winner->compare_exchange_strong(expected, 1);
-            if (parent && parent->is_cancelled()) throw OperationCancelled{};
+            const bool inner_won = winner->compare_exchange_strong(expected, 1);
+            if (parent && parent->is_cancelled()) {
+                publish_race_trace(race_source::kWithTimeout,
+                                   race_op::kParentCancel, 0,
+                                   ::aria::Error::cancellation("with_timeout"));
+                publish_race_trace(race_source::kWithTimeout, race_op::kEnd);
+                throw OperationCancelled{};
+            }
+            if (inner_won) {
+                publish_race_trace(race_source::kWithTimeout, race_op::kWon);
+            }
+            publish_race_trace(race_source::kWithTimeout, race_op::kEnd);
             co_return value;
         }
     } catch (const OperationCancelled&) {
         // Parent-cancel wins outright.
-        if (parent && parent->is_cancelled()) throw;
+        if (parent && parent->is_cancelled()) {
+            publish_race_trace(race_source::kWithTimeout,
+                               race_op::kParentCancel, 0,
+                               ::aria::Error::cancellation("with_timeout"));
+            publish_race_trace(race_source::kWithTimeout, race_op::kEnd);
+            throw;
+        }
         // Otherwise: if the timer fired we surface TimeoutError;
-        // any other cancellation propagates verbatim.
+        // any other cancellation propagates verbatim. The timer callback
+        // already published race_timeout, so only race_end is added.
+        publish_race_trace(race_source::kWithTimeout, race_op::kEnd);
         if (winner->load() == 2) throw TimeoutError{};
+        throw;
+    } catch (...) {
+        // Inner work failed on its own terms — not an arbitration
+        // outcome, but the race is over and consumers pairing
+        // start/end need the closing event.
+        publish_race_trace(race_source::kWithTimeout, race_op::kEnd);
         throw;
     }
 }
@@ -239,6 +282,7 @@ Task<void> drive_inner_for_fail_(
             if (slot->try_claim(/*Inner=*/1)) {
                 slot->result.template emplace<1>();   // void success
                 slot->publish(/*Inner=*/1);
+                publish_race_trace(race_source::kWithTimeout, race_op::kWon);
                 slot->notify_winner_resume();
             }
             // else: timer or parent already won; result discarded.
@@ -247,6 +291,7 @@ Task<void> drive_inner_for_fail_(
             if (slot->try_claim(/*Inner=*/1)) {
                 slot->result.template emplace<1>(std::move(value));
                 slot->publish(/*Inner=*/1);
+                publish_race_trace(race_source::kWithTimeout, race_op::kWon);
                 slot->notify_winner_resume();
             }
         }
@@ -254,6 +299,10 @@ Task<void> drive_inner_for_fail_(
         if (slot->try_claim(/*Inner=*/1)) {
             slot->result.template emplace<2>(std::current_exception());
             slot->publish(/*Inner=*/1);
+            // The inner task still won the race — it just won with a
+            // failure. The exception itself surfaces through
+            // await_resume, not through an arbitration event.
+            publish_race_trace(race_source::kWithTimeout, race_op::kWon);
             slot->notify_winner_resume();
         }
         // else: timer/parent won; exception discarded silently.
@@ -285,6 +334,8 @@ auto with_timeout_fail_impl_(std::optional<CancellationToken> parent,
             slot->result.template emplace<2>(
                 std::make_exception_ptr(TimeoutError{}));
             slot->publish(/*Timer=*/2);
+            publish_race_trace(race_source::kWithTimeout, race_op::kTimeout, 0,
+                               ::aria::Error::timeout("with_timeout"));
             slot->notify_winner_resume();
         }
     });
@@ -298,10 +349,15 @@ auto with_timeout_fail_impl_(std::optional<CancellationToken> parent,
                 slot->result.template emplace<2>(
                     std::make_exception_ptr(OperationCancelled{}));
                 slot->publish(/*ParentCancel=*/3);
+                publish_race_trace(race_source::kWithTimeout,
+                                   race_op::kParentCancel, 0,
+                                   ::aria::Error::cancellation("with_timeout"));
                 slot->notify_winner_resume();
             }
         });
     }
+
+    publish_race_trace(race_source::kWithTimeout, race_op::kStart);
 
     // Start the inner driver detached. It owns its own coroutine frame
     // via Task::start_detached and may outlive this wrapper if the
@@ -309,12 +365,16 @@ auto with_timeout_fail_impl_(std::optional<CancellationToken> parent,
     drive_inner_for_fail_<Factory, R>(std::move(factory), inner_tok, slot)
         .start_detached();
 
-    // Park until a winner publishes a result.
+    // Park until a winner publishes a result. `race_end` is published
+    // before decoding, so it fires even when await_resume rethrows.
     if constexpr (std::is_void_v<R>) {
         co_await RaceSlotAwaiter<R>{slot};
+        publish_race_trace(race_source::kWithTimeout, race_op::kEnd);
         co_return;
     } else {
-        co_return co_await RaceSlotAwaiter<R>{slot};
+        auto decoded = co_await RaceSlotAwaiter<R>{slot};
+        publish_race_trace(race_source::kWithTimeout, race_op::kEnd);
+        co_return decoded;
     }
 }
 
