@@ -17,6 +17,270 @@ Aria is a modern C++20 MVVM framework — cross-platform, layered,
 coroutine-first. Everything below is implemented, tested and shipped in
 the current tree.
 
+### 2026-08-31 — error-model verification targets
+
+`docs/reference/error-model.md` §7 was the last section in the tree still
+headed **"P0-ε target mapping (TODO)"**. It named four fuzzers; `ls
+modules/core/fuzz/` confirmed none of them existed. All four now do.
+
+* **`fuzz_async_command_cancellation_no_error`** (E-20 clause 2) — the
+  invariant is *negative*, the kind that rots without anything failing:
+  when cancellation starts leaking onto `last_error`, the UI just grows a
+  spurious red banner on every navigation. Clauses 1 and 2 also compose
+  into something stronger than either alone — because clause 1 clears the
+  error face on `execute()` entry, a cancelled invocation must leave it
+  **clean**, not still showing the previous failure. An implementation
+  that only implements "don't write on cancel" passes a naive test and
+  fails this one. Random `succeed / fail / timeout / cancel` walks against
+  one long-lived command, plus the `fail -> cancel` ordering pinned
+  directly.
+
+* **`fuzz_error_property_equality_gate`** (E-11 / L-21) — a retry loop
+  producing ten identical failures must notify once, not ten times, even
+  though each failure carries a fresh `exception_ptr`. The reference model
+  spells out E-11's field list **without** calling `operator==(Error,
+  Error)`: using the library's own operator would make the assertion a
+  tautology, since mutating the operator would mutate the model with it.
+  Verified by mutation — comparing `inner` inside `operator==` is caught
+  now and was silently accepted by the first draft.
+
+* **`fuzz_validator_field_path`** (E-22 clause 1) — `field_path` is an
+  invariant of the *validator*, and it has four production sites (`rule` /
+  `warning` / and both `end_pending` overloads). The caller-shaped overload
+  is asymmetric on purpose: the framework backfills an **empty**
+  `field_path` but must not clobber one the caller set. A one-line "always
+  assign" breaks only that half, which is exactly what this fuzzer
+  catches.
+
+* **`fuzz_error_from_exception_table`** (E-13 / E-12) — the mapping is an
+  ordered `catch` chain, and `expects_inner` follows the *factory* each
+  branch calls rather than the exception's richness:
+  `Error::user_error` has no `inner` parameter, so the two `UserError`
+  branches drop the `exception_ptr`, while `catch (...)` forwards it — a
+  bare `throw 42` ends up **with** an inner ptr. Counter-intuitive enough
+  that "tidying" it would silently change observable behaviour.
+
+Each fuzzer was reverse-verified by deliberately breaking the
+implementation and confirming a real failure: swapping the
+`out_of_range` mapping, clobbering the caller's `field_path`, leaking
+cancellation onto the error face, and adding `inner` to `operator==` all
+produce failures now.
+
+`error-model.md` §7 is now **"Verification targets"** and documents the
+non-obvious parts of each contract (the clause 1 + 2 composition, the
+tautology trap in the equality model, the backfill asymmetry, the
+factory-driven `inner` retention) so the next reader does not have to
+rediscover them from the assertions.
+
+
+
+`docs/reference/diagnostics.md` §7 was headed **"P0-ε target mapping
+(TODO)"** and listed four verification targets. None of the four existed.
+The trace-sink machinery — install/clear racing, exception swallowing,
+scoped nesting, and the zero-overhead fast path — had no fuzzer and no
+bench, while `lifecycle.md`'s seven `L-N` fuzzers were all present. That
+gap mattered more after the race-trace work landed, since arbitration
+events publish from timer and worker threads.
+
+All four now exist and run in the ordinary suites:
+
+* **`fuzz_trace_sink_install_race`** (D-21) — publisher thread against
+  installer thread. Each sink owns a heap guard that flips on
+  destruction, so a sink invoked after its own destruction becomes a
+  counted failure instead of a read of freed memory that only ASan might
+  notice. The race requires a swap landing *between* the snapshot load
+  and the invocation, which no single-threaded test produces.
+
+* **`fuzz_trace_sink_throw_swallow`** (D-22) — throws on a rotating
+  schedule including a type that does **not** derive from
+  `std::exception` (the contract is `catch (...)`), across all four
+  publish overloads, and verifies the slot survives: an escaping
+  exception must not clear the sink as a side effect.
+
+* **`fuzz_trace_sink_scoped_nesting`** (D-23) — random-depth scope stacks
+  with a bare `install_trace_sink` injected mid-stack, asserting which
+  sink is exposed at every unwind step.
+
+* **`aria_bench_trace_sink`** (D-24) — a comparison rather than an
+  absolute number: the gated no-sink path must sit within noise of a bare
+  `has_trace_sink()`, and the ungated variant must stay visibly above it,
+  or the AD2 gating convention buys nothing. Measured on an idle
+  M-series host: gate 7.9ns p99, fast path 8.5ns, ungated 10.2ns,
+  installed sink 37.8ns — the fast path is 0.6ns above a bare gate,
+  which is the D-24 claim quantified.
+
+`aria_fuzz` now carries 17 cases / ~2.0M assertions. The four new bench
+rows are registered in `benchmark/thresholds.json` (both the generic and
+`macos-arm64` blocks) and in `scripts/check-bench.sh`, which the script's
+own comment requires; `check-bench.sh` reports 12/12 metrics within
+budget.
+
+Writing D-23 corrected a wrong assumption rather than finding a
+framework bug: the intuitive model ("a bare install stays visible for
+every level deeper than where it happened") holds only when
+`bare_at + 1 == depth - 1`. Verified against the implementation with a
+throwaway probe; the fuzzer now computes the expectation per level and
+the reasoning is recorded next to it.
+
+Running the extended suite under the `asan` flavor also surfaced a
+**pre-existing UB in `fuzz_async_command_dtor`**, unrelated to the new
+work: the command was executed with `static_cast<int>(rng.u32())` over
+the full 32-bit range, and the action body's `x * 2` overflowed for large
+negatives. UBSan aborted, taking the whole fuzz binary down — so the
+`asan` flavor had never been getting a clean fuzz run. The argument is
+incidental to what that fuzzer races (dtor vs `execute`), so it is now
+bounded.
+
+### 2026-08-31 — UIKit table-source tests, and a roadmap correction
+
+`UIKitTableSource` was the only one of the four list/table bridges with no
+test at all — Qt6 had `test_list_model.cpp`, AppKit
+`test_appkit_table_source.mm`, JNI now `test_jni_list_source.cpp` — so its
+row arithmetic and its derived-list support were carried entirely by
+review.
+
+* **`test_uikit_table_source.mm`**: six cases covering every `ListChange`
+  variant, `shared_ptr` identity preservation across a Move, out-of-range
+  `at()`, `FilteredList`, `MappedList<Source, Target>` identity, and
+  teardown detaching from both the table and the source. Registered as a
+  binary separate from `test_uikit_conformance`, so a table regression
+  names itself in CI instead of hiding inside "conformance".
+
+* **CI**: the `uikit` job now builds and runs both simulator targets on
+  the one booted device.
+
+Verified in an actual iOS simulator (6/6 cases, 43 assertions), not merely
+compiled; breaking `apply_move_`'s insertion index fails three of them.
+No framework code changed — this is coverage for shipped behaviour.
+
+The roadmap item this closes, *Derived collections → UI adapter wiring*,
+turned out to be **already implemented**: all four adapters accept their
+source through `requires ::aria::ListSourceOf<L, T>`, so every derived
+list — including `DistinctList` / `PagedList` / `GroupedList`, which the
+item never mentioned — already binds without a manual sync layer. The
+entry was describing work that no longer existed. It is now in `Landed`
+recording that, and `docs/ROADMAP.md`'s maintenance rule gained a
+"check the code before working an item" clause, because a stale roadmap
+claim invites re-implementing shipped API.
+
+### 2026-08-31 — JNI list source (RecyclerView)
+
+Qt6, UIKit and AppKit each shipped a list/table source; JNI shipped none,
+so the documented Android workaround was to join list items with `"\n"`
+on the C++ side and split them back in Kotlin — discarding item identity,
+per-row diffing and selection.
+
+* **`JniListSource<T>`** (`aria/adapters/jni/JniListSource.hpp`) accepts
+  any `aria::ListSourceOf<L, T>` — the same concept the other three
+  adapters consume — and maps `ListChange<T>` onto the RecyclerView
+  vocabulary: `notifyItemInserted` / `notifyItemRemoved` /
+  `notifyItemChanged` / `notifyItemMoved` / `notifyDataSetChanged`. Rows
+  stay `std::shared_ptr<T>`, so identity survives the hop.
+
+* **`JniRecyclerNotifier`** (`aria/adapters/jni/JniRecyclerNotifier.hpp`)
+  is the JNI half: it holds a global ref to the managed
+  `RecyclerView.Adapter`, resolves the `notifyItem*` method IDs once
+  (reflection per notification would put JNI lookups on the scroll path),
+  and exposes `sink()`. `valid()` reports a failed lookup instead of
+  silently dropping updates.
+
+The two are separate on purpose. RecyclerView.Adapter lives on the
+managed side and cannot be held as a widget pointer the way Qt / UIKit /
+AppKit hold theirs, so the notification target is a `NotifySink`
+callable — which also means **`JniListSource` has no `<jni.h>`
+dependency and its diffing runs in the ordinary host test suite**. The
+new `jni_list_source` ctest target (registered under
+`modules/core/tests/`, not the ANDROID-gated adapter tests) covers all
+six change kinds, derived lists, identity preservation, out-of-range
+access and detach-on-destroy. Previously the entire JNI adapter was
+unreachable from a host build, so a list bridge added there would have
+had zero executed assertions.
+
+Scope matches the other three adapters: no new collection model, no
+Compose-specific API, and no thread marshalling — Aria owns no looper
+abstraction, so a producer that emits off-main wraps `sink()` in a
+`Handler` post. Documented in `docs/guide/adapters/jni.md`, including the
+contract that `notifyItemMoved` takes the raw `(from, to)` pair with no
+Qt-style `+1` adjustment (pinned by test — it is the classic porting
+bug).
+
+### 2026-08-31 — race-aware async trace
+
+`with_timeout`, `when_any` and `when_all` already arbitrated a race
+internally, but published nothing: only `AsyncCommand` and
+`AsyncResource` reached the `TraceSink`, so "which participant won, and
+why did the others stop" was invisible to tooling that could already see
+every reactive flush and binding dispatch.
+
+* **Six arbitration events**, specified as **D-31.1** in
+  `docs/reference/diagnostics.md`: `race_start` / `race_won` /
+  `race_timeout` / `race_loser_cancel` / `race_parent_cancel` /
+  `race_end`, under the existing `TraceCategory::Async`. No new category,
+  no new payload field — `trace::Async`'s `source` names the combinator
+  (`with_timeout` / `when_any` / `when_any_cancellable` / `when_all`) and
+  `generation` carries the per-op number (participant count, winner
+  index, or losers signalled).
+
+* **Exactly one of `race_won` / `race_timeout` / `race_parent_cancel`
+  fires per race** — they are the three mutually exclusive outcomes of
+  one CAS, published from inside the already-taken branch. A losing
+  participant that finishes later publishes nothing, so the event count
+  does not grow with participant count.
+
+* **`race_loser_cancel` is one event per race, not per loser**, with the
+  number of losers signalled in `generation`. An N-way race stays O(1)
+  events.
+
+* `race_timeout` carries `Error::timeout(...)` and `race_parent_cancel`
+  carries `Error::cancellation(...)`, consistent with D-12.
+
+New internal header `aria/async/detail/race_trace.hpp` holds the publish
+helper and the op / source spellings, so the `has_trace_sink()` gate
+(AD2) exists once rather than at each of the ten arbitration points, and
+a misspelled op is a compile error instead of an event no filter matches.
+
+Zero cost when no sink is installed: every publish goes through the same
+one-load-and-branch gate as the rest of the diagnostic protocol, asserted
+by a no-sink case in `test_async_diagnostics.cpp`. No public API change
+and no behavioural change to arbitration itself — the 129 pre-existing
+async tests pass untouched.
+
+### 2026-08-31 — deterministic `Container` teardown
+
+Fixes a real, timing-dependent defect rather than adding surface area:
+`runtime::Container` stored singletons in an `unordered_map` and released
+them via `clear()`, so teardown order was **unspecified**. A service
+holding a reference to another service could observe a destroyed
+dependency, and whether it did depended on hash order — the worst kind of
+bug to reproduce.
+
+* **Teardown is now reverse registration order** in both `clear()` and
+  `~Container()`. Register providers before consumers and the container
+  will not hand a destroyed dependency to a destructor. Singletons and
+  factories share one order (previously two independently cleared
+  tables), and re-registering a type replaces the instance while
+  **keeping its original position** — the value changed, the dependency
+  order did not.
+
+* **`~Container()` no longer relies on the default member wipe.** It runs
+  the same ordered path as `clear()`; previously the destructor inherited
+  `unordered_map`'s order even for callers that never called `clear()`.
+
+* **Each value is destroyed with the internal mutex released**, so a
+  service destructor may call back into the container (`resolve` / `has`
+  / `register_*`) without self-deadlocking — the A11 hazard, one layer
+  down. Entries not yet reached stay resolvable, so a consumer's
+  destructor can still reach a provider registered before it.
+
+No API change: no new type, no new method, no signature change. The
+contract is **L-40** in `docs/reference/lifecycle.md`, and
+`test_container.cpp` pins it with five cases — reverting to forward order
+fails four and *deadlocks* the re-entrant-destructor one.
+
+Out of scope, deliberately: full dependency-graph-ordered teardown, which
+would require recording the resolution graph during construction. See
+`docs/ROADMAP.md` → *Evaluated and declined*.
+
 ### 2026-08-21 — bindable derived values, adapter-owned views, adapter base
 
 First pass over the 2026-08 field-review triage (see `docs/ROADMAP.md`

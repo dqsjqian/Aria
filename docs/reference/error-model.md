@@ -353,16 +353,53 @@ pump / abi trampoline). The contract:
 
 ---
 
-## 7. P0-ε target mapping (TODO)
+## 7. Verification targets
 
-P0-ε fuzzers MUST verify these error-model invariants:
+The error-model invariants below are pinned by fuzzers in
+`modules/core/fuzz/`, all built into the `aria_fuzz` binary and run by
+the `fuzz_tests` ctest target:
 
-| Invariant | fuzzer |
-|---|---|
-| AsyncCommand cancellation never surfaces on the error face | `async_command_cancellation_no_error_fuzzer` |
-| Repeated set of the same Error does not notify observers | `error_property_equality_gate_fuzzer` |
-| Validator errors' `key.field_path` always equals the Validator's path | `validator_field_path_fuzzer` |
-| `Error::from_exception` mapping is stable across std exception types | `error_from_exception_table_fuzzer` |
+| Invariant | fuzzer | source |
+|---|---|---|
+| AsyncCommand cancellation never surfaces on the error face (E-20 clause 2) | `fuzz: E-20 cancellation never surfaces on AsyncCommand's error face` | `fuzz_async_command_cancellation_no_error.cpp` |
+| Repeated set of the same Error does not notify observers (E-11 + L-21) | `E-11 fuzz: equal Errors do not re-notify, unequal ones always do` | `fuzz_error_property_equality_gate.cpp` |
+| Validator errors' `key.field_path` always equals the Validator's path (E-22 clause 1) | `fuzz: Validator field_path is an invariant of the validator` | `fuzz_validator_field_path.cpp` |
+| `Error::from_exception` mapping is stable across std exception types (E-13) | `E-13 fuzz: from_exception mapping is stable across std exception types` | `fuzz_error_from_exception_table.cpp` |
+
+Notes on what these actually pin, since the shape is not obvious from
+the invariant statement alone:
+
+- **Cancellation** is a *negative* contract, and E-20 clauses 1 and 2
+  compose into something stronger than either alone: because clause 1
+  clears the error face on every `execute()` entry, a cancelled
+  invocation must leave it **clean** — not showing whatever the previous
+  failure left behind. The fuzzer walks random `succeed / fail / timeout
+  / cancel` sequences against one long-lived command and additionally
+  pins the `fail -> cancel` ordering directly.
+- **Equality gate**: the reference model spells out E-11's field list
+  (kind / severity / message / source / key) **without** calling
+  `operator==(Error, Error)`. Using the library's own operator would make
+  the assertion a tautology — mutate the operator and the model adopts
+  the same mutation. The fuzzer also cross-checks that `operator==`
+  agrees with the field list, which is the assertion that fires if
+  `inner` ever starts participating in equality.
+- **`field_path`**: E-22 clause 1 is an invariant of the *validator*, not
+  of the rule, and it has four production sites (`rule` / `warning` /
+  `end_pending(vector<string>)` / `end_pending(vector<Error>)`). The last
+  one is asymmetric on purpose: the framework backfills an **empty**
+  `field_path` but must not clobber one the caller set. Note also that
+  `async_errors_` is re-merged on every revalidation rather than consumed
+  once, so a caller-set path keeps surviving later source writes.
+- **`from_exception`**: `expects_inner` in the catalogue follows the
+  *factory* each catch branch calls, not the exception's richness.
+  `Error::user_error` has no `inner` parameter, so the two `UserError`
+  branches drop the `exception_ptr`; `catch (...)` forwards it, so a bare
+  `throw 42` ends up **with** an inner ptr. Tidying that asymmetry would
+  change observable behaviour.
+
+Iteration count defaults to 50k per fuzzer; set
+`ARIA_FUZZ_ITERS=1000000` (optionally with `ARIA_FUZZ_SEED`) for
+nightly / pre-release runs.
 
 ---
 
