@@ -109,3 +109,4 @@ app/build/
 *.apk
 # Android local SDK config (machine-specific, never commit)
 local.properties
+scripts/tidy-findings.txt
