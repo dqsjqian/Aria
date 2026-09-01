@@ -44,29 +44,102 @@ struct BillViewModel {
 
 这段代码里没有一行 UI，也没有 `#include` 任何界面库 —— 它在命令行下就能测。
 
-**下半 —— View 侧接线（每个平台各写一次）**
+**下半 —— View 侧接线（每个平台十几行，界面本身仍用各平台原生方式写）**
+
+先说清最容易误会的一点：**界面不用 C++ 写。** 按钮、布局、动画照旧用 Qt Designer、
+Storyboard、Compose、HTML 写。下面这十几行只是"把已经存在的控件交给 engine"的接线代码，
+三步永远一样 —— ① 造平台适配器 ② 用它造 `BindingEngine` ③ 把控件和 Property 绑上。
+
+<details open>
+<summary><b>Qt6</b>（Windows / macOS / Linux · 纯 C++）</summary>
 
 ```cpp
-// 1. 先有一个平台适配器，它知道怎么往这个平台的控件里写文字。
-//    Qt6 用 qt6::QtAdapter，iOS 用 uikit::UIKitAdapter，Android 用 jni::JniAdapter。
 auto adapter = std::make_shared<aria::adapters::qt6::QtAdapter>();
-
-// 2. engine 就是从适配器造出来的 —— 它是 ViewModel 与控件之间的唯一通道。
 aria::binding::BindingEngine engine{adapter};
 
-// 3. 把 per_person 接到一个 label 上，中间用 lambda 把 double 格式化成文本。
 BillViewModel vm;
+// label_view 包住你在 Qt Designer 里拖出来的那个 QLabel
+aria::adapters::qt6::QtView label_view{real_label};
 engine.bind_text_projected(vm.per_person, label_view,
-    [](double value) { return std::format("¥{:.2f}", value); });
+    [](double v) { return std::format("¥{:.2f}", v); });
+```
+</details>
 
-// 4. 之后只改数据，不碰界面。
-vm.people = 4;   // label 自己变成 ¥25.00
+<details>
+<summary><b>iOS / UIKit</b>（接线文件是 Objective-C++ <code>.mm</code>，界面仍是 Storyboard / SwiftUI）</summary>
+
+```objc++
+#import "aria/adapters/uikit/UIKitAdapter.hpp"
+
+auto adapter = std::make_shared<aria::adapters::uikit::UIKitAdapter>();
+aria::binding::BindingEngine engine(adapter, ui_dispatcher,
+    aria::binding::BindingEngine::DispatchPolicy::SmartMarshal);
+
+// 把 Storyboard 里的 UILabel* 包一层，C++ 侧就能绑它
+auto label = std::make_shared<aria::adapters::uikit::UIKitView>(self.totalLabel);
+engine.bind_text_projected(vm.per_person, *label,
+    [](double v) { return std::format("¥{:.2f}", v); });
 ```
 
-关键就是第 4 步：**改的是 `vm.people`，动的是屏幕上的 label，中间没有任何一行手写的刷新代码。**
-换成 iOS 只需把第 1 步换成 `uikit::UIKitAdapter`，ViewModel 一个字都不用改。
+`UIKitView` 用 ARC 强引用持有 `UIView*`，析构时会在原生 view 还活着的时候通知
+`BindingEngine` 清理订阅，所以不会回调到已释放的控件上。
+</details>
 
-继续阅读：[绑定指南](docs/guide/binding.md) · [Cookbook](docs/cookbook/README.md) · [AriaTools](https://github.com/dqsjqian/AriaTools)（完整四端应用）。
+<details>
+<summary><b>macOS / AppKit</b>（同上，<code>.mm</code> + NSView）</summary>
+
+```objc++
+#import "aria/adapters/appkit/AppKitAdapter.hpp"
+
+auto adapter = std::make_shared<aria::adapters::appkit::AppKitAdapter>();
+aria::binding::BindingEngine engine(adapter, ui_dispatcher,
+    aria::binding::BindingEngine::DispatchPolicy::SmartMarshal);
+
+auto label = std::make_shared<aria::adapters::appkit::AppKitView>(self.totalField);
+engine.bind_text_projected(vm.per_person, *label, /* ... */);
+```
+</details>
+
+<details>
+<summary><b>Android</b>（界面写 Kotlin / Compose，C++ 只接线）</summary>
+
+```cpp
+// 在 Android UI 线程上调用，传进来的是真实的 android.view.View 对象
+auto adapter = std::make_shared<aria::adapters::jni::JniAdapter>(env);
+aria::binding::BindingEngine engine(adapter);
+
+aria::adapters::jni::JniView total_view(env, total_text_view);
+engine.bind_text_projected(vm.per_person, total_view,
+    [](double v) { return std::format("¥{:.2f}", v); });   // → TextView
+```
+
+Kotlin 侧的监听器把原生事件转发回来（`adapter->notify_text_changed(...)` /
+`notify_click(...)`），**监听器归属仍在 Android 侧**，C++ 这边保持强类型。
+Compose 没有可寻址的 view 对象，用文档里的 side-channel 形态。
+</details>
+
+<details>
+<summary><b>Web</b>（浏览器里没有 C++ —— 前端是 HTML/JS，C++ 跑在服务端）</summary>
+
+```cpp
+aria::adapters::http::HttpAdapterConfig config;
+config.port = 9090;
+auto http = std::make_shared<aria::adapters::http::HttpAdapter>(config);
+
+// "控件"在这里是字符串 ID，对应浏览器里的 DOM 元素
+auto& total = http->register_view("total", "text");
+
+aria::binding::BindingEngine engine{http};
+engine.bind_text_projected(vm.per_person, total,
+    [](double v) { return std::format("¥{:.2f}", v); });
+http->start();  // Property 变化经 SSE 推给浏览器，用户操作经 REST 回来
+```
+</details>
+
+**这才是重点**：五份接线代码长得几乎一样，而上面那个 `BillViewModel` **一个字都没改过**。
+你换平台换的是这十几行，不是业务逻辑。
+
+继续阅读：[绑定指南](docs/guide/binding.md) · [各平台适配器指南](docs/guide/adapters/) · [Cookbook](docs/cookbook/README.md) · [AriaTools](https://github.com/dqsjqian/AriaTools)（Qt / iOS / Android / Web 四端完整应用）。
 
 ## 🎯 定位与取舍
 

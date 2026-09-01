@@ -27,7 +27,7 @@ Aria splits a screen in two. The **ViewModel** is plain C++ and knows nothing ab
 UI library; the **View** is native widgets. `BindingEngine` joins them, and it only ever
 talks to the `IViewAdapter` interface — so porting means swapping the adapter, nothing else.
 
-**Half one — the ViewModel (plain C++, unit-testable, shared by every platform)**
+**Upper half — the ViewModel (plain C++, unit-testable, shared by every platform)**
 
 ```cpp
 // Splitting a bill: total ÷ people = each person's share.
@@ -46,32 +46,107 @@ struct BillViewModel {
 
 There is no UI in that code and no UI header included — it runs under a console test.
 
-**Half two — wiring up the View (written once per platform)**
+**Lower half — wiring up the View (a dozen lines per platform; the UI itself stays native)**
+
+First, the thing most likely to be misread: **you do not write the UI in C++.** Buttons,
+layout and animation are still authored the usual way — Qt Designer, Storyboard, Compose,
+HTML. The code below only hands widgets that already exist over to the engine, and the
+three steps never change: ① construct the platform adapter ② build a `BindingEngine` from
+it ③ bind a widget to a Property.
+
+<details open>
+<summary><b>Qt6</b> (Windows / macOS / Linux · plain C++)</summary>
 
 ```cpp
-// 1. Start from a platform adapter: it knows how to push text into this
-//    toolkit's widgets. Qt6 → qt6::QtAdapter, iOS → uikit::UIKitAdapter,
-//    Android → jni::JniAdapter.
 auto adapter = std::make_shared<aria::adapters::qt6::QtAdapter>();
-
-// 2. The engine is built FROM that adapter — it is the only channel
-//    between a ViewModel and a widget.
 aria::binding::BindingEngine engine{adapter};
 
-// 3. Wire per_person to a label, formatting the double into text on the way.
 BillViewModel vm;
+// label_view wraps the QLabel you dragged out in Qt Designer
+aria::adapters::qt6::QtView label_view{real_label};
 engine.bind_text_projected(vm.per_person, label_view,
-    [](double value) { return std::format("¥{:.2f}", value); });
+    [](double v) { return std::format("¥{:.2f}", v); });
+```
+</details>
 
-// 4. From here on you mutate data, never the UI.
-vm.people = 4;   // the label becomes ¥25.00 on its own
+<details>
+<summary><b>iOS / UIKit</b> (the wiring file is Objective-C++ <code>.mm</code>; the UI is still Storyboard / SwiftUI)</summary>
+
+```objc++
+#import "aria/adapters/uikit/UIKitAdapter.hpp"
+
+auto adapter = std::make_shared<aria::adapters::uikit::UIKitAdapter>();
+aria::binding::BindingEngine engine(adapter, ui_dispatcher,
+    aria::binding::BindingEngine::DispatchPolicy::SmartMarshal);
+
+// Wrap the UILabel* from your Storyboard so C++ can bind to it
+auto label = std::make_shared<aria::adapters::uikit::UIKitView>(self.totalLabel);
+engine.bind_text_projected(vm.per_person, *label,
+    [](double v) { return std::format("¥{:.2f}", v); });
 ```
 
-Step 4 is the whole point: **you assign to `vm.people`, the label on screen changes, and
-there is no hand-written refresh code in between.** Targeting iOS only changes step 1 to
-`uikit::UIKitAdapter`; the ViewModel is untouched.
+`UIKitView` retains the `UIView*` under ARC and, on destruction, tells `BindingEngine` to
+drop its subscriptions while the native view is still valid — so no callback ever reaches a
+released widget.
+</details>
 
-Continue with the [binding guide](docs/guide/binding.md), the [cookbook](docs/cookbook/README.md), or the full four-platform [AriaTools](https://github.com/dqsjqian/AriaTools) application.
+<details>
+<summary><b>macOS / AppKit</b> (same shape: <code>.mm</code> + NSView)</summary>
+
+```objc++
+#import "aria/adapters/appkit/AppKitAdapter.hpp"
+
+auto adapter = std::make_shared<aria::adapters::appkit::AppKitAdapter>();
+aria::binding::BindingEngine engine(adapter, ui_dispatcher,
+    aria::binding::BindingEngine::DispatchPolicy::SmartMarshal);
+
+auto label = std::make_shared<aria::adapters::appkit::AppKitView>(self.totalField);
+engine.bind_text_projected(vm.per_person, *label, /* ... */);
+```
+</details>
+
+<details>
+<summary><b>Android</b> (UI in Kotlin / Compose; C++ only does the wiring)</summary>
+
+```cpp
+// Called on the Android UI thread with real android.view.View objects
+auto adapter = std::make_shared<aria::adapters::jni::JniAdapter>(env);
+aria::binding::BindingEngine engine(adapter);
+
+aria::adapters::jni::JniView total_view(env, total_text_view);
+engine.bind_text_projected(vm.per_person, total_view,
+    [](double v) { return std::format("¥{:.2f}", v); });   // → TextView
+```
+
+Kotlin-side listeners forward native events back in (`adapter->notify_text_changed(...)` /
+`notify_click(...)`), so **listener ownership stays on Android** while the C++ side stays
+strongly typed. Compose has no addressable view object; use the side-channel shape from the
+adapter guide.
+</details>
+
+<details>
+<summary><b>Web</b> (no C++ in the browser — the frontend is HTML/JS, C++ runs server-side)</summary>
+
+```cpp
+aria::adapters::http::HttpAdapterConfig config;
+config.port = 9090;
+auto http = std::make_shared<aria::adapters::http::HttpAdapter>(config);
+
+// Here a "widget" is a string ID matching a DOM element in the browser
+auto& total = http->register_view("total", "text");
+
+aria::binding::BindingEngine engine{http};
+engine.bind_text_projected(vm.per_person, total,
+    [](double v) { return std::format("¥{:.2f}", v); });
+http->start();  // Property changes go out over SSE; user input comes back over REST
+```
+</details>
+
+**That is the point**: five wiring snippets that look nearly identical, and the
+`BillViewModel` above is byte-for-byte unchanged across all of them. Porting costs you
+those dozen lines, not your business logic.
+
+Continue with the [binding guide](docs/guide/binding.md), the [per-platform adapter guides](docs/guide/adapters/), the [cookbook](docs/cookbook/README.md), or the full four-platform [AriaTools](https://github.com/dqsjqian/AriaTools) application.
 
 ## 🎯 Where Aria fits
 
