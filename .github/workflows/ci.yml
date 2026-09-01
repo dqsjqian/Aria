@@ -172,6 +172,31 @@ jobs:
           cmake --install build/flavors/release --prefix /tmp/aria-prefix
           test -f /tmp/aria-prefix/lib/cmake/aria/ariaConfig.cmake
 
+      # Leak coverage lives here and nowhere else: the macOS ASan job
+      # cannot detect leaks (LeakSanitizer is unavailable on Darwin and
+      # aborts if you ask for it), so before this step a leaked coroutine
+      # frame could survive every job in the matrix. LSan is on by default
+      # under ASan on Linux, so no extra option is needed.
+      - name: Configure (ASan + UBSan, leak detection)
+        if: matrix.compiler == 'gcc'
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -S . -B build/flavors/asan -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DARIA_SANITIZE=asan+ubsan
+
+      - name: Build (sanitized)
+        if: matrix.compiler == 'gcc'
+        run: cmake --build build/flavors/asan -j
+
+      - name: Test (sanitized, leaks are failures)
+        if: matrix.compiler == 'gcc'
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+        run: ctest --test-dir build/flavors/asan --output-on-failure
+
   # ────────────────────────────────────────────────────────────────────
   # Windows — MSYS2 UCRT64 + GCC + Ninja + Qt6 (no MSVC)
   # ────────────────────────────────────────────────────────────────────

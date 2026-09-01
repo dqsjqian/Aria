@@ -502,6 +502,15 @@ TEST_CASE("with_timeout::Fail: no-token factory + deadline → fast TimeoutError
     t.start();
     vt.advance_by(100ms);
     CHECK(out.kind == Outcome::Kind::Timeout);
+
+    // The abandoned inner is still parked on its 500ms delay. Its frame
+    // self-destroys at final_suspend, which it can only reach if someone
+    // resumes it — so drive the clock past the inner delay before the
+    // executor dies. Without this the frame (and the exception_ptr it
+    // holds) is still allocated at exit and LeakSanitizer reports it.
+    // This is test hygiene, not a defect in with_timeout: production
+    // schedulers keep running, so the frame is always eventually resumed.
+    vt.advance_by(500ms);
 }
 
 TEST_CASE("with_timeout::Fail: inner throws non-cancel exception → propagates verbatim") {
@@ -524,6 +533,11 @@ TEST_CASE("with_timeout::Fail: parent-cancel beats deadline (priority)") {
     vt.advance_by(100ms);
     parent_src.cancel();  // parent fires before deadline
     CHECK(out.kind == Outcome::Kind::Cancelled);  // immediate, not Timeout
+
+    // Same reason as the no-token case above: let the abandoned inner
+    // reach final_suspend so its frame is released before the executor
+    // goes away. 1000ms clears both the inner delay and the deadline.
+    vt.advance_by(1000ms);
 }
 
 TEST_CASE("with_timeout::Fail: inner that completed first wins over later timer") {
