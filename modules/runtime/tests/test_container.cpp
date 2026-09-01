@@ -2,6 +2,7 @@
 
 #include "aria/runtime/container.hpp"
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <string>
 #include <thread>
@@ -218,6 +219,12 @@ TEST_CASE("Container: stays thread-safe while registering and resolving") {
     // previous instance while readers are resolving through the container.
     for (int i = 0; i < 200; ++i) {
         c.register_singleton<ILogger, ConsoleLogger>();
+    }
+    // Windows thread startup can outlast 200 cheap registrations: the
+    // workers may observe stop == true on their first iteration and exit
+    // without a single resolve. Wait (bounded) until they actually have.
+    for (int i = 0; i < 2000 && resolved.load(std::memory_order_relaxed) == 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     stop.store(true, std::memory_order_relaxed);
     for (auto& t : workers) t.join();
