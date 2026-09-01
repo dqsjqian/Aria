@@ -25,6 +25,33 @@ now actually gate: the README no longer makes claims about other
 frameworks, the clang-tidy baseline is enforced, and a set of async tests
 no longer leaks abandoned coroutine frames on Linux.
 
+### 2026-09-01 — test: compare when_all against the same work, run sequentially
+
+`when_all: real parallelism` failed on the sanitized macOS job at
+`parallel=215ms` against a `209ms` budget — the second time this assertion
+has gone red while `when_all` was behaving correctly, so the assertion
+itself was still wrong.
+
+The first attempt used a fixed ceiling, which is not portable. The
+replacement derived a budget from a baseline of three bare `sleep_for`
+calls, and that is the subtler mistake: the parallel path pays for the
+thread pool, the coroutine frames and the sanitizer instrumentation, while
+three raw sleeps pay for none of it. Once that fixed overhead grows to the
+same order as the sleeps, the ratio stops describing concurrency — 215ms
+of "parallel" work was mostly overhead, and no percentage of a
+sleep-only baseline could tell the difference.
+
+The baseline is now `run_sequential_sum`: the same three tasks on the same
+executor through the same coroutine machinery, awaited one at a time. Both
+sides carry identical fixed costs, which cancel, leaving only the property
+under test.
+
+Verified: passes under ASan; passes five times in a row with 24 spinning
+processes on 12 cores, the condition that broke the previous thresholds;
+and reverting `when_all` to sequential awaits fails it for real
+(`parallel=166ms` vs a `139ms` budget), so it is not vacuous. Full debug
+ctest 12/12, 135/135 async cases, 0 leaks.
+
 ### 2026-09-01 — test: release abandoned inner frames in with_timeout::Fail
 
 A full Linux build with GCC 14 / Clang 20 under ASan+LSan found ~1.1 KB
@@ -73,6 +100,19 @@ ownership), and Web (no C++ in the browser at all — it runs server-side
 and pushes over SSE). Each is a dozen lines with the same three steps, and
 the point is stated outright: the ViewModel is byte-for-byte identical
 across all five.
+
+Splitting one snippet into five, though, dropped the line that made the
+original worth reading — `vm.people = 4` and the label changing by itself.
+Five wiring blocks and no payoff. There is now a closing section that
+mutates the ViewModel and nothing else, and it doubles as the place to
+document two behaviours a newcomer will otherwise discover by accident:
+changing two properties in a row pushes twice and briefly shows an
+intermediate value, `reactive::batch` collapses that into one push, and if
+the final result equals the current one nothing is notified at all. Those
+counts (2, 1, 0) were measured with a subscription counter, not asserted
+from reading the graph code — the first run of that probe reported 0 where
+1 was expected, because the numbers chosen happened to divide to the value
+already on screen.
 
 Class names are the real ones, verified by grep: `qt6::QtAdapter` /
 `QtView`, `uikit::UIKitAdapter` / `UIKitView`, `appkit::AppKitAdapter` /

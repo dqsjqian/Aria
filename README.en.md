@@ -146,6 +146,41 @@ http->start();  // Property changes go out over SSE; user input comes back over 
 `BillViewModel` above is byte-for-byte unchanged across all of them. Porting costs you
 those dozen lines, not your business logic.
 
+**After wiring — mutate data, the UI follows**
+
+Once bound, the rest is platform-independent. The code below behaves identically on all
+five platforms, and **not one line of refresh code is written by hand**:
+
+```cpp
+BillViewModel vm;                       // per_person = 100/2 = ¥50.00
+// ... bound to a label via any of the platforms above ...
+
+vm.people = 4;                          // label → ¥25.00
+vm.bill   = 200.0;                      // label → ¥50.00
+```
+
+Change either `bill` or `people` and `per_person` recomputes and pushes to the label —
+because its dependencies were recorded automatically on the `Computed`'s first evaluation.
+You never wrote anything resembling "when people changes, update the label".
+
+One detail worth knowing when you change several values in a row:
+
+```cpp
+// One at a time → one push each, so the label flashes an intermediate value
+vm.bill = 300.0;    // label → ¥150.00  ← intermediate
+vm.people = 4;      // label → ¥75.00
+
+// Wrapped in batch → a single push at the end, no intermediate state
+aria::reactive::batch([&] {
+    vm.bill   = 1200.0;
+    vm.people = 8;
+});                 // label → ¥150.00 (once)
+```
+
+And a convenient default: **if the final result equals the current value, nothing is
+notified at all.** Following on from above, a batch setting `bill=600, people=4` (still
+150) leaves the label untouched.
+
 Continue with the [binding guide](docs/guide/binding.md), the [per-platform adapter guides](docs/guide/adapters/), the [cookbook](docs/cookbook/README.md), or the full four-platform [AriaTools](https://github.com/dqsjqian/AriaTools) application.
 
 ## 🎯 Where Aria fits
