@@ -5,17 +5,81 @@ All notable changes to **aria** are documented here.
 > Aria is an open-source project (MIT License). We follow semantic
 > versioning: `MAJOR` bumps on breaking changes, `MINOR` on
 > backward-compatible additions. The `1.0.0` → `1.1.0` bump in 2026-08
-> marks the project's first public release. This file is a snapshot of
-> *what the framework currently is* plus a rolling **TODO** list of
-> what is still wanted.
+> marks the project's first public release; `1.2.0` in 2026-09 carries
+> documentation and CI-gate work with no API change. This file is a
+> snapshot of *what the framework currently is* plus a rolling **TODO**
+> list of what is still wanted.
 
 ---
 
-## 1.1.0 — current snapshot
+## 1.2.0 — current snapshot
 
 Aria is a modern C++20 MVVM framework — cross-platform, layered,
 coroutine-first. Everything below is implemented, tested and shipped in
 the current tree.
+
+### 2026-09-01 — release 1.2.0
+
+No API changes. This release is documentation honesty plus two gates that
+now actually gate: the README no longer makes claims about other
+frameworks, the clang-tidy baseline is enforced, and a set of async tests
+no longer leaks abandoned coroutine frames on Linux.
+
+### 2026-09-01 — test: release abandoned inner frames in with_timeout::Fail
+
+A full Linux build with GCC 14 / Clang 20 under ASan+LSan found ~1.1 KB
+leaked across 10-11 allocations in `async_tests`, present since the
+initial commit. Reproduced here with macOS `leaks` (LeakSanitizer refuses
+to run on macOS at all, which is exactly why CI never saw this): 11
+leaks / 2080 bytes, the root being a `ROOT CYCLE` on the
+`drive_inner_for_fail_` coroutine frame.
+
+The diagnosis in the report — that `timeout.hpp` needs cleanup logic or a
+`final_suspend` hook — is wrong, and a one-line probe shows why: appending
+`vt.advance_by(500ms)` to the failing case drops it from 6 leaks to 0
+without touching the framework. `Task::start_detached` frees the frame at
+`final_suspend`, and `final_suspend` is only reachable if something
+resumes the coroutine. Two tests parked their inner on a 500ms virtual
+delay, advanced the clock to 100ms so the timer would win, and then let
+the executor die — so the abandoned frame was never resumed, never
+reached `final_suspend`, and was still allocated at exit. A production
+scheduler keeps running, so it always gets there.
+
+Fixed in the tests, where the defect is: `no-token factory + deadline` and
+`parent-cancel beats deadline` now drive the clock past the inner delay
+before the executor goes out of scope. Verified per-case (6 → 0 and 5 → 0)
+and full-suite: 135/135 passing, 402 assertions, 0 leaks / 0 bytes.
+
+Worth stating for the record: the ASan+UBSan gate lives only on the macOS
+job, where LeakSanitizer is unavailable, and the Ubuntu jobs run no
+sanitizers. Leak coverage on Linux is therefore still missing from CI —
+this commit fixes the leak, not the blind spot.
+
+### 2026-09-01 — docs: make the two intro examples explain themselves
+
+Reader feedback: the "30 seconds" snippet was unreadable. `engine`
+appeared from nowhere with no indication of where it comes from, and the
+example never said which parts are ViewModel and which are View — the one
+distinction the whole framework is built around.
+
+Rewritten as two explicitly labelled halves: the ViewModel as a struct
+with no UI header in sight (and a note that it runs under a console
+test), then the View-side wiring as four numbered steps that start from
+a concrete adapter, build the engine *from* that adapter, bind, and then
+mutate only data. The adapter class names are the real ones
+(`qt6::QtAdapter`, `uikit::UIKitAdapter`, `jni::JniAdapter`) — the first
+draft of this text invented `Qt6ViewAdapter`, which does not exist.
+
+The Hello-world snippet had the same problem in miniature: `auto sub =`
+with no explanation, and nothing downstream ever using `sub`, which reads
+like dead code. It is the opposite — it is the only thing keeping the
+subscription alive. Now documented as an RAII lifetime handle, with what
+happens if you drop it, plus an explicit `release()` demonstration. All
+four behavioural claims in that comment (initial sync fires immediately;
+updates follow; `release()` silences it; discarding the return value
+detaches on the spot) were verified by compiling and running the snippet
+rather than reasoned about — which is how the missing `"count = 0"` line
+in the expected output was found.
 
 ### 2026-09-01 — README: drop the framework comparison table
 
@@ -46,8 +110,7 @@ right answer.
 Also in this pass:
 
 * `Tests 75+` and `Build` shields were stale hand-maintained numbers →
-  replaced by the live CI workflow badge. The `Platform` shield dropped
-  `Web`, which overstated what the HTTP/SSE adapter is.
+  replaced by the live CI workflow badge.
 * The Chinese README still cloned `dqsjqian/aria.git` and `cd aria`;
   commit 120142c fixed only the English copy.
 * `README.html` / `README.en.html` deleted along with

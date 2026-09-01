@@ -2,7 +2,7 @@
 
 > Single source of truth for what is still wanted, deliberately deferred,
 > or explicitly out of scope. Aria is open source (MIT License); the
-> framework version currently stays at `1.1.0`. This is a prioritised
+> framework version currently stays at `1.2.0`. This is a prioritised
 > working list, not a release plan.
 
 ---

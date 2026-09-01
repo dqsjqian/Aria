@@ -4,12 +4,12 @@
 
 **Modern C++20 MVVM framework** · cross-platform · layered · coroutine-first
 
-One shared core: Windows / macOS / Linux / iOS / Android, plus browsers over HTTP/SSE
+One shared core: Windows / macOS / Linux / iOS / Android / Web
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml/badge.svg)](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg)](#)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20iOS%20%7C%20Android%20%7C%20Web-lightgrey.svg)](#)
 
 [English](README.en.md) | [简体中文](README.md)
 
@@ -23,22 +23,55 @@ Start with [AriaTools](https://github.com/dqsjqian/AriaTools) to see Aria in a r
 
 ## 🚀 Aria in 30 seconds
 
+Aria splits a screen in two. The **ViewModel** is plain C++ and knows nothing about any
+UI library; the **View** is native widgets. `BindingEngine` joins them, and it only ever
+talks to the `IViewAdapter` interface — so porting means swapping the adapter, nothing else.
+
+**Half one — the ViewModel (plain C++, unit-testable, shared by every platform)**
+
 ```cpp
-aria::Property<double> bill{100.0};
-aria::Property<int> people{2};
-aria::Computed<double> per_person{[&] {
-    return bill.get() / people.get();
-}};
+// Splitting a bill: total ÷ people = each person's share.
+struct BillViewModel {
+    aria::Property<double> bill{100.0};   // read-write state
+    aria::Property<int>    people{2};
 
-// Property and Computed can both drive a View directly. The binding is
-// released automatically when the View is destroyed.
-engine.bind_text_projected(per_person, label_view,
-    [](double value) { return std::format("¥{:.2f}", value); });
-
-people = 4;  // label updates to ¥25.00
+    // Computed is a read-only derived value. You never write its
+    // dependency list: the first evaluation reads bill and people, and
+    // those two are recorded as its dependencies automatically.
+    aria::Computed<double> per_person{[this] {
+        return bill.get() / people.get();
+    }};
+};
 ```
 
-`Property` owns state, `Computed` tracks dependencies automatically, and `BindingEngine` projects read-only values into any UI host. Continue with the [binding guide](docs/guide/binding.md), the [cookbook](docs/cookbook/README.md), or the full [AriaTools](https://github.com/dqsjqian/AriaTools) application.
+There is no UI in that code and no UI header included — it runs under a console test.
+
+**Half two — wiring up the View (written once per platform)**
+
+```cpp
+// 1. Start from a platform adapter: it knows how to push text into this
+//    toolkit's widgets. Qt6 → qt6::QtAdapter, iOS → uikit::UIKitAdapter,
+//    Android → jni::JniAdapter.
+auto adapter = std::make_shared<aria::adapters::qt6::QtAdapter>();
+
+// 2. The engine is built FROM that adapter — it is the only channel
+//    between a ViewModel and a widget.
+aria::binding::BindingEngine engine{adapter};
+
+// 3. Wire per_person to a label, formatting the double into text on the way.
+BillViewModel vm;
+engine.bind_text_projected(vm.per_person, label_view,
+    [](double value) { return std::format("¥{:.2f}", value); });
+
+// 4. From here on you mutate data, never the UI.
+vm.people = 4;   // the label becomes ¥25.00 on its own
+```
+
+Step 4 is the whole point: **you assign to `vm.people`, the label on screen changes, and
+there is no hand-written refresh code in between.** Targeting iOS only changes step 1 to
+`uikit::UIKitAdapter`; the ViewModel is untouched.
+
+Continue with the [binding guide](docs/guide/binding.md), the [cookbook](docs/cookbook/README.md), or the full four-platform [AriaTools](https://github.com/dqsjqian/AriaTools) application.
 
 ## 🎯 Where Aria fits
 
@@ -276,25 +309,45 @@ target_link_libraries(my_app PRIVATE aria::core aria::async)
 
 ## 👋 Hello, world
 
+The section above needs a UI adapter. To see the reactive core on its own, you need no UI
+at all:
+
 ```cpp
 #include "aria/aria.hpp"
 using namespace aria;
 
 Property<int> count{0};
 
-// No explicit dependency list — every Property::get() inside the lambda
-// is auto-tracked on first evaluation.
+// No explicit dependency list — the first evaluation reads count, so
+// count is recorded as a dependency automatically.
 Computed<std::string> label([&]{
     return "count = " + std::to_string(count.get());
 });
 
 Command<> increment([&]{ count = count.get() + 1; });
 
+// bind opens a subscription: it fires once immediately with the current
+// value, then again on every change. The returned Subscription is the
+// handle that OWNS that subscription's lifetime — so you must keep it.
+// Write `label.bind(...);` and discard the result and the temporary dies
+// on that very line, taking the subscription with it: nothing would ever
+// print. (bind is [[nodiscard]], so the compiler warns you.)
 auto sub = label.bind([](const std::string& s) { std::cout << s << '\n'; });
+// ↑ this line has already printed "count = 0" (the initial sync)
 
 increment();   // → "count = 1"
 increment();   // → "count = 2"
+
+// sub unsubscribes on destruction — no manual deregistration. You can
+// also disconnect early:
+sub.release();
+increment();   // prints nothing
 ```
+
+So `sub` exists to **express the subscription's lifetime as a scope**: while the variable
+lives the subscription lives, and when it goes the subscription is torn down. In a real UI
+this `Subscription` is usually a member of the View, so destroying the View detaches the
+binding and no callback ever reaches a destroyed widget.
 
 ## ⚡ Async (C++20 coroutines)
 
