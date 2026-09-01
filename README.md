@@ -139,6 +139,39 @@ http->start();  // Property 变化经 SSE 推给浏览器，用户操作经 REST
 **这才是重点**：五份接线代码长得几乎一样，而上面那个 `BillViewModel` **一个字都没改过**。
 你换平台换的是这十几行，不是业务逻辑。
 
+**接线之后 —— 只改数据，界面自己跟着变**
+
+上面每个平台绑完，剩下的事就跟平台无关了。下面这段在五个平台上行为完全一致，
+**没有一行手写的刷新代码**：
+
+```cpp
+BillViewModel vm;                       // per_person = 100/2 = ¥50.00
+// ... 按上面任意一个平台绑定到 label ...
+
+vm.people = 4;                          // label → ¥25.00
+vm.bill   = 200.0;                      // label → ¥50.00
+```
+
+改 `bill` 或 `people` 任意一个，`per_person` 都会重算并推给 label —— 因为它的依赖是
+`Computed` 首次求值时自动记下的，你没写过任何"people 变了要更新 label"这类代码。
+
+连续改多个值时有一个细节值得知道：
+
+```cpp
+// 逐个改 → 每次都推一次，label 会闪过中间值
+vm.bill = 300.0;    // label → ¥150.00  ← 中间态
+vm.people = 4;      // label → ¥75.00
+
+// 包进 batch → 只在结束时推一次，不出现中间态
+aria::reactive::batch([&] {
+    vm.bill   = 1200.0;
+    vm.people = 8;
+});                 // label → ¥150.00（一次）
+```
+
+还有一条省心的默认行为：**如果最终结果和当前值相同，一次通知都不会发。**
+比如上面之后再 `batch` 里设 `bill=600, people=4`（仍是 150），label 不会被打扰。
+
 继续阅读：[绑定指南](docs/guide/binding.md) · [各平台适配器指南](docs/guide/adapters/) · [Cookbook](docs/cookbook/README.md) · [AriaTools](https://github.com/dqsjqian/AriaTools)（Qt / iOS / Android / Web 四端完整应用）。
 
 ## 🎯 定位与取舍

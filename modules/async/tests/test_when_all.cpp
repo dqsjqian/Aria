@@ -40,6 +40,21 @@ Task<void> run_parallel_sum(IExecutor& pool,
     done = true;
 }
 
+/// Sequential counterpart of `run_parallel_sum`: same three tasks, same
+/// executor, same coroutine machinery — only awaited one at a time. The
+/// baseline has to pay every cost the parallel run pays except the
+/// parallelism itself, otherwise the comparison measures scheduling
+/// overhead rather than concurrency.
+Task<void> run_sequential_sum(IExecutor& pool,
+                              std::atomic<bool>& done,
+                              std::atomic<int>& sum) {
+    int a = co_await sleep_then(pool, 1, 50);
+    int b = co_await sleep_then(pool, 2, 50);
+    int c = co_await sleep_then(pool, 3, 50);
+    sum = a + b + c;
+    done = true;
+}
+
 }  // namespace
 
 TEST_CASE("when_all: returns tuple of values") {
@@ -65,31 +80,45 @@ TEST_CASE("when_all: heterogeneous types") {
 
 TEST_CASE("when_all: real parallelism (wall time ≈ max, not sum)") {
     ThreadPoolExecutor pool(4);
-    std::atomic<bool> done{false};
-    std::atomic<int> sum{0};
 
-    // Measure a sequential baseline on this machine first, then require
-    // the parallel run to beat it by a clear margin.
+    // Assert that the parallel run beats a sequential run of the SAME work,
+    // measured on the same machine moments earlier.
     //
-    // A fixed ceiling (this was `elapsed < 130`, against a ~150ms
-    // sequential cost) is not portable: under ASan/UBSan a loaded CI
-    // runner spent 169ms on the same parallel work and the assertion
-    // failed while `when_all` was behaving correctly. The threshold was
-    // the bug — "runs in parallel" does not imply "finishes within 130ms
-    // on every machine".
+    // Two earlier versions of this assertion failed on CI while `when_all`
+    // was behaving perfectly, and both failures came from comparing against
+    // the wrong thing:
     //
-    // Deriving the budget from a measured baseline keeps the assertion
-    // meaningful while letting it scale with whatever the host and its
-    // sanitizers cost. Three 50ms sleeps: sequential is ~150ms, parallel
-    // ~50ms, so "under 80% of sequential" still fails loudly if the
-    // tasks ever serialise (verified: forcing sequential awaits reports
-    // 159ms against a 140ms budget) and passes on a machine several
-    // times slower than this one.
+    //  1. A fixed ceiling (`elapsed < 130` against ~150ms of sleeping) is
+    //     not portable — a loaded sanitized runner spent 169ms on correct
+    //     parallel work.
+    //  2. A ratio against a baseline of three bare `sleep_for` calls is
+    //     still wrong, and this is the subtle one. The parallel path pays
+    //     for the thread pool, the coroutine frames and the sanitizer
+    //     instrumentation; three raw sleeps pay for none of that. When the
+    //     fixed overhead grows to the same order as the sleeps themselves,
+    //     the ratio stops describing concurrency at all: CI reported
+    //     parallel=215ms against a 209ms budget derived from a 262ms
+    //     baseline, i.e. the overhead alone blew the margin.
+    //
+    // So the baseline now runs `run_sequential_sum`: identical tasks,
+    // identical executor, identical coroutine machinery, awaited one at a
+    // time. Both sides carry the same fixed cost, which cancels out of the
+    // comparison, and what remains is exactly the thing under test. Three
+    // 50ms tasks: sequential ≈ 150ms + overhead, parallel ≈ 50ms +
+    // overhead, so an 80% ceiling has a wide margin yet still fails loudly
+    // if the tasks ever serialise.
+    std::atomic<bool> seq_done{false};
+    std::atomic<int> seq_sum{0};
     auto seq_t0 = ck::steady_clock::now();
-    for (int i = 0; i < 3; ++i) std::this_thread::sleep_for(ck::milliseconds{50});
+    run_sequential_sum(pool, seq_done, seq_sum).start_detached_();
+    while (!seq_done.load()) std::this_thread::sleep_for(ck::milliseconds{2});
     const auto sequential_ms =
         ck::duration_cast<ck::milliseconds>(ck::steady_clock::now() - seq_t0).count();
+    std::this_thread::sleep_for(ck::milliseconds{30});
+    REQUIRE(seq_sum.load() == 6);
 
+    std::atomic<bool> done{false};
+    std::atomic<int> sum{0};
     run_parallel_sum(pool, done, sum).start_detached_();
 
     auto t0 = ck::steady_clock::now();
