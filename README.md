@@ -4,12 +4,12 @@
 
 **现代 C++20 MVVM 框架** · 跨平台 · 分层架构 · 协程优先
 
-一套共享核心，覆盖 Windows / macOS / Linux / iOS / Android，浏览器端经 HTTP/SSE 驱动
+一套共享核心，覆盖 Windows / macOS / Linux / iOS / Android / Web
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml/badge.svg)](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg)](#)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20iOS%20%7C%20Android%20%7C%20Web-lightgrey.svg)](#)
 
 [English](README.en.md) | [简体中文](README.md)
 
@@ -23,21 +23,50 @@
 
 ## 🚀 30 秒看懂 Aria
 
+Aria 把一个界面切成两半：**ViewModel** 是纯 C++，不认识任何 UI 库；**View** 是各平台原生控件。
+中间由 `BindingEngine` 连接，它只认 `IViewAdapter` 这个接口，所以换平台只换适配器。
+
+**上半 —— ViewModel（纯 C++，可单元测试，所有平台共用这一份）**
+
 ```cpp
-aria::Property<double> bill{100.0};
-aria::Property<int> people{2};
-aria::Computed<double> per_person{[&] {
-    return bill.get() / people.get();
-}};
+// AA 制账单：总额 ÷ 人数 = 每人多少
+struct BillViewModel {
+    aria::Property<double> bill{100.0};   // 可读写的状态
+    aria::Property<int>    people{2};
 
-// Property / Computed 都能直接驱动 View；绑定随 View 销毁自动释放。
-engine.bind_text_projected(per_person, label_view,
-    [](double value) { return std::format("¥{:.2f}", value); });
-
-people = 4;  // label 自动更新为 ¥25.00
+    // Computed 是只读派生值。它的依赖不用手写：首次求值时读到了
+    // bill 和 people，就自动记下这两个依赖。
+    aria::Computed<double> per_person{[this] {
+        return bill.get() / people.get();
+    }};
+};
 ```
 
-`Property` 保存状态，`Computed` 自动追踪依赖，`BindingEngine` 负责把只读结果投射到任意 UI。继续阅读：[绑定指南](docs/guide/binding.md) · [Cookbook](docs/cookbook/README.md) · [AriaTools](https://github.com/dqsjqian/AriaTools)。
+这段代码里没有一行 UI，也没有 `#include` 任何界面库 —— 它在命令行下就能测。
+
+**下半 —— View 侧接线（每个平台各写一次）**
+
+```cpp
+// 1. 先有一个平台适配器，它知道怎么往这个平台的控件里写文字。
+//    Qt6 用 qt6::QtAdapter，iOS 用 uikit::UIKitAdapter，Android 用 jni::JniAdapter。
+auto adapter = std::make_shared<aria::adapters::qt6::QtAdapter>();
+
+// 2. engine 就是从适配器造出来的 —— 它是 ViewModel 与控件之间的唯一通道。
+aria::binding::BindingEngine engine{adapter};
+
+// 3. 把 per_person 接到一个 label 上，中间用 lambda 把 double 格式化成文本。
+BillViewModel vm;
+engine.bind_text_projected(vm.per_person, label_view,
+    [](double value) { return std::format("¥{:.2f}", value); });
+
+// 4. 之后只改数据，不碰界面。
+vm.people = 4;   // label 自己变成 ¥25.00
+```
+
+关键就是第 4 步：**改的是 `vm.people`，动的是屏幕上的 label，中间没有任何一行手写的刷新代码。**
+换成 iOS 只需把第 1 步换成 `uikit::UIKitAdapter`，ViewModel 一个字都不用改。
+
+继续阅读：[绑定指南](docs/guide/binding.md) · [Cookbook](docs/cookbook/README.md) · [AriaTools](https://github.com/dqsjqian/AriaTools)（完整四端应用）。
 
 ## 🎯 定位与取舍
 
@@ -247,25 +276,41 @@ target_link_libraries(my_app PRIVATE aria::core aria::async)
 
 ## 👋 Hello, world
 
+上一节需要 UI 适配器。如果只想在控制台里看清响应式本身，不需要任何 UI：
+
 ```cpp
 #include "aria/aria.hpp"
 using namespace aria;
 
 Property<int> count{0};
 
-// 不再需要显式依赖列表 —— Computed 首次求值时，
-// 内部读到的每一个 Property::get() 都会被自动追踪为依赖。
+// Computed 不需要显式依赖列表 —— 首次求值时读到了 count，
+// 就自动记下这个依赖。
 Computed<std::string> label([&]{
     return "count = " + std::to_string(count.get());
 });
 
 Command<> increment([&]{ count = count.get() + 1; });
 
+// bind 建立订阅：先立刻用当前值调一次，之后 label 每次变化都再调一次。
+// 返回的 Subscription 是这条订阅的"遥控器"，它决定订阅活多久 ——
+// 所以必须接住。写成 `label.bind(...);` 丢掉返回值，临时对象立即析构，
+// 订阅在这一行就断了，后面什么都不会打印（bind 标了 [[nodiscard]]，
+// 编译器会警告你）。
 auto sub = label.bind([](const std::string& s) { std::cout << s << '\n'; });
+// ↑ 这一行就已经打印了 "count = 0"（initial sync）
 
 increment();   // → "count = 1"
 increment();   // → "count = 2"
+
+// sub 析构时自动退订，不需要手写反注册；也可以提前主动断开：
+sub.release();
+increment();   // 不再打印任何东西
 ```
+
+`sub` 的作用就是**用作用域表达订阅的生命周期**：变量活着订阅就活着，变量没了订阅自动断开。
+在真实的 UI 里，这个 `Subscription` 通常存成 View 的成员，View 销毁时订阅随之解除，
+不会回调到一个已经析构的控件上。
 
 ## ⚡ 异步编程（C++20 协程）
 

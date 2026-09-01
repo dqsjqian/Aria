@@ -513,7 +513,7 @@ Reasons:
 
 ### S-40: the project ships zero `deprecated` APIs
 
-Aria follows semantic versioning (currently `1.1.0`); **during evolution
+Aria follows semantic versioning (currently `1.2.0`); **during evolution
 we keep no deprecated aliases**. Every P0/P1 closure breaks all call
 sites outright in the same commit, and migrates the adapters, tests,
 and documentation snippets in that commit too.
