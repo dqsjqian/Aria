@@ -62,13 +62,30 @@ appeared from nowhere with no indication of where it comes from, and the
 example never said which parts are ViewModel and which are View — the one
 distinction the whole framework is built around.
 
-Rewritten as two explicitly labelled halves: the ViewModel as a struct
-with no UI header in sight (and a note that it runs under a console
-test), then the View-side wiring as four numbered steps that start from
-a concrete adapter, build the engine *from* that adapter, bind, and then
-mutate only data. The adapter class names are the real ones
-(`qt6::QtAdapter`, `uikit::UIKitAdapter`, `jni::JniAdapter`) — the first
-draft of this text invented `Qt6ViewAdapter`, which does not exist.
+Rewritten as two explicitly labelled halves. The ViewModel half is a
+struct with no UI header in sight (and a note that it runs under a console
+test). The View half then answers the question the single-platform version
+provoked — "so do I write the UI in C++ five times?" — by showing the
+wiring for all five adapters in collapsible sections: Qt6 (plain C++),
+UIKit and AppKit (Objective-C++ `.mm`, UI still Storyboard/SwiftUI),
+Android (UI in Kotlin/Compose, C++ only wires and Kotlin keeps listener
+ownership), and Web (no C++ in the browser at all — it runs server-side
+and pushes over SSE). Each is a dozen lines with the same three steps, and
+the point is stated outright: the ViewModel is byte-for-byte identical
+across all five.
+
+Class names are the real ones, verified by grep: `qt6::QtAdapter` /
+`QtView`, `uikit::UIKitAdapter` / `UIKitView`, `appkit::AppKitAdapter` /
+`AppKitView`, `jni::JniAdapter` / `JniView`, `http::HttpAdapter`. The
+first draft invented `Qt6ViewAdapter`, and drafts of the Android and Web
+snippets called `bind_text_oneway` on a `Property<double>`, which does not
+compile — that overload only accepts a `std::string` source. Both were
+caught before committing, the second by compiling the README's own code:
+the ViewModel plus the Qt6 wiring were extracted verbatim into a
+translation unit and type-checked against the real headers, clean. The
+adapter guides also show `BindingEngine engine(adapter)` with a bare
+object, but the constructor takes `shared_ptr<IViewAdapter>`, so the
+README uses `make_shared` throughout.
 
 The Hello-world snippet had the same problem in miniature: `auto sub =`
 with no explanation, and nothing downstream ever using `sub`, which reads
