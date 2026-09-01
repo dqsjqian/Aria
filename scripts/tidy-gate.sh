@@ -19,8 +19,12 @@
 #                   baseline → audit mode: print + write findings, exit 0.
 #
 # Every run writes scripts/tidy-findings.txt (CI uploads it as artifact).
-# Regenerate the baseline after intentional cleanup, or when a brew LLVM
-# bump adds checks: download the artifact, copy over the baseline, commit.
+# Regenerate the baseline after intentional cleanup, or when the pinned LLVM
+# major is bumped: download the artifact, copy over the baseline, commit.
+#
+# The baseline is version-sensitive — per-check counts shift when clang-tidy
+# gains checks or changes heuristics. CI pins the LLVM major for that reason,
+# and the baseline's first line records the version it was generated with.
 set -euo pipefail
 
 repo="$(git rev-parse --show-toplevel)"
@@ -85,8 +89,19 @@ if [[ ! -f "$baseline" ]]; then
   exit 0
 fi
 
+# A version skew makes every count suspect, so say so loudly rather than
+# letting the gate report a wall of NEW debt with no explanation.
+base_version="$(sed -n 's/^# clang-tidy \([0-9.]*\).*/\1/p' "$baseline" | head -1)"
+if [[ -n "$base_version" && -n "$version" && "${base_version%%.*}" != "${version%%.*}" ]]; then
+  echo "warning: baseline was generated with clang-tidy $base_version, running $version." >&2
+  echo "         Counts across majors are not comparable; regenerate the baseline" >&2
+  echo "         or align the pinned LLVM major in .github/workflows/ci.yml." >&2
+fi
+
+n_base="$(grep -cv '^#' "$baseline" || true)"
 status=0
 out="$(awk '
+  /^#/ { next }
   NR==FNR { base[$1]=$2; next }
   {
     if (!($1 in base))       { print "NEW   " $0; bad=1 }
@@ -96,10 +111,10 @@ out="$(awk '
 ' "$baseline" "$here/tidy-findings.txt")" || status=1
 
 if [[ "$status" -ne 0 ]]; then
-  echo "── NEW clang-tidy debt (baseline: $(wc -l < "$baseline" | tr -d ' ') entries) ──"
+  echo "── NEW clang-tidy debt (baseline: $n_base entries) ──"
   printf '%s\n' "$out"
   echo "fix it, or regenerate the baseline (see header of this script)."
 else
-  echo "── clean: no new debt vs baseline ($(wc -l < "$baseline" | tr -d ' ') entries) ──"
+  echo "── clean: no new debt vs baseline ($n_base entries) ──"
 fi
 exit "$status"

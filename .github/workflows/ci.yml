@@ -370,8 +370,12 @@ jobs:
         run: |
           brew install ninja
           # macOS ships clang-tidy via Xcode but it's old; use LLVM toolchain.
-          brew install llvm
-          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          # Pin the major version. The baseline records per-check counts, so a
+          # major LLVM bump (new checks, changed heuristics) reads as NEW debt
+          # and reds the gate for reasons unrelated to the commit. Bump this
+          # deliberately, together with a regenerated baseline.
+          brew install llvm@22
+          echo "$(brew --prefix llvm@22)/bin" >> "$GITHUB_PATH"
 
       - name: Show clang-tidy version
         run: clang-tidy --version
