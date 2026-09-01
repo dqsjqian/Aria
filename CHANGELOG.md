@@ -17,6 +17,71 @@ Aria is a modern C++20 MVVM framework — cross-platform, layered,
 coroutine-first. Everything below is implemented, tested and shipped in
 the current tree.
 
+### 2026-09-01 — README: drop the framework comparison table
+
+External review flagged two factual errors in the "how it compares"
+table; auditing the rest of it turned up four more. The table claimed Qt
+has no reactive engine and only "manual `connect`" (Qt 6.0 ships
+`QProperty` / `QBindable` with automatic dependency tracking), that Qt
+needs a per-platform QML rewrite (QML is cross-platform), that Qt has no
+Web story (Qt for WebAssembly has been a supported platform since 5.13),
+and it referenced a Qt class named `QCoroutine` that does not exist — Qt
+has no native `co_await` support at all; the de-facto answer is the
+third-party QCoro.
+
+The individual cells were fixable, but the table itself was the defect: 40
+assertions about four evolving frameworks, each one refutable in seconds,
+none of them load-bearing for a reader deciding whether Aria fits. A wrong
+claim there costs more trust than a bug does — a bug is a mistake of
+craft, a wrong claim about someone else's project is a mistake of
+attitude.
+
+Replaced with a "where Aria fits" section that states the one thing Aria
+does and then lists its **costs** (C++20 floor, no widgets, template layer
+needs recompiles, adapters are on you, young ecosystem), plus an explicit
+poor-fit paragraph pointing at Flutter and Qt Quick for people who want
+the UI to come along. Other frameworks are named only where they are the
+right answer.
+
+Also in this pass:
+
+* `Tests 75+` and `Build` shields were stale hand-maintained numbers →
+  replaced by the live CI workflow badge. The `Platform` shield dropped
+  `Web`, which overstated what the HTTP/SSE adapter is.
+* The Chinese README still cloned `dqsjqian/aria.git` and `cd aria`;
+  commit 120142c fixed only the English copy.
+* `README.html` / `README.en.html` deleted along with
+  `scripts/open-readme.sh`. They were hand-maintained mirrors of the
+  Markdown — every doc change had to be made twice, and both copies
+  carried the errors above. GitHub renders Markdown natively.
+* `scripts/README.md` was missing `tidy-gate.sh` and
+  `pick-ios-simulator.py`; `docs/reference/api-style.md` S-41 carried a
+  stray internal annotation.
+
+### 2026-09-01 — clang-tidy gate now enforced
+
+The gate had been running in audit mode: with no baseline file on disk it
+printed its 2289 findings and exited 0. `scripts/clang-tidy-baseline.txt`
+now lands from the CI artifact, so the gate fails on new debt.
+
+Two hazards found while closing this:
+
+* CI installed `brew install llvm`, i.e. whatever is newest. It has since
+  moved to 23.x, and running the same tree under 23.1.0 reports **59 NEW
+  entries** — `readability-trailing-comma`,
+  `cppcoreguidelines-explicit-constructor` and friends that 22.x does not
+  have. That is not new debt, it is a new ruleset, and it would have
+  reddened the gate on an unrelated commit. The LLVM major is now pinned
+  to `llvm@22`, matching the baseline.
+* Because a skew is still possible (a deliberate bump, a local run), the
+  baseline records the version that generated it and the gate warns loudly
+  when the majors differ instead of dumping an unexplained wall of NEW
+  entries. Baseline comment lines are skipped by the comparison.
+
+Verified: self-comparison is clean; injected NEW and GREW cases are both
+caught; the gate exits 1 with the version warning under local 23.1.0; and
+the CI 22.1.8 findings compare clean against the committed baseline.
+
 ### 2026-08-31 — error-model verification targets
 
 `docs/reference/error-model.md` §7 was the last section in the tree still

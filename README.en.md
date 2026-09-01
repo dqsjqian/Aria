@@ -4,15 +4,14 @@
 
 **Modern C++20 MVVM framework** · cross-platform · layered · coroutine-first
 
-One shared core: Windows / macOS / Linux / iOS / Android / Web
+One shared core: Windows / macOS / Linux / iOS / Android, plus browsers over HTTP/SSE
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20iOS%20%7C%20Android%20%7C%20Web-lightgrey.svg)](#)
-[![Build](https://img.shields.io/badge/Build-MSYS2%20%7C%20MSVC%20%7C%20Clang-success.svg)](#)
-[![Tests](https://img.shields.io/badge/Tests-75%2B%20passed-brightgreen.svg)](#)
+[![CI](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml/badge.svg)](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg)](#)
 
-[English](README.en.md) | [简体中文](README.md) | [HTML Version](README.en.html)
+[English](README.en.md) | [简体中文](README.md)
 
 </div>
 
@@ -41,22 +40,31 @@ people = 4;  // label updates to ¥25.00
 
 `Property` owns state, `Computed` tracks dependencies automatically, and `BindingEngine` projects read-only values into any UI host. Continue with the [binding guide](docs/guide/binding.md), the [cookbook](docs/cookbook/README.md), or the full [AriaTools](https://github.com/dqsjqian/AriaTools) application.
 
-## 🎯 How it compares
+## 🎯 Where Aria fits
 
-| | **Aria** | Qt | Flutter | React Native | SwiftUI |
-|---|---|---|---|---|---|
-| **Language** | C++20 | C++ / QML | Dart | JS / TS | Swift |
-| **Core size** | Header-only, ~0 | 100+ MB | ~50 MB SDK | ~200 MB node_modules | Built-in |
-| **Reactive engine** | ✅ Auto dep-tracking (`Computed`, zero-config) | ❌ Manual `connect` | ✅ but locked to Flutter | ✅ but locked to React | ✅ but locked to Apple |
-| **C++20 coroutines** | ✅ `Task<T>` + `co_await` | ⚠️ `QCoroutine` (limited) | — | — | — |
-| **ABI stable** | ✅ Type-erased layer, stable within major | ⚠️ Partial | — | — | — |
-| **UI toolkit** | ✅ Any host (Qt / AppKit / UIKit / JNI / HTTP shipped; WASM remains triggered work) | ❌ Qt only | ❌ Flutter only | ❌ React only | ❌ SwiftUI only |
-| **Cross-platform ViewModel** | ✅ One C++ codebase, 6 platforms | ❌ Rewrite QML per platform | ⚠️ Dart cross-plat, non-native UI | ⚠️ JS cross-plat, non-native UI | ❌ Apple only |
-| **Web** | ✅ HTTP/SSE + WASM (planned) | ❌ | ✅ Web | ❌ | ❌ |
-| **Macro dependency** | Zero macros | Heavy `Q_OBJECT` / `SIGNAL` / `SLOT` | — | — | — |
-| **License** | MIT | LGPL / Commercial | BSD | MIT | Apple proprietary |
+Aria does one thing: **it extracts the reactive engine and binding layer out of the UI
+framework, as a plain C++20 library that is not tied to any UI toolkit.**
 
-> In short: **aria extracts the reactive engine from the UI framework and makes it a pure C++20 header-only library. Pick any UI toolkit — one ViewModel runs on six platforms.**
+A ViewModel is an ordinary C++ class — no framework base class, no macros, no code
+generator. UI layers plug in through `IViewAdapter`; five adapters ship in-tree today
+(Qt6 / AppKit / UIKit / JNI / HTTP). Swapping the UI toolkit does not touch the ViewModel.
+
+Know the costs before you pick it:
+
+| Trade-off | What it means |
+|---|---|
+| **C++20 required** | Full coroutine and concepts support (GCC 12+ / Clang 15+ / MSVC v143). C++17 projects cannot use it. |
+| **No widgets** | Aria draws nothing. Widgets, layout and animation stay with your UI toolkit; Aria only owns the data flow between state and view. |
+| **Template layer is source-compatible only** | `aria-abi` / `aria-runtime` / `aria-binding` are ABI-stable within a major version; `Property<T>` and friends need a recompile across versions. |
+| **Adapters are on you** | Only the five adapters above work out of the box. A new toolkit means implementing an `IViewAdapter` (see the [adapter guides](docs/guide/adapters/)). |
+| **Young project** | Ecosystem, tutorials and third-party components are nowhere near a mature framework's. AriaTools is currently the only real application using it. |
+
+Good fit: you already have a C++ business core, want to reuse one copy of that logic
+across platforms, and want each platform to keep its native UI.
+
+Poor fit: you want "one codebase including the UI". That is what full UI frameworks like
+Flutter and Qt Quick are for — they have mature reactive binding of their own, and Aria
+does not try to replace them.
 
 ## ✨ Core features
 
@@ -444,9 +452,9 @@ Contributions are welcome! Please open an issue first to discuss design changes.
 
 <div align="center">
 
-**📖 Alternative Formats**
+**📖 Other languages**
 
-[HTML Version](README.en.html) · [Chinese](README.md) · [Chinese HTML](README.html)
+[简体中文](README.md)
 
 </div>
 

@@ -527,13 +527,11 @@ Reasons:
 
 ### S-41: source MUST NOT contain version literals
 
-Per [[memory:j61ttodt]]:
 - Source code / headers / inline docs / commit messages MUST NOT
   contain version literals like `v2.x`, `since 1.x`, `v1.x`.
 - Version evolution lives only in `CHANGELOG.md` and `README.md`.
 - Comments, documentation, and tests MUST be in English. Chinese is
-  permitted only in the Chinese localised README files (`README.md` /
-  `README.html`).
+  permitted only in the Chinese localised README (`README.md`).
 
 ---
 

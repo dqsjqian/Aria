@@ -4,15 +4,14 @@
 
 **现代 C++20 MVVM 框架** · 跨平台 · 分层架构 · 协程优先
 
-一套共享核心，覆盖 Windows / macOS / Linux / iOS / Android / Web
+一套共享核心，覆盖 Windows / macOS / Linux / iOS / Android，浏览器端经 HTTP/SSE 驱动
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20iOS%20%7C%20Android%20%7C%20Web-lightgrey.svg)](#)
-[![Build](https://img.shields.io/badge/Build-MSYS2%20%7C%20MSVC%20%7C%20Clang-success.svg)](#)
-[![Tests](https://img.shields.io/badge/Tests-75%2B%20passed-brightgreen.svg)](#)
+[![CI](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml/badge.svg)](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg)](#)
 
-[English](README.en.md) | [简体中文](README.md) | [HTML 版本](README.html)
+[English](README.en.md) | [简体中文](README.md)
 
 </div>
 
@@ -40,22 +39,26 @@ people = 4;  // label 自动更新为 ¥25.00
 
 `Property` 保存状态，`Computed` 自动追踪依赖，`BindingEngine` 负责把只读结果投射到任意 UI。继续阅读：[绑定指南](docs/guide/binding.md) · [Cookbook](docs/cookbook/README.md) · [AriaTools](https://github.com/dqsjqian/AriaTools)。
 
-## 🎯 与主流框架对比
+## 🎯 定位与取舍
 
-| | **Aria** | Qt | Flutter | React Native | SwiftUI |
-|---|---|---|---|---|---|
-| **语言** | C++20 | C++ / QML | Dart | JS / TS | Swift |
-| **核心体积** | 仅头文件，~0 | 100+ MB | ~50 MB SDK | ~200 MB node_modules | 系统内置 |
-| **响应式引擎** | ✅ 自动依赖追踪（`Computed` 零配置） | ❌ 手动 `connect` 信号槽 | ✅ 但锁死在 Flutter 框架内 | ✅ 但锁死在 React 内 | ✅ 但锁死在 Apple 内 |
-| **C++20 协程** | ✅ `Task<T>` + `co_await` | ⚠️ `QCoroutine`（受限） | — | — | — |
-| **ABI 稳定** | ✅ 类型擦除层，主版本号内稳定 | ⚠️ 部分稳定 | — | — | — |
-| **UI 工具包** | ✅ 任意（已支持 Qt / AppKit / UIKit / JNI / HTTP；WASM 触发后再做） | ❌ 只有 Qt | ❌ 只有 Flutter UI | ❌ 只有 React 组件 | ❌ 只有 SwiftUI |
-| **同一 ViewModel 跨平台** | ✅ 一份 C++ 代码驱动 6 个平台 | ❌ 每个平台要 QML 重写 | ⚠️ Dart 跨平台但非原生 UI | ⚠️ JS 跨平台但非原生 UI | ❌ Apple only |
-| **Web 支持** | ✅ HTTP/SSE（服务端驱动）+ WASM（计划） | ❌ | ✅ Web | ❌ | ❌ |
-| **宏依赖** | 零宏 | 大量 `Q_OBJECT` / `SIGNAL` / `SLOT` | — | — | — |
-| **License** | MIT | LGPL / 商业 | BSD | MIT | Apple 闭源 |
+Aria 只做一件事：**把响应式引擎和绑定层从 UI 框架里拆出来，做成不绑定任何 UI 工具包的纯 C++20 库。**
 
-> 一句话：**aria 把响应式引擎从 UI 框架里拆出来，做成纯 C++20 头文件库。你选什么 UI 工具包都行，ViewModel 一份代码跑六个平台。**
+ViewModel 是普通 C++ 类，不继承框架基类、不需要宏、不需要代码生成器。UI 层通过 `IViewAdapter`
+接入，目前仓内已实现 Qt6 / AppKit / UIKit / JNI / HTTP 五个适配器；换 UI 工具包不需要动 ViewModel。
+
+选它之前请先了解代价：
+
+| 取舍 | 说明 |
+|---|---|
+| **要求 C++20** | 需要完整的协程与 concepts 支持（GCC 12+ / Clang 15+ / MSVC v143）。C++17 项目用不了。 |
+| **不提供控件** | Aria 不画任何界面。控件、布局、动画仍由你选的 UI 工具包负责，Aria 只负责状态到界面的单向/双向数据流。 |
+| **模板层仅源码兼容** | `aria-abi` / `aria-runtime` / `aria-binding` 在主版本号内 ABI 稳定；`Property<T>` 等模板跨版本需重编。 |
+| **适配器要自己补** | 只有上述五个适配器开箱可用。接新工具包意味着实现一个 `IViewAdapter`（参考 [适配器指南](docs/guide/adapters/)）。 |
+| **年轻项目** | 生态、教程、第三方组件都无法与成熟框架相比。目前只有 AriaTools 一个真实应用在用。 |
+
+适合：已有 C++ 业务内核、要在多端复用同一份逻辑、且希望各端保留原生 UI 的项目。
+不适合：想要「一份代码连界面一起跨端」的场景 —— 那是 Flutter、Qt Quick 这类完整 UI 框架的领域，
+它们各有成熟的响应式绑定方案，Aria 不试图取代它们。
 
 ## ✨ 核心特性
 
@@ -133,8 +136,8 @@ people = 4;  // label 自动更新为 ¥25.00
 ## 🚀 快速开始
 
 ```bash
-git clone https://github.com/dqsjqian/aria.git
-cd aria
+git clone https://github.com/dqsjqian/Aria.git
+cd Aria
 cmake -B build/flavors/release -DCMAKE_BUILD_TYPE=Release
 cmake --build build/flavors/release -j
 ctest --test-dir build/flavors/release --output-on-failure
@@ -366,8 +369,8 @@ Aria 已开源（MIT License），源码托管在 [GitHub](https://github.com/dq
 
 <div align="center">
 
-**📖 其他格式**
+**📖 其他语言**
 
-[HTML 版本](README.html) · [English](README.en.md) · [English HTML](README.en.html)
+[English](README.en.md)
 
 </div>
