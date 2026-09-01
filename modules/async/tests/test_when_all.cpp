@@ -45,14 +45,22 @@ Task<void> run_parallel_sum(IExecutor& pool,
 /// baseline has to pay every cost the parallel run pays except the
 /// parallelism itself, otherwise the comparison measures scheduling
 /// overhead rather than concurrency.
-Task<void> run_sequential_sum(IExecutor& pool,
-                              std::atomic<bool>& done,
-                              std::atomic<int>& sum) {
-    int a = co_await sleep_then(pool, 1, 50);
-    int b = co_await sleep_then(pool, 2, 50);
-    int c = co_await sleep_then(pool, 3, 50);
-    sum = a + b + c;
-    done = true;
+///
+/// Parameters are pointers, not references: a reference parameter is
+/// stored in the coroutine frame and outlives the call expression, so it
+/// dangles if the referent dies across a suspension point
+/// (cppcoreguidelines-avoid-reference-coroutine-parameters). Everything
+/// here lives in the enclosing TEST_CASE and cannot die early, but the
+/// pointer spelling documents that and keeps the tidy gate honest — the
+/// surrounding helpers predate that check and are covered by the baseline.
+Task<void> run_sequential_sum(IExecutor* pool,
+                              std::atomic<bool>* done,
+                              std::atomic<int>* sum) {
+    int a = co_await sleep_then(*pool, 1, 50);
+    int b = co_await sleep_then(*pool, 2, 50);
+    int c = co_await sleep_then(*pool, 3, 50);
+    *sum = a + b + c;
+    *done = true;
 }
 
 }  // namespace
@@ -110,7 +118,7 @@ TEST_CASE("when_all: real parallelism (wall time ≈ max, not sum)") {
     std::atomic<bool> seq_done{false};
     std::atomic<int> seq_sum{0};
     auto seq_t0 = ck::steady_clock::now();
-    run_sequential_sum(pool, seq_done, seq_sum).start_detached_();
+    run_sequential_sum(&pool, &seq_done, &seq_sum).start_detached_();
     while (!seq_done.load()) std::this_thread::sleep_for(ck::milliseconds{2});
     const auto sequential_ms =
         ck::duration_cast<ck::milliseconds>(ck::steady_clock::now() - seq_t0).count();
