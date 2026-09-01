@@ -14,8 +14,9 @@ build instructions to run or develop the product sample.
 | [`build-msvc.ps1`](./build-msvc.ps1) | Windows (MSVC) | Framework build, tests, sanitizers, and packaging with Visual Studio. |
 | [`check-bench.sh`](./check-bench.sh) | macOS/Linux | Benchmark regression gate. |
 | [`check-docs-api.sh`](./check-docs-api.sh) | macOS/Linux | Documentation API coverage check. |
+| [`tidy-gate.sh`](./tidy-gate.sh) | macOS/Linux | clang-tidy baseline gate; fails only on new debt vs `clang-tidy-baseline.txt`. |
+| [`pick-ios-simulator.py`](./pick-ios-simulator.py) | macOS | Pick a known-good iPhone + iOS runtime pair for the simulator test job. |
 | [`sync-cmake.sh`](./sync-cmake.sh) | macOS/Linux | Report module `.cpp`/`.mm` sources missing from their `CMakeLists.txt`. |
-| [`open-readme.sh`](./open-readme.sh) | macOS | Open the rendered project README. |
 
 ## Build-tree layout
 
