@@ -17,48 +17,47 @@ namespace {
 
 Task<int> make_int(int x) { co_return x; }
 
-Task<int> sleep_then(IExecutor& pool, int x, int ms) {
-    co_await schedule_on(pool);
-    std::this_thread::sleep_for(ck::milliseconds{ms});
-    co_return x;
-}
-
 Task<int> throws() {
     throw std::runtime_error("boom");
     co_return 0;
 }
 
-Task<void> run_parallel_sum(IExecutor& pool,
-                            std::atomic<bool>& done,
-                            std::atomic<int>& sum) {
-    auto [a, b, c] = co_await when_all(
-        sleep_then(pool, 1, 50),
-        sleep_then(pool, 2, 50),
-        sleep_then(pool, 3, 50)
-    );
-    sum = a + b + c;
-    done = true;
+/// Records how many instances are inside the body at the same time, and
+/// the high-water mark across the whole run. `when_all` running its
+/// children concurrently means the mark reaches the child count; running
+/// them one after another pins it at 1 no matter how fast or slow the
+/// machine is.
+struct ConcurrencyProbe {
+    std::atomic<int> live{0};
+    std::atomic<int> peak{0};
+
+    void enter() noexcept {
+        int now = live.fetch_add(1, std::memory_order_acq_rel) + 1;
+        int seen = peak.load(std::memory_order_relaxed);
+        while (now > seen &&
+               !peak.compare_exchange_weak(seen, now, std::memory_order_relaxed)) {
+        }
+    }
+    void leave() noexcept { live.fetch_sub(1, std::memory_order_acq_rel); }
+};
+
+Task<int> tracked_task(IExecutor* pool, ConcurrencyProbe* probe, int x, int ms) {
+    co_await schedule_on(*pool);
+    probe->enter();
+    std::this_thread::sleep_for(ck::milliseconds{ms});
+    probe->leave();
+    co_return x;
 }
 
-/// Sequential counterpart of `run_parallel_sum`: same three tasks, same
-/// executor, same coroutine machinery — only awaited one at a time. The
-/// baseline has to pay every cost the parallel run pays except the
-/// parallelism itself, otherwise the comparison measures scheduling
-/// overhead rather than concurrency.
-///
-/// Parameters are pointers, not references: a reference parameter is
-/// stored in the coroutine frame and outlives the call expression, so it
-/// dangles if the referent dies across a suspension point
-/// (cppcoreguidelines-avoid-reference-coroutine-parameters). Everything
-/// here lives in the enclosing TEST_CASE and cannot die early, but the
-/// pointer spelling documents that and keeps the tidy gate honest — the
-/// surrounding helpers predate that check and are covered by the baseline.
-Task<void> run_sequential_sum(IExecutor* pool,
-                              std::atomic<bool>* done,
-                              std::atomic<int>* sum) {
-    int a = co_await sleep_then(*pool, 1, 50);
-    int b = co_await sleep_then(*pool, 2, 50);
-    int c = co_await sleep_then(*pool, 3, 50);
+Task<void> run_tracked_parallel(IExecutor* pool,
+                                ConcurrencyProbe* probe,
+                                std::atomic<bool>* done,
+                                std::atomic<int>* sum) {
+    auto [a, b, c] = co_await when_all(
+        tracked_task(pool, probe, 1, 50),
+        tracked_task(pool, probe, 2, 50),
+        tracked_task(pool, probe, 3, 50)
+    );
     *sum = a + b + c;
     *done = true;
 }
@@ -86,60 +85,49 @@ TEST_CASE("when_all: heterogeneous types") {
     CHECK(t.blocking_get() == 44);  // "hi" len 2 + 42
 }
 
-TEST_CASE("when_all: real parallelism (wall time ≈ max, not sum)") {
+TEST_CASE("when_all: runs its children concurrently") {
     ThreadPoolExecutor pool(4);
 
-    // Assert that the parallel run beats a sequential run of the SAME work,
-    // measured on the same machine moments earlier.
+    // Assert concurrency directly, by observing it, instead of inferring it
+    // from wall-clock time.
     //
-    // Two earlier versions of this assertion failed on CI while `when_all`
-    // was behaving perfectly, and both failures came from comparing against
-    // the wrong thing:
+    // Three timing-based versions of this test failed on CI while `when_all`
+    // was behaving correctly, each for a different reason, and the third one
+    // is what settles the approach:
     //
     //  1. A fixed ceiling (`elapsed < 130` against ~150ms of sleeping) is
-    //     not portable — a loaded sanitized runner spent 169ms on correct
-    //     parallel work.
-    //  2. A ratio against a baseline of three bare `sleep_for` calls is
-    //     still wrong, and this is the subtle one. The parallel path pays
-    //     for the thread pool, the coroutine frames and the sanitizer
-    //     instrumentation; three raw sleeps pay for none of that. When the
-    //     fixed overhead grows to the same order as the sleeps themselves,
-    //     the ratio stops describing concurrency at all: CI reported
-    //     parallel=215ms against a 209ms budget derived from a 262ms
-    //     baseline, i.e. the overhead alone blew the margin.
+    //     not portable; a loaded sanitized runner needed 169ms.
+    //  2. A ratio against three bare `sleep_for` calls compares unlike
+    //     things — the parallel path pays for the pool, the coroutine frames
+    //     and the sanitizer instrumentation, the raw sleeps pay for none of
+    //     it. CI: parallel=215ms against a 209ms budget.
+    //  3. A ratio against the *same* work awaited sequentially fixes that
+    //     asymmetry and still failed: parallel=216ms against a sequential
+    //     baseline of 220ms. Three 50ms sleeps that overlap perfectly cannot
+    //     take 216ms, so almost all of that was fixed overhead — on a
+    //     sanitized 3-core runner the scheduling cost simply dominates the
+    //     work, and elapsed time carries no signal about overlap left to
+    //     measure. No coefficient rescues a measurement with no signal in it.
     //
-    // So the baseline now runs `run_sequential_sum`: identical tasks,
-    // identical executor, identical coroutine machinery, awaited one at a
-    // time. Both sides carry the same fixed cost, which cancels out of the
-    // comparison, and what remains is exactly the thing under test. Three
-    // 50ms tasks: sequential ≈ 150ms + overhead, parallel ≈ 50ms +
-    // overhead, so an 80% ceiling has a wide margin yet still fails loudly
-    // if the tasks ever serialise.
-    std::atomic<bool> seq_done{false};
-    std::atomic<int> seq_sum{0};
-    auto seq_t0 = ck::steady_clock::now();
-    run_sequential_sum(&pool, &seq_done, &seq_sum).start_detached_();
-    while (!seq_done.load()) std::this_thread::sleep_for(ck::milliseconds{2});
-    const auto sequential_ms =
-        ck::duration_cast<ck::milliseconds>(ck::steady_clock::now() - seq_t0).count();
-    std::this_thread::sleep_for(ck::milliseconds{30});
-    REQUIRE(seq_sum.load() == 6);
-
+    // So stop measuring duration. `ConcurrencyProbe` counts how many task
+    // bodies are executing simultaneously; overlapping children push the
+    // high-water mark to 3, serialised children leave it at 1. That is the
+    // property under test, stated as itself, and it holds on a fast laptop
+    // and a contended single-core VM alike.
+    ConcurrencyProbe probe;
     std::atomic<bool> done{false};
     std::atomic<int> sum{0};
-    run_parallel_sum(pool, done, sum).start_detached_();
 
-    auto t0 = ck::steady_clock::now();
+    run_tracked_parallel(&pool, &probe, &done, &sum).start_detached_();
     while (!done.load()) std::this_thread::sleep_for(ck::milliseconds{2});
-    auto elapsed = ck::duration_cast<ck::milliseconds>(ck::steady_clock::now() - t0).count();
-    // Give detached wrapper coroutine time to finish before the pool destructor runs.
+    // Give the detached wrapper coroutine time to finish before the pool
+    // destructor runs.
     std::this_thread::sleep_for(ck::milliseconds{30});
-    CHECK(sum.load() == 6);
 
-    const auto budget_ms = (sequential_ms * 8) / 10;
-    INFO("parallel=", elapsed, "ms sequential baseline=", sequential_ms,
-         "ms budget=", budget_ms, "ms");
-    CHECK(elapsed < budget_ms);
+    CHECK(sum.load() == 6);
+    INFO("peak concurrency=", probe.peak.load(), " (expected 3)");
+    CHECK(probe.peak.load() == 3);
+    CHECK(probe.live.load() == 0);   // every task left its scope
 }
 
 TEST_CASE("when_all: rethrows the first exception") {

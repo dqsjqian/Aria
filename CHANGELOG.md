@@ -25,32 +25,36 @@ now actually gate: the README no longer makes claims about other
 frameworks, the clang-tidy baseline is enforced, and a set of async tests
 no longer leaks abandoned coroutine frames on Linux.
 
-### 2026-09-01 — test: compare when_all against the same work, run sequentially
+### 2026-09-01 — test: assert when_all's concurrency by observing it
 
-`when_all: real parallelism` failed on the sanitized macOS job at
-`parallel=215ms` against a `209ms` budget — the second time this assertion
-has gone red while `when_all` was behaving correctly, so the assertion
-itself was still wrong.
+`when_all: real parallelism` was rewritten three times in this release and
+failed on CI three times while `when_all` itself was correct. The third
+failure is the one that settles the question: `parallel=216ms` against a
+`sequential baseline=220ms`, measured on the same runner minutes apart.
 
-The first attempt used a fixed ceiling, which is not portable. The
-replacement derived a budget from a baseline of three bare `sleep_for`
-calls, and that is the subtler mistake: the parallel path pays for the
-thread pool, the coroutine frames and the sanitizer instrumentation, while
-three raw sleeps pay for none of it. Once that fixed overhead grows to the
-same order as the sleeps, the ratio stops describing concurrency — 215ms
-of "parallel" work was mostly overhead, and no percentage of a
-sleep-only baseline could tell the difference.
+Three 50ms sleeps that genuinely overlap cannot take 216ms. Almost all of
+that number was fixed overhead — on a sanitized 3-core runner, thread-pool
+scheduling and instrumentation dominate 50ms of sleeping, and elapsed time
+stops containing any information about overlap. The first version's fixed
+ceiling and the second's mismatched baseline were both real bugs, but the
+third version was methodologically sound and still failed, because no
+coefficient can rescue a measurement with no signal left in it.
 
-The baseline is now `run_sequential_sum`: the same three tasks on the same
-executor through the same coroutine machinery, awaited one at a time. Both
-sides carry identical fixed costs, which cancel, leaving only the property
-under test.
+So the test no longer measures duration. `ConcurrencyProbe` counts how many
+task bodies are executing simultaneously and keeps a high-water mark:
+overlapping children drive it to 3, serialised children leave it at 1. That
+is the property under test stated as itself, and it is invariant to how
+fast, how loaded, or how instrumented the machine is.
 
-Verified: passes under ASan; passes five times in a row with 24 spinning
-processes on 12 cores, the condition that broke the previous thresholds;
+Verified: passes under ASan; passes six consecutive runs with 24 spinning
+processes on 12 cores — the condition that broke all three timing versions;
 and reverting `when_all` to sequential awaits fails it for real
-(`parallel=166ms` vs a `139ms` budget), so it is not vacuous. Full debug
-ctest 12/12, 135/135 async cases, 0 leaks.
+(`peak concurrency=1`), so it is not vacuous.
+
+`sleep_then` and `run_parallel_sum` became unreachable once the timing
+comparison went away and are deleted rather than left as decoration. That
+also drops this file's `avoid-reference-coroutine-parameters` count from 8
+to 4, below the committed clang-tidy baseline.
 
 ### 2026-09-01 — test: release abandoned inner frames in with_timeout::Fail
 
