@@ -6,17 +6,43 @@ All notable changes to **aria** are documented here.
 > versioning: `MAJOR` bumps on breaking changes, `MINOR` on
 > backward-compatible additions. The `1.0.0` → `1.1.0` bump in 2026-08
 > marks the project's first public release; `1.2.0` in 2026-09 carries
-> documentation and CI-gate work with no API change. This file is a
-> snapshot of *what the framework currently is* plus a rolling **TODO**
-> list of what is still wanted.
+> documentation and CI-gate work with no API change; `1.2.1` is a
+> maintenance patch (dependency refresh + CI fixes, no API change).
+> This file is a snapshot of *what the framework currently is* plus a
+> rolling **TODO** list of what is still wanted.
 
 ---
 
-## 1.2.0 — current snapshot
+## 1.2.1 — current snapshot
 
 Aria is a modern C++20 MVVM framework — cross-platform, layered,
 coroutine-first. Everything below is implemented, tested and shipped in
 the current tree.
+
+### 2026-09-03 — release 1.2.1
+
+No API or ABI changes (`ARIA_ABI_VERSION` stays 1). Maintenance patch:
+all bundled dependencies refreshed to their latest releases and four
+CI/infrastructure defects fixed.
+
+- doctest 2.5.0 → 2.5.3. The vendored header now carries a small patch
+  (`#if _MSC_VER >= 1945` around the C4865 suppression): C4865 ships
+  with VS 2026 / MSVC 19.45, and older MSVC 2022 toolsets raise C4619
+  on the unknown warning number — fatal under `/WX`. `/wd4619` cannot
+  suppress it because the warning is emitted during `__pragma`
+  evaluation, before command-line filters apply.
+- The CMake build-tree guard no longer fires for consumers that pull
+  Aria in via `add_subdirectory()`; it only guards standalone
+  top-level Aria builds (OpenRead's `<root>/build` used to trip it).
+- The nightly fuzz job had failed every night since 2026-09-01:
+  `ASAN_OPTIONS=detect_leaks=1` is not supported by ASan on macOS and,
+  combined with `abort_on_error=1`, aborted the fuzzer at startup.
+  LeakSanitizer does not exist on Apple Silicon runners; the option is
+  simply dropped (on Linux it defaults to ON where supported anyway).
+- `actions/checkout` v4 → v7 and `actions/upload-artifact` v4 → v7,
+  clearing the Node 20 deprecation warnings.
+
+## 1.2.0
 
 ### 2026-09-01 — release 1.2.0
 
