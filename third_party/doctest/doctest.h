@@ -4676,7 +4676,9 @@ DOCTEST_MSVC_SUPPRESS_WARNING(4626) // assignment operator was implicitly delete
 DOCTEST_MSVC_SUPPRESS_WARNING(4668) // not defined as a preprocessor macro
 DOCTEST_MSVC_SUPPRESS_WARNING(4774) // format string not a string literal
 DOCTEST_MSVC_SUPPRESS_WARNING(4820) // padding
+#if _MSC_VER >= 1945 // [ARIA PATCH] C4865 ships with VS 2026 (MSVC 19.45+); older toolsets would raise C4619 on the unknown number (fatal under /WX)
 DOCTEST_MSVC_SUPPRESS_WARNING(4865) // the underlying type will change if '/Zc:enumTypes' is passed
+#endif
 DOCTEST_MSVC_SUPPRESS_WARNING(4986) // exception specification does not match previous
 DOCTEST_MSVC_SUPPRESS_WARNING(5026) // move constructor was implicitly deleted
 DOCTEST_MSVC_SUPPRESS_WARNING(5027) // move assignment operator implicitly deleted

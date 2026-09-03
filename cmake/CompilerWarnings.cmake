@@ -67,14 +67,13 @@ function(aria_set_warnings target)
         # MSVC versions are unaffected).
         /wd5285
 
-        # C4619: "#pragma warning: there is no warning number 'NNNN'" —
-        # doctest 2.5.3 suppresses C4865 (a warning introduced with
-        # /Zc:enumTypes in VS 2026); MSVC 2022 toolsets do not know that
-        # number, so the upstream pragma itself triggers C4619, which
-        # /WX then escalates to C2220.  Benign for us (Aria never emits
-        # pragmas with unknown warning numbers); silenced so one vendored
-        # header stays green across MSVC 2022 and 2026 alike.
-        /wd4619
+        # NOTE on C4619 ("#pragma warning: there is no warning number
+        # '4865'", raised by doctest 2.5.3's VS-2026-targeted pragma on
+        # MSVC 2022): do NOT try to silence it here — /wd4619 has no
+        # effect because the warning is emitted while __pragma() is being
+        # evaluated, before command-line warning filters apply.  The fix
+        # is a _MSC_VER >= 1945 guard patched directly into the vendored
+        # doctest.h (search "[ARIA PATCH]").
     )
 
     set(CLANG_WARNINGS
