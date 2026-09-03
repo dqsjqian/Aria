@@ -19,7 +19,7 @@ jobs:
     name: macOS (AppleClang)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install ninja
         run: brew install ninja
@@ -85,7 +85,7 @@ jobs:
     name: UIKit conformance + table source (iOS Simulator)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Configure simulator target
         run: |
@@ -140,7 +140,7 @@ jobs:
             cc: clang-18
             cxx: clang++-18
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install toolchain + Qt6
         run: |
@@ -207,7 +207,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup MSYS2 UCRT64 + Qt6
         uses: msys2/setup-msys2@v2
@@ -258,7 +258,7 @@ jobs:
     name: Windows (MSVC 2022)
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Qt6 (binary)
         uses: jurplel/install-qt-action@v4
@@ -306,7 +306,7 @@ jobs:
     name: API docs (Doxygen)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Cheap and dependency-free, so it runs before anything is built: a
       # guide that names a symbol the headers do not define is a broken
@@ -334,7 +334,7 @@ jobs:
         run: test -f build/flavors/docs/docs/html/index.html
 
       - name: Upload API reference artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: aria-api-reference
           path: build/flavors/docs/docs/html
@@ -348,7 +348,7 @@ jobs:
     name: Cross-dylib ABI smoke
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install toolchain
         run: |
@@ -389,7 +389,7 @@ jobs:
     name: clang-tidy gate
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install ninja + clang-tidy
         run: |
@@ -419,7 +419,7 @@ jobs:
 
       - name: Upload clang-tidy findings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: clang-tidy-findings
           path: scripts/tidy-findings.txt

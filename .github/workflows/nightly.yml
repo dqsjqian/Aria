@@ -16,7 +16,7 @@ jobs:
     name: Bench + P99 ceiling check
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install ninja
         run: brew install ninja
@@ -60,7 +60,7 @@ jobs:
         # Always upload, even on failure — that way the regressed
         # numbers are captured for offline diff against earlier runs.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-output-${{ github.run_id }}
           path: bench-output.txt
@@ -75,7 +75,7 @@ jobs:
     name: TSan (macOS)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install ninja
         run: brew install ninja
@@ -113,7 +113,7 @@ jobs:
     name: Fuzz 1M iters (ASan + UBSan)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install ninja
         run: brew install ninja
@@ -133,7 +133,14 @@ jobs:
       - name: Run fuzzers at the documented 1M iterations
         env:
           # Matches the per-fuzzer target in docs/reference/lifecycle.md.
+          # NOTE: no detect_leaks here. LeakSanitizer is not supported by
+          # ASan on macOS (Apple Silicon runners print "detect_leaks is
+          # not supported on this platform" and, combined with
+          # abort_on_error, abort the process at startup — the exact
+          # failure that broke this job every night from 2026-09-01).
+          # On Linux, where LSan exists, detect_leaks defaults to ON
+          # anyway, so omitting it loses nothing.
           ARIA_FUZZ_ITERS: "1000000"
-          ASAN_OPTIONS: "detect_leaks=1:abort_on_error=1"
+          ASAN_OPTIONS: "abort_on_error=1"
           UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1"
         run: ./build/flavors/fuzz/bin/aria_fuzz --no-skipped-summary
