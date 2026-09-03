@@ -471,11 +471,12 @@ Aria + Qt6 实现的 Provider 无关 Agent GUI：真流式 SSE、工具调用链
 
 ### OpenRead —— 跨平台书源引擎
 
-Aria HTTP 适配器驱动的书源管理 Web 端：左侧书源列表 + 右侧书本卡片网格，全文搜索、订阅、调试一站式。
+Aria HTTP 适配器驱动的书源管理 Web 端：左侧书源列表 + 右侧书本卡片网格，全文搜索、订阅、调试一站式。同一份 C++ 核心同时驱动 REST/SSE 薄客户端与 SSR 两种 Web 形态。
 
 | 视图 | 截图 |
 |---|---|
-| 书源管理（Web） | ![OpenRead-Web](docs/marketing/images/OpenRead-Web.png) |
+| 书源管理（Web / REST+SSE） | ![OpenRead-Web](docs/marketing/images/OpenRead-Web.png) |
+| 书源管理（Web / SSR） | ![OpenRead-SSR](docs/marketing/images/OpenRead-SSR.png) |
 
 > **关于 Windows / Linux 截图**：Mac 的壳是基于 **Aria（框架技术底座）+ Qt6 适配器（View 层）**做的，在 Windows / Linux 上跑出来的程序与 Mac 视觉上完全一致（同一份 Qt 控件 + 同一份 C++ ViewModel），所以不必重复截图。Windows 下还另有 MSVC + Qt6 与 MSYS2 UCRT64 两条工具链可以独立验证。
 
