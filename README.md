@@ -445,6 +445,40 @@ Task<std::string> fetch_user(int id) {
 | **Web（服务端驱动）** | **浏览器 HTML/JS** | **`aria-http`** | **✅ REST + SSE** |
 | Web（浏览器内 C++） | DOM via WASM | `aria-wasm` | 🔜 计划中 |
 
+## 🖼 跨端实战成果
+
+下面这些是 Aria 框架在真实应用里跑出来的样子 —— 同一份 C++ ViewModel，跨多个平台的原生壳。**[AriaTools](https://github.com/dqsjqian/AriaTools)**（17 个模块的跨端工作台，Qt / iOS / Android / Web 四端）、**[AriaAgent](https://github.com/dqsjqian/AriaAgent)**（Provider 无关的 LLM Agent GUI）、[OpenRead](https://github.com/dqsjqian/OpenRead)（跨平台书源引擎，HTTP/SSE Web 壳）均已在生产形态上使用 Aria 1.x。所有截图均来自稳定版本，一次构建、跨端共用同一份 C++ 业务核心。
+
+### AriaTools —— 跨端工作台（17 模块）
+
+Aria 旗舰跨平台示例：一份 ViewModel 跑四端。左侧导航的购物车 / 主题切换 / Framework Lab / Echo 等模块，全部由 `ObservableList`、`Computed`、`reactive::batch` 驱动。
+
+| 平台 | 截图 | 适配器 |
+|---|---|---|
+| macOS（Qt6） | ![AriaTools-Mac](docs/marketing/images/AriaTools-Mac.png) | `aria-qt6` |
+| iOS / UIKit | ![AriaTools-iOS](docs/marketing/images/AriaTools-iOS.png) | `aria-uikit` |
+| Android（Compose side-channel） | ![AriaTools-Android](docs/marketing/images/AriaTools-Android.png) | `aria-jni` |
+| Web（HTTP/REST/SSE） | ![AriaTools-Web](docs/marketing/images/AriaTools-Web.png) | `aria-http` |
+
+### AriaAgent —— LLM Agent GUI
+
+Aria + Qt6 实现的 Provider 无关 Agent GUI：真流式 SSE、工具调用链可视化、权限审批、Markdown 渲染。
+
+| 视图 | 截图 |
+|---|---|
+| 主界面（对话） | ![AriaAgent-Main](docs/marketing/images/AriaAgent-Mac-main.png) |
+| 设置（General / Model / Plugins / Agent Presets） | ![AriaAgent-Setting](docs/marketing/images/AriaAgent-Mac-setting.png) |
+
+### OpenRead —— 跨平台书源引擎
+
+Aria HTTP 适配器驱动的书源管理 Web 端：左侧书源列表 + 右侧书本卡片网格，全文搜索、订阅、调试一站式。
+
+| 视图 | 截图 |
+|---|---|
+| 书源管理（Web） | ![OpenRead-Web](docs/marketing/images/OpenRead-Web.png) |
+
+> **关于 Windows / Linux 截图**：Mac 的壳是基于 **Aria（框架技术底座）+ Qt6 适配器（View 层）**做的，在 Windows / Linux 上跑出来的程序与 Mac 视觉上完全一致（同一份 Qt 控件 + 同一份 C++ ViewModel），所以不必重复截图。Windows 下还另有 MSVC + Qt6 与 MSYS2 UCRT64 两条工具链可以独立验证。
+
 ## 🧪 测试状态
 
 ```
