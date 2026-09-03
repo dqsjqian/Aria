@@ -33,7 +33,11 @@ project(aria
 # In-source builds trip the same check, since CMAKE_BINARY_DIR then equals
 # CMAKE_SOURCE_DIR.
 option(ARIA_ALLOW_BUILD_ROOT "Permit configuring directly into build/ (not recommended)" OFF)
-if(NOT ARIA_ALLOW_BUILD_ROOT)
+# Guard fires only when Aria is the top-level project. When Aria is pulled in
+# via add_subdirectory() (OpenRead / AriaTools / AriaAgent submodules),
+# CMAKE_SOURCE_DIR is the consumer's root and the consumer owns its build
+# layout — e.g. a plain `build/` there is perfectly valid and must not fail.
+if(NOT ARIA_ALLOW_BUILD_ROOT AND CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     if(CMAKE_BINARY_DIR STREQUAL "${CMAKE_SOURCE_DIR}/build"
        OR CMAKE_BINARY_DIR STREQUAL CMAKE_SOURCE_DIR)
         message(FATAL_ERROR
