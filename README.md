@@ -172,6 +172,10 @@ aria::reactive::batch([&] {
 还有一条省心的默认行为：**如果最终结果和当前值相同，一次通知都不会发。**
 比如上面之后再 `batch` 里设 `bill=600, people=4`（仍是 150），label 不会被打扰。
 
+整个架构一张图看全——上半是纯 C++ 的 ViewModel，中间是 `BindingEngine`（只认 `IViewAdapter` 接口），下半是五个原生适配器：
+
+![Aria 架构总览](docs/marketing/images/aria-arch.png)
+
 继续阅读：[绑定指南](docs/guide/binding.md) · [各平台适配器指南](docs/guide/adapters/) · [Cookbook](docs/cookbook/README.md) · [AriaTools](https://github.com/dqsjqian/AriaTools)（Qt / iOS / Android / Web 四端完整应用）。
 
 ## 🎯 定位与取舍
@@ -446,6 +450,10 @@ Task<std::string> fetch_user(int id) {
 | Web（浏览器内 C++） | DOM via WASM | `aria-wasm` | 🔜 计划中 |
 
 ## 🖼 跨端实战成果
+
+先看全景——一个框架长出的三个真实应用：
+
+![Aria 生态：框架 + 三个真实应用](docs/marketing/images/aria-eco.png)
 
 下面这些是 Aria 框架在真实应用里跑出来的样子 —— 同一份 C++ ViewModel，跨多个平台的原生壳。**[AriaTools](https://github.com/dqsjqian/AriaTools)**（17 个模块的跨端工作台，Qt / iOS / Android / Web 四端）、**[AriaAgent](https://github.com/dqsjqian/AriaAgent)**（Provider 无关的 LLM Agent GUI）、[OpenRead](https://github.com/dqsjqian/OpenRead)（跨平台书源引擎，HTTP/SSE Web 壳）均已在生产形态上使用 Aria 1.x。所有截图均来自稳定版本，一次构建、跨端共用同一份 C++ 业务核心。
 
