@@ -181,6 +181,12 @@ And a convenient default: **if the final result equals the current value, nothin
 notified at all.** Following on from above, a batch setting `bill=600, people=4` (still
 150) leaves the label untouched.
 
+The whole architecture in one picture — upper half is the pure C++ ViewModel, the middle
+is `BindingEngine` (which only knows the `IViewAdapter` interface), and the bottom row is
+the five native adapters:
+
+![Aria architecture overview](docs/marketing/images/aria-arch.png)
+
 Continue with the [binding guide](docs/guide/binding.md), the [per-platform adapter guides](docs/guide/adapters/), the [cookbook](docs/cookbook/README.md), or the full four-platform [AriaTools](https://github.com/dqsjqian/AriaTools) application.
 
 ## 🎯 Where Aria fits
@@ -504,6 +510,60 @@ The **current release** ships the platform-agnostic core, runtime, async, and
 binding layers — fully unit-tested. Qt6, AppKit, UIKit, JNI, and HTTP are
 first-class opt-in adapters in the CMake tree (subject to their platform
 requirements). WASM remains planned; the `IViewAdapter` interface is stable.
+
+## 🖼 Real-world showcase
+
+The big picture first — three real applications grew out of one framework:
+
+![Aria ecosystem: the framework plus three real apps](docs/marketing/images/aria-eco.png)
+
+Below is what Aria looks like in real applications — one C++ ViewModel, native shells per
+platform. **[AriaTools](https://github.com/dqsjqian/AriaTools)** (17-module cross-platform
+workbench on Qt / iOS / Android / Web), **[AriaAgent](https://github.com/dqsjqian/AriaAgent)**
+(provider-agnostic LLM Agent GUI), and [OpenRead](https://github.com/dqsjqian/OpenRead)
+(cross-platform book-source engine, HTTP/SSE web shell) all run Aria 1.x in production
+shape. Every screenshot comes from a stable release: one build, one shared C++ business
+core across platforms.
+
+### AriaTools — cross-platform workbench (17 modules)
+
+Aria's flagship example: one ViewModel, four platforms. The cart / theme switching /
+Framework Lab / Echo modules in the side navigation are all driven by `ObservableList`,
+`Computed`, and `reactive::batch`.
+
+| Platform | Screenshot | Adapter |
+|---|---|---|
+| macOS (Qt6) | ![AriaTools-Mac](docs/marketing/images/AriaTools-Mac.png) | `aria-qt6` |
+| iOS / UIKit | ![AriaTools-iOS](docs/marketing/images/AriaTools-iOS.png) | `aria-uikit` |
+| Android (Compose side-channel) | ![AriaTools-Android](docs/marketing/images/AriaTools-Android.png) | `aria-jni` |
+| Web (HTTP/REST/SSE) | ![AriaTools-Web](docs/marketing/images/AriaTools-Web.png) | `aria-http` |
+
+### AriaAgent — LLM Agent GUI
+
+A provider-agnostic Agent GUI built on Aria + Qt6: true token-level streaming SSE,
+tool-call chain visualization, permission approval (fail-closed), Markdown rendering.
+
+| View | Screenshot |
+|---|---|
+| Main chat | ![AriaAgent-Main](docs/marketing/images/AriaAgent-Mac-main.png) |
+| Settings (General / Model / Plugins / Agent Presets) | ![AriaAgent-Setting](docs/marketing/images/AriaAgent-Mac-setting.png) |
+
+### OpenRead — cross-platform book-source engine
+
+A book-source manager powered by the Aria HTTP adapter: source list on the left, book
+cards on the right — search, subscribe, and debug in one place. The same C++ core drives
+two web shapes: a REST+SSE thin client and an SSR variant.
+
+| View | Screenshot |
+|---|---|
+| Source manager (Web, REST + SSE) | ![OpenRead-Web](docs/marketing/images/OpenRead-Web.png) |
+| Source manager (Web, SSR) | ![OpenRead-SSR](docs/marketing/images/OpenRead-SSR.png) |
+
+> **Why no Windows / Linux screenshots?** The macOS shell is built on **Aria (the
+> framework base) + the Qt6 adapter (the View layer)**; the programs built for Windows and
+> Linux look identical to the macOS one (same Qt widgets + the same C++ ViewModel), so
+> duplicate screenshots would add nothing. Windows additionally has two independently
+> validated toolchains — MSVC + Qt6 and MSYS2 UCRT64.
 
 ## 🧪 Test status
 
