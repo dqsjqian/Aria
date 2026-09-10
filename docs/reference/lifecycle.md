@@ -119,8 +119,12 @@ MVVM). Production-recommended is `SmartMarshal`:
 | `SmartMarshal` | Inline if `dispatcher.is_main_thread()` is true, otherwise `post` to the main thread | Production; coexists with a worker pool |
 | `AlwaysPost` | Always `post` to the dispatcher | Tests that need deterministic "emit→post→update" ordering |
 
-**View→VM is never marshalled**: native callbacks already fire on
-the UI thread.
+**View→VM uses the same policy**, including scalar, converted-text and
+command callbacks. HTTP callbacks originate on workers, so configure a real
+graph-thread dispatcher with `SmartMarshal` or `AlwaysPost`. Borrowed text is
+copied before posting. Per-view weak tokens discard queued work after clear,
+view replacement/destruction or engine teardown. Binding setup and teardown
+still belong on the graph owner thread; the token does not own the model/view.
 
 ### L-5: AsyncCommand write-back thread contract
 

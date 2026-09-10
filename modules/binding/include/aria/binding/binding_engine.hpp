@@ -52,42 +52,41 @@ namespace aria::binding {
 ///       inherently one-way because the view never writes those back into
 ///       business state — they reflect a state decision the VM owns.
 ///
-/// ── Threading / VM→View dispatch policy ───────────────────────────────
+/// ── Threading / binding dispatch policy ──────────────────────────────
 ///   Native UI toolkits are main-thread-affine: AppKit/UIKit explicitly
 ///   forbid touching `NS/UIView` from a background thread, and Qt requires
 ///   widget access on the GUI thread. Aria's reactive graph is itself
-///   single-threaded, but `Property::set` may technically be called from
-///   a worker thread by user code that has not yet hopped back to the UI
-///   thread (e.g. a blocking-IO coroutine that forgot the final
-///   `co_await schedule_on(ui)`). To stop that mistake from corrupting
-///   the native widget tree, BindingEngine accepts an optional
-///   `runtime::IDispatcher` together with a `DispatchPolicy`:
+///   single-threaded. BindingEngine accepts an optional dispatcher for
+///   that owning thread and a policy applied in both binding directions.
+///   In particular, adapters such as HTTP may deliver input from workers;
+///   marshalling keeps those callbacks from accessing the graph there.
+///   Application Property writes must still respect graph affinity.
 ///
 ///     * `DispatchPolicy::Direct` (default) — every
-///       VM→View setter call is invoked synchronously on whatever thread
-///       the property emit happened on. Zero overhead, zero new behaviour.
-///       Use when you can prove every Property write originates on the
-///       UI thread (the common single-threaded MVVM case).
+///       callback is invoked synchronously on its originating thread.
+///       Use when every Property write and adapter callback originates
+///       on the graph/UI thread (the common single-threaded MVVM case).
 ///
 ///     * `DispatchPolicy::SmartMarshal` (recommended for production) —
-///       VM→View setters and command-`can_execute` updates are invoked
+///       VM→View setters, View→VM edits and commands are invoked
 ///       directly when `dispatcher.is_main_thread()` is true, otherwise
 ///       posted to the dispatcher. Zero overhead on the UI thread, and
 ///       a guaranteed thread-correct path on background threads.
 ///
-///     * `DispatchPolicy::AlwaysPost` — every VM→View call is posted,
+///     * `DispatchPolicy::AlwaysPost` — every binding update is posted,
 ///       even from the UI thread. Useful for tests that want a
 ///       deterministic "property-emit happens before, view-update
 ///       happens later" ordering, or to coalesce a synchronous burst
 ///       of writes into the next event-loop iteration.
 ///
-///   View→VM is NOT marshalled. Native callbacks already fire on the
-///   UI thread by construction, so there is no race to fix on that
-///   side; the View→VM path goes straight into `prop.set` /
-///   `cmd.execute`, identical to the Direct path.
+///   Initial synchronization during bind runs inline on the owning
+///   thread. Synchronous setter echoes are suppressed before posting.
+///   Binding setup, clear and view/engine destruction also belong on
+///   the owning thread; the dispatcher does not make the graph or the
+///   binding registry safe for concurrent access.
 ///
-///   Posted VM→View callbacks are guarded by the per-view subscription
-///   bucket: if the view is destroyed between `dispatcher.post(fn)` and
+///   Posted callbacks in both directions use a per-view lifetime token:
+///   if the view is destroyed between `dispatcher.post(fn)` and
 ///   `fn()` running, the bucket's weak handle no-ops the call so the
 ///   posted lambda never dereferences a dead `IView`.
 ///
@@ -103,7 +102,7 @@ namespace aria::binding {
 #endif
 class ARIA_BINDING_API BindingEngine {
 public:
-    /// VM→View dispatch policy — see the class header for semantics.
+    /// Binding dispatch policy — see the class header for semantics.
     enum class DispatchPolicy {
         Direct,        ///< call inline (default)
         SmartMarshal,  ///< inline iff dispatcher.is_main_thread()
@@ -318,37 +317,39 @@ public:
                     });
             }));
         add_view_sub_(view, adapter_->on_text_changed(view,
-            [&prop, to_model, try_to_model, guard](std::string_view sv) {
-                if (*guard) return;
-                std::string s(sv);
-                // Preferred channel: try_to_model returns nullopt on
-                // unparseable input — drop the View → Model write and
-                // report once via the unified callback-boundary so the
-                // host's diagnostics see it. Model retains its previous
-                // value; UI keeps showing the user's bad text until the
-                // adapter posts a corrected one.
-                if (try_to_model) {
-                    if (auto parsed = try_to_model(s)) {
-                        prop.set(*parsed);
-                    } else {
-                        aria::report_callback_failure(
-                            std::string_view{"binding.converter"},
-                            nullptr,
-                            std::string_view{"converter.try_to_model rejected input"});
-                    }
-                    return;
-                }
-                // Fallback channel: legacy `to_model` may throw.
-                // Catch & route to the unified sink so the engine never
-                // propagates user converter exceptions out of the
-                // adapter callback (which is conceptually noexcept).
-                try {
-                    prop.set(to_model(s));
-                } catch (...) {
-                    aria::report_callback_failure(
-                        std::string_view{"binding.converter"},
-                        std::current_exception());
-                }
+            [&prop, to_model, try_to_model, guard, guard_alive,
+             dispatcher = dispatcher_, policy = policy_](std::string_view sv) {
+                dispatch_to_model_(dispatcher, policy, guard_alive, guard,
+                    [&prop, to_model, try_to_model, s = std::string{sv}] {
+                        // Preferred channel: try_to_model returns nullopt on
+                        // unparseable input — drop the View → Model write and
+                        // report once via the unified callback-boundary so the
+                        // host's diagnostics see it. Model retains its previous
+                        // value; UI keeps showing the user's bad text until the
+                        // adapter posts a corrected one.
+                        if (try_to_model) {
+                            if (auto parsed = try_to_model(s)) {
+                                prop.set(*parsed);
+                            } else {
+                                aria::report_callback_failure(
+                                    std::string_view{"binding.converter"},
+                                    nullptr,
+                                    std::string_view{"converter.try_to_model rejected input"});
+                            }
+                            return;
+                        }
+                        // Fallback channel: legacy `to_model` may throw.
+                        // Catch & route to the unified sink so the engine never
+                        // propagates user converter exceptions out of the
+                        // adapter callback (which is conceptually noexcept).
+                        try {
+                            prop.set(to_model(s));
+                        } catch (...) {
+                            aria::report_callback_failure(
+                                std::string_view{"binding.converter"},
+                                std::current_exception());
+                        }
+                    });
             }));
     }
 
@@ -440,7 +441,12 @@ public:
     void bind_command(Command<Args...>& cmd, IView& view, const Args&... args) {
         auto guard_alive = ensure_alive_token_(view);
         add_view_sub_(view,
-            adapter_->on_click(view, [&cmd, args...]() { cmd.execute(args...); }));
+            adapter_->on_click(view,
+                [&cmd, args..., guard_alive,
+                 dispatcher = dispatcher_, policy = policy_]() {
+                    dispatch_to_model_(dispatcher, policy, guard_alive, {},
+                        [&cmd, args...] { cmd.execute(args...); });
+                }));
         // The signal carries whatever truth value the publisher chose
         // (e.g. `notify_can_execute_changed(other_args...)`). For bound
         // buttons we want the enabled state to track *these specific
@@ -605,13 +611,19 @@ private:
                     });
             }));
 
-        // View → VM, suppressed while we are the ones driving the view.
-        // Native callbacks already run on the UI thread by construction,
-        // so there is no marshal needed on this path.
+        // View → VM may originate on an adapter worker. Own borrowed
+        // text before posting, and defer conversion / Property access
+        // to the graph thread. No callback retains the engine pointer.
         add_view_sub_(view, (adapter_.get()->*subscriber)(view,
-            [&prop, to_model, guard](auto cb_arg) {
-                if (*guard) return;
-                prop.set(to_model(cb_arg));
+            [&prop, to_model, guard, guard_alive,
+             dispatcher = dispatcher_, policy = policy_](auto cb_arg) {
+                using Value = std::conditional_t<
+                    std::is_same_v<decltype(cb_arg), std::string_view>,
+                    std::string, decltype(cb_arg)>;
+                dispatch_to_model_(dispatcher, policy, guard_alive, guard,
+                    [&prop, to_model, value = Value{cb_arg}] {
+                        prop.set(to_model(value));
+                    });
             }));
     }
 
@@ -661,6 +673,37 @@ private:
     /// is destroyed by `bucket->clear()` inside the `on_destroy`
     /// callback. Multiple bindings on the same view share one sentinel.
     AliveToken ensure_alive_token_(IView& view);
+
+    // Inbound adapter callbacks can outlive their subscription (an HTTP
+    // worker may already have copied one). Capture all routing state by
+    // value and check the weak token on the graph thread immediately
+    // before touching Property / Command.
+    template<class Fn>
+    static void dispatch_to_model_(
+        const std::shared_ptr<runtime::IDispatcher>& dispatcher,
+        DispatchPolicy policy, AliveToken alive_token,
+        std::shared_ptr<bool> guard, Fn&& fn) {
+        const bool direct = !dispatcher || policy == DispatchPolicy::Direct;
+        const bool on_graph_thread = direct || dispatcher->is_main_thread();
+
+        // An AlwaysPost setter can synchronously echo while its guard is
+        // active. Drop that echo now: checking only after dequeue would
+        // observe a reset guard and feed formatted text back into the VM.
+        // Worker callbacks must never read this graph-thread-only flag.
+        if (on_graph_thread && guard && *guard) return;
+
+        auto invoke = [alive_token, guard = std::move(guard),
+                       fn = std::forward<Fn>(fn)]() mutable {
+            auto keep_alive = alive_token.lock();
+            if (!keep_alive || (guard && *guard)) return;
+            fn();
+        };
+        if (direct || (policy == DispatchPolicy::SmartMarshal && on_graph_thread)) {
+            invoke();
+        } else {
+            dispatcher->post(std::move(invoke));
+        }
+    }
 
     /// Route a VM→View callable to the configured dispatcher per the
     /// active `DispatchPolicy`. Always weak-guards on `alive_token` so

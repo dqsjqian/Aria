@@ -1,5 +1,5 @@
 // test_binding_dispatcher.cpp — covers the dispatcher / DispatchPolicy
-// extension to BindingEngine. The four cases pin the four new code paths:
+// extension to BindingEngine in both binding directions:
 //
 //   1. Direct (default)               — no marshalling, even with a dispatcher
 //   2. SmartMarshal + main thread     — call inline, do NOT enqueue
@@ -34,8 +34,9 @@ namespace {
 
 /// Test dispatcher: queues posted callables and lets the test decide when
 /// to pump them. `is_main_thread()` is a settable atomic so we can simulate
-/// "we are on the worker thread" without actually crossing threads in the
-/// SmartMarshal-inline-fast-path test.
+/// "we are on the worker thread" without actually crossing threads. Real
+/// worker threads always report false, allowing concurrency regressions
+/// to pump on the owner while a worker callback is still running.
 class FakeDispatcher final : public runtime::IDispatcher {
 public:
     void post(std::function<void()> fn) override {
@@ -47,7 +48,8 @@ public:
         post(std::move(fn));
     }
     [[nodiscard]] bool is_main_thread() const noexcept override {
-        return is_main_.load(std::memory_order_acquire);
+        return std::this_thread::get_id() == owner_thread_ &&
+               is_main_.load(std::memory_order_acquire);
     }
 
     void set_is_main(bool b) { is_main_.store(b, std::memory_order_release); }
@@ -76,10 +78,35 @@ public:
     }
 
 private:
+    const std::thread::id              owner_thread_ = std::this_thread::get_id();
     mutable std::mutex                 mu_;
     std::queue<std::function<void()>>  queue_;
     std::atomic<bool>                  is_main_{true};
     std::atomic<std::size_t>           posted_{0};
+};
+
+// Models an adapter worker that copied a callback before disconnect.
+// Those copies may still arrive after clear, view destruction or engine
+// destruction, even though the adapter subscription has been released.
+class CapturingAdapter final : public FakeAdapter {
+public:
+    void set_text(IView& view, std::string_view value) override {
+        FakeAdapter::set_text(view, value);
+        if (auto callback = std::exchange(during_set_text, {})) callback();
+    }
+    Subscription on_text_changed(
+        IView& view, std::function<void(std::string_view)> cb) override {
+        text_callback = cb;
+        return FakeAdapter::on_text_changed(view, std::move(cb));
+    }
+    Subscription on_click(IView& view, std::function<void()> cb) override {
+        click_callback = cb;
+        return FakeAdapter::on_click(view, std::move(cb));
+    }
+
+    std::function<void(std::string_view)> text_callback;
+    std::function<void()> click_callback;
+    std::function<void()> during_set_text;
 };
 
 }  // namespace
@@ -304,4 +331,245 @@ TEST_CASE("BindingEngine: clear() then re-bind the same view stays clean") {
     CHECK(view.integer == 7);                   // queued, not pumped
     dispatcher->pump();
     CHECK(view.integer == 11);
+}
+
+TEST_CASE("BindingEngine: Direct and on-thread SmartMarshal apply inbound callbacks inline") {
+    auto policy = BindingEngine::DispatchPolicy::Direct;
+    SUBCASE("Direct ignores dispatcher thread detection") {}
+    SUBCASE("SmartMarshal on graph thread") {
+        policy = BindingEngine::DispatchPolicy::SmartMarshal;
+    }
+
+    auto adapter = std::make_shared<FakeAdapter>();
+    auto dispatcher = std::make_shared<FakeDispatcher>();
+    BindingEngine engine(adapter, dispatcher, policy);
+    Property<int> scalar(1);
+    Property<int> converted(2);
+    int command_result = 0;
+    Command<int> command([&](int value) { command_result = value; });
+    FakeView scalar_view, converted_view, button;
+    engine.bind_int(scalar, scalar_view);
+    engine.bind_text_converted(converted, converted_view, converters::int_to_string());
+    engine.bind_command(command, button, 7);
+    if (policy == BindingEngine::DispatchPolicy::Direct) dispatcher->set_is_main(false);
+
+    scalar_view.sig_int.emit(3);
+    FakeAdapter::user_type(converted_view, "4");
+    FakeAdapter::user_click(button);
+
+    CHECK(scalar.get() == 3);
+    CHECK(converted.get() == 4);
+    CHECK(command_result == 7);
+    CHECK(dispatcher->queued() == 0);
+}
+
+TEST_CASE("BindingEngine: worker input marshals every scalar, converter and command") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    auto dispatcher = std::make_shared<FakeDispatcher>();
+    BindingEngine engine(adapter, dispatcher, BindingEngine::DispatchPolicy::SmartMarshal);
+    const auto graph_thread = std::this_thread::get_id();
+    Property<std::string> text("initial");
+    Property<bool> flag(false);
+    Property<int> integer(1);
+    Property<std::int64_t> i64(2);
+    Property<std::uint64_t> u64(3);
+    Property<float> f32(4.0f);
+    Property<double> f64(5.0);
+    Property<int> converted(6);
+    FakeView text_view, flag_view, int_view, i64_view, u64_view;
+    FakeView float_view, double_view, converted_view, button;
+    int converter_calls = 0;
+    auto converter = converters::int_to_string();
+    converter.try_to_model = [&](const std::string& value) -> std::optional<int> {
+        CHECK(std::this_thread::get_id() == graph_thread);
+        ++converter_calls;
+        return std::stoi(value);
+    };
+    int command_result = 0;
+    int predicate_calls = 0;
+    Command<int> command(
+        [&](int value) {
+            CHECK(std::this_thread::get_id() == graph_thread);
+            command_result = value;
+        },
+        [&](int) {
+            CHECK(std::this_thread::get_id() == graph_thread);
+            ++predicate_calls;
+            return true;
+        });
+    engine.bind_text(text, text_view);
+    engine.bind_bool(flag, flag_view);
+    engine.bind_int(integer, int_view);
+    engine.bind_int64(i64, i64_view);
+    engine.bind_uint64(u64, u64_view);
+    engine.bind_float(f32, float_view);
+    engine.bind_double(f64, double_view);
+    engine.bind_text_converted(converted, converted_view, std::move(converter));
+    engine.bind_command(command, button, 99);
+    predicate_calls = 0;
+    auto changed = text.on_changed([&](const std::string&) {
+        CHECK(std::this_thread::get_id() == graph_thread);
+    });
+
+    const std::string expected_text(512, 'x');
+    std::thread worker([&] {
+        std::string borrowed_text = expected_text;
+        text_view.sig_text.emit(borrowed_text);
+        borrowed_text.assign(512, 'y'); // invalidate the borrowed view before drain
+        flag_view.sig_bool.emit(true);
+        int_view.sig_int.emit(11);
+        i64_view.sig_int64.emit(-1234567890123LL);
+        u64_view.sig_uint64.emit(12345678901234ULL);
+        float_view.sig_float.emit(1.25f);
+        double_view.sig_double.emit(2.5);
+        std::string borrowed_number = "42";
+        converted_view.sig_text.emit(borrowed_number);
+        borrowed_number.assign("88");
+        FakeAdapter::user_click(button);
+    });
+    worker.join();
+
+    CHECK(text.get() == "initial");
+    CHECK_FALSE(flag.get());
+    CHECK(integer.get() == 1);
+    CHECK(i64.get() == 2);
+    CHECK(u64.get() == 3);
+    CHECK(f32.get() == 4.0f);
+    CHECK(f64.get() == 5.0);
+    CHECK(converted.get() == 6);
+    CHECK(converter_calls == 0);
+    CHECK(predicate_calls == 0);
+    CHECK(command_result == 0);
+    CHECK(dispatcher->queued() == 9);
+
+    CHECK(dispatcher->pump() == 9);
+    CHECK(text.get() == expected_text);
+    CHECK(flag.get());
+    CHECK(integer.get() == 11);
+    CHECK(i64.get() == -1234567890123LL);
+    CHECK(u64.get() == 12345678901234ULL);
+    CHECK(f32.get() == 1.25f);
+    CHECK(f64.get() == 2.5);
+    CHECK(converted.get() == 42);
+    CHECK(converter_calls == 1);
+    CHECK(predicate_calls == 1);
+    CHECK(command_result == 99);
+}
+
+TEST_CASE("BindingEngine: AlwaysPost queues inbound callbacks and suppresses lossy echoes") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    auto dispatcher = std::make_shared<FakeDispatcher>();
+    BindingEngine engine(adapter, dispatcher, BindingEngine::DispatchPolicy::AlwaysPost);
+    Property<int> scalar(1);
+    Property<double> converted(1.234);
+    int commands = 0;
+    Command<> command([&] { ++commands; });
+    FakeView scalar_view, converted_view, button;
+    engine.bind_int(scalar, scalar_view);
+    engine.bind_text_converted(converted, converted_view, converters::double_to_string(1));
+    engine.bind_command(command, button);
+
+    scalar_view.sig_int.emit(7);
+    FakeAdapter::user_type(converted_view, "4.567");
+    FakeAdapter::user_click(button);
+    CHECK(scalar.get() == 1);
+    CHECK(converted.get() == doctest::Approx(1.234));
+    CHECK(commands == 0);
+    CHECK(dispatcher->queued() == 3);
+
+    // Three inbound tasks and two outbound updates. Setter echoes must
+    // not post additional work after their synchronous guard goes away.
+    CHECK(dispatcher->pump() == 5);
+    CHECK(scalar.get() == 7);
+    CHECK(converted.get() == doctest::Approx(4.567));
+    CHECK(converted_view.text == "4.6");
+    CHECK(commands == 1);
+    CHECK(dispatcher->posted_count() == 5);
+}
+
+TEST_CASE("BindingEngine: worker input during a guarded setter is retained") {
+    auto adapter = std::make_shared<CapturingAdapter>();
+    auto dispatcher = std::make_shared<FakeDispatcher>();
+    BindingEngine engine(adapter, dispatcher, BindingEngine::DispatchPolicy::AlwaysPost);
+    Property<std::string> text("initial");
+    FakeView view;
+    engine.bind_text(text, view);
+    adapter->during_set_text = [&] {
+        // The graph thread's guard is true while this worker delivers
+        // an independent user edit. It must queue without reading it.
+        std::thread worker([callback = adapter->text_callback] {
+            callback("worker edit");
+        });
+        worker.join();
+    };
+
+    text = "model update";
+    CHECK(dispatcher->pump() == 3);
+    CHECK(text.get() == "worker edit");
+    CHECK(view.text == "worker edit");
+}
+
+TEST_CASE("BindingEngine: stale inbound callbacks cannot reach destroyed model objects") {
+    auto adapter = std::make_shared<CapturingAdapter>();
+    auto dispatcher = std::make_shared<FakeDispatcher>();
+    auto engine = std::make_unique<BindingEngine>(
+        adapter, dispatcher, BindingEngine::DispatchPolicy::AlwaysPost);
+    auto view = std::make_unique<FakeView>();
+    auto property = std::make_unique<Property<std::string>>("initial");
+    int commands = 0;
+    auto command = std::make_unique<Command<>>([&] { ++commands; });
+    engine->bind_text(*property, *view);
+    engine->bind_command(*command, *view);
+    const auto old_text = adapter->text_callback;
+    const auto old_click = adapter->click_callback;
+    old_text("queued before teardown");
+    old_click();
+
+    SUBCASE("clear") { engine->clear(); }
+    SUBCASE("view destruction") { view.reset(); }
+    SUBCASE("engine destruction") { engine.reset(); }
+    property.reset();
+    command.reset();
+
+    // Simulate an HTTP worker that copied these callbacks before their
+    // subscriptions were released, then invokes them after teardown.
+    std::thread worker([&] {
+        old_text("delivered after teardown");
+        old_click();
+    });
+    worker.join();
+    CHECK(dispatcher->pump() == 4);
+    CHECK(commands == 0);
+}
+
+TEST_CASE("BindingEngine: clear and rebind gives inbound callbacks a fresh token") {
+    auto adapter = std::make_shared<CapturingAdapter>();
+    auto dispatcher = std::make_shared<FakeDispatcher>();
+    BindingEngine engine(adapter, dispatcher, BindingEngine::DispatchPolicy::AlwaysPost);
+    FakeView view;
+    Property<int> old_value(1), new_value(2);
+    int old_commands = 0;
+    int new_commands = 0;
+    Command<> old_command([&] { ++old_commands; });
+    Command<> new_command([&] { ++new_commands; });
+    engine.bind_text_converted(old_value, view, converters::int_to_string());
+    engine.bind_command(old_command, view);
+    const auto old_text = adapter->text_callback;
+    const auto old_click = adapter->click_callback;
+    old_text("99");
+    old_click();
+    engine.clear();
+
+    engine.bind_text_converted(new_value, view, converters::int_to_string());
+    engine.bind_command(new_command, view);
+    old_text("88");
+    old_click();
+    adapter->text_callback("7");
+    adapter->click_callback();
+    CHECK(dispatcher->pump() == 7); // six inbound tasks, one live outbound update
+    CHECK(old_value.get() == 1);
+    CHECK(new_value.get() == 7);
+    CHECK(old_commands == 0);
+    CHECK(new_commands == 1);
+    CHECK(view.text == "7");
 }
