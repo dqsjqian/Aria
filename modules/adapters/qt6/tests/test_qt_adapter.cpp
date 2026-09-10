@@ -4,6 +4,8 @@
 #include "aria/adapters/qt6/qt_view.hpp"
 
 #include <QCheckBox>
+#include <QComboBox>
+#include "aria/binding/binding_engine.hpp"
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -119,4 +121,19 @@ TEST_CASE("QtAdapter: subscription survives QObject destruction") {
     // Subscription still alive; releasing it must NOT crash.
     sub.release();
     CHECK(hits == 0);
+}
+
+TEST_CASE("QtAdapter: QComboBox already supports text two-way binding") {
+    auto adapter = std::make_shared<QtAdapter>();
+    QComboBox combo;
+    combo.addItems({"A", "B", "C"});
+    QtView view(&combo);
+    Property<std::string> selection("B");
+    binding::BindingEngine engine(adapter);
+    engine.bind_text(selection, view);
+    CHECK(combo.currentText() == "B");
+    selection.set("C");
+    CHECK(combo.currentText() == "C");
+    combo.setCurrentIndex(0);
+    CHECK(selection.get() == "A");
 }
