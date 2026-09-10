@@ -24,8 +24,15 @@ jobs:
       - name: Install ninja
         run: brew install ninja
 
+      - name: Require Node for HTTP SDK tests
+        run: command -v node
+
       - name: Configure (Release)
-        run: cmake -S . -B build/flavors/release -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: |
+          cmake -S . -B build/flavors/release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARIA_BUILD_HTTP=ON \
+            -DARIA_HTTP_ENABLE_TLS=OFF
 
       - name: Build
         run: cmake --build build/flavors/release -j
@@ -150,6 +157,9 @@ jobs:
             qt6-base-dev libqt6widgets6 \
             libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev
 
+      - name: Require Node for HTTP SDK tests
+        run: command -v node
+
       - name: Configure
         env:
           CC: ${{ matrix.cc }}
@@ -157,7 +167,9 @@ jobs:
         run: |
           cmake -S . -B build/flavors/release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DARIA_BUILD_QT6=ON
+            -DARIA_BUILD_QT6=ON \
+            -DARIA_BUILD_HTTP=ON \
+            -DARIA_HTTP_ENABLE_TLS=OFF
 
       - name: Build
         run: cmake --build build/flavors/release -j
@@ -185,7 +197,9 @@ jobs:
         run: |
           cmake -S . -B build/flavors/asan -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DARIA_SANITIZE=asan+ubsan
+            -DARIA_SANITIZE=asan+ubsan \
+            -DARIA_BUILD_HTTP=ON \
+            -DARIA_HTTP_ENABLE_TLS=OFF
 
       - name: Build (sanitized)
         if: matrix.compiler == 'gcc'
