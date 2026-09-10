@@ -72,7 +72,9 @@ struct DelayedResume {
 
 Task<std::optional<int>>
 delayed_receiver(Channel<int>& ch, std::binary_semaphore& resumed, std::binary_semaphore& proceed) {
-    co_return co_await DelayedResume{ch.recv(), resumed, proceed};
+    // Explicit template argument: aggregate CTAD (P1816) is not available on
+    // the CI runners' AppleClang, only on newer local toolchains.
+    co_return co_await DelayedResume<decltype(ch.recv())>{ch.recv(), resumed, proceed};
 }
 
 Task<void>
