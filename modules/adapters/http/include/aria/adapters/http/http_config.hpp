@@ -31,7 +31,8 @@ struct ARIA_HTTP_API HttpAdapterConfig {
     std::string static_root{};
 
     /// Worker thread count for the HTTP server.
-    /// 0 = std::thread::hardware_concurrency().
+    /// 0 = max(2, hardware_concurrency()); explicit counts must be >= 2.
+    /// The pool is fixed; one worker is reserved from SSE admission.
     int worker_threads{0};
 
     /// Heartbeat interval (seconds) for SSE keep-alive pings.
@@ -39,7 +40,8 @@ struct ARIA_HTTP_API HttpAdapterConfig {
     int heartbeat_sec{25};
 
     /// Maximum number of concurrent SSE clients. Excess connections
-    /// receive 503 until existing ones drop. 0 = unlimited.
+    /// receive 503 until existing ones drop. The effective limit is also
+    /// capped at worker_threads - 1. 0 removes only this additional limit.
     int max_sse_clients{64};
 
     /// Enable CORS headers (Access-Control-Allow-Origin: *).

@@ -88,3 +88,19 @@ auto sub = selection.selected().on_changed([](auto& row){ /* ... */ });
   thread-safe fire-and-forget (callbacks run outside the publisher lock).
 - Every observer-adding API returns a `Subscription`. Store it (often in a
   `SubscriptionBag` on the owning ViewModel); dropping it disconnects.
+
+## Unreleased HTTP protocol 2 and callback dispatch
+
+Upgrade the bundled web SDK with the HTTP adapter. Safe 64-bit integers remain
+Numbers; values beyond ±9007199254740991 are decimal strings on the wire and
+BigInt in the SDK. Use bigint or decimal-string setter input for exact values;
+unsafe Number input is rejected. Convert BigInt explicitly when serializing
+with JSON.stringify. New SDKs reject unsafe numeric protocol 1 events rather
+than accepting rounded data.
+
+HTTP worker counts now take effect: use 0 for automatic sizing or an explicit
+count of at least 2. SSE admission is capped at workers minus one even when
+max_sse_clients is 0. Invalid field types/ranges return 400; unknown views return
+404. Configure BindingEngine with the graph dispatcher and SmartMarshal or
+AlwaysPost; inbound Property/Command callbacks now honor this policy and can
+complete after the POST response. See the [HTTP guide](guide/adapters/http.md).

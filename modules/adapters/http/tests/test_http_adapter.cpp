@@ -2,8 +2,8 @@
 /// @brief Smoke tests for HttpAdapter.
 ///
 /// These tests exercise the adapter's registry, shadow state, command,
-/// subscription, and ephemeral-port start/stop contracts. Wire-level REST,
-/// SSE, TLS, and browser-client acceptance lives in AriaTools.
+/// subscription, and ephemeral-port start/stop contracts. REST and SSE
+/// regressions live in test_http_wire.cpp; browser SDK tests run with Node.
 ///
 ///   - Registry: register / find / unregister / list_views
 ///   - Shadow state set/get round-trip
