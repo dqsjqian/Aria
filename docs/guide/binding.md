@@ -351,3 +351,12 @@ engine.bind_text(vm.per_person, input);   // ✗ compile error: not writable
 - [ViewModel →](viewmodel.md) — the VM side of the binding
 - [Reactive Core →](reactive-core.md) — `Property` and `Command` that bindings consume
 - [Lifecycle & Threading →](../reference/lifecycle.md) — thread-affinity and dispatch policies
+
+## Adapter callbacks from worker threads
+
+For HTTP input, construct the engine with the graph owner's dispatcher and
+`BindingEngine::DispatchPolicy::SmartMarshal` (or `AlwaysPost`). These policies
+apply to both binding directions, including converted text and commands.
+`Direct` requires callbacks to already run on the graph thread. Keep binding
+setup, teardown, Property and Command lifetimes on that thread. Posted input
+is discarded if its view binding is cleared or destroyed before delivery.
