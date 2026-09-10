@@ -8,10 +8,70 @@ All notable changes to **aria** are documented here.
 > marks the project's first public release; `1.2.0` in 2026-09 carries
 > documentation and CI-gate work with no API change; `1.2.1` is a
 > maintenance patch (dependency refresh + CI fixes, no API change).
-> This file is a snapshot of *what the framework currently is* plus a
-> rolling **TODO** list of what is still wanted.
+> This file records released changes and work implemented on the current
+> branch under **Unreleased**. Priorities and deferred work live in
+> [the roadmap](docs/ROADMAP.md).
 
 ---
+
+## Unreleased
+
+These changes are implemented on this branch and are not part of the
+published `1.2.1` release. Release validation is tracked separately from
+implementation status.
+
+### Fixed
+
+- BindingEngine marshals scalar, converted-text, and command input from
+  worker threads according to its dispatcher policy. Queued callbacks own
+  their event data and are cancelled on view destruction, engine clear, or
+  engine destruction; synchronous setter echoes remain suppressed.
+- Channel reserves each delivered value for its selected receiver, preventing
+  competing consumers from causing false EOF. Capacity-zero channels support
+  rendezvous in either arrival order, and close preserves accepted values
+  while releasing parked senders and receivers.
+- HTTP replacement of a bound view no longer destroys it under the registry
+  lock. Old teardown cannot erase the replacement's state or subscriptions.
+- HTTP applies `worker_threads` to a fixed pool and atomically limits SSE
+  clients so ordinary REST requests retain execution capacity.
+- SSE connections receive initial values, visibility, and enabled state,
+  including click views, in order with subsequent state updates.
+- HTTP validates request shape, registered view, matching field type, and
+  exact numeric ranges before mutation. Invalid requests return JSON errors.
+- HTTP heartbeat waiting is interruptible. Start/stop operations are
+  serialized, startup waits for listening readiness, and stopping resets the
+  reported port to zero.
+- The browser SDK reflects disconnects, reports successful reconnections,
+  settles pending connection attempts on error/close, ignores stale connection
+  callbacks, and rejects unsuccessful HTTP responses.
+
+### Compatibility
+
+- HTTP protocol 2 preserves 64-bit integer precision. Values in the JS safe
+  integer range remain JSON numbers and SDK `number` values; larger values
+  use decimal strings on the wire and SDK `bigint` values. Setters accept
+  `bigint` and decimal strings but reject unsafe `number` inputs. The server
+  still accepts exact legacy integer JSON tokens within native ranges. The
+  SDK accepts safe protocol 1 numeric events and rejects unsafe numeric
+  events whose precision has already been lost. Consumers handling large
+  integers must account for BigInt when rendering or serializing to JSON.
+- An explicit HTTP worker count must be at least two; zero selects automatic
+  sizing with a minimum of two. Effective SSE capacity cannot exceed
+  `worker_threads - 1` after automatic sizing. A zero SSE-client limit removes
+  only the additional configured cap, not the reserved REST worker.
+
+### Documentation and verification
+
+- Corrected the HTTP guide to use actual routes, request fields, adapter
+  ownership, and the shipped `AriaClient` ESM SDK, with a compiled example.
+- Added framework-owned HTTP/SSE and Node SDK regressions, deterministic
+  Channel interleavings, binding dispatcher/lifetime coverage, and an actual
+  QComboBox text two-way binding test. HTTP and SDK tests are enabled in
+  the Linux Release/sanitizer and macOS Release CI configurations.
+- Condensed the roadmap, corrected the enum text-converter guidance, and
+  separated shipped QComboBox text binding from pending option/selection work.
+  Stable API-reference publication remains pending; CI currently uploads an
+  artifact.
 
 ## 1.2.1 — current snapshot
 
