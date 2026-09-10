@@ -46,10 +46,6 @@ if(NOT ARIA_BUILD_SHARED)
     target_compile_definitions(aria_http PUBLIC ARIA_HTTP_STATIC)
 endif()
 
-target_compile_definitions(aria_http PRIVATE
-    CPPHTTPLIB_THREAD_POOL_COUNT=8
-)
-
 # Optional TLS via OpenSSL — either system-installed (find_package) or
 # built from source by ../../../cmake/BuildOpenSSL.cmake.
 if(ARIA_HTTP_ENABLE_TLS AND TARGET OpenSSL::SSL)

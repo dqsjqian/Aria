@@ -26,7 +26,7 @@
 #
 # It is intentionally conservative — it only checks patterns that are
 # unambiguous API references, and it will not catch wrong argument lists or
-# wrong types. It does catch every defect found in the audit.
+# wrong types. Compiled examples additionally cover argument types and configuration fields.
 #
 # Usage:
 #   scripts/check-docs-api.sh            # scan docs/, exit 1 on any miss
@@ -265,3 +265,20 @@ EOF
 fi
 
 echo "check-docs-api: OK — every fully-qualified aria:: reference in the docs resolves."
+
+# The executable HTTP quick start is a literal source excerpt, not an unchecked
+# fenced fragment. Its compilation/run is gated by the HTTP CTest job.
+if [[ "$docs_dir" == "$repo_root/docs" ]]; then
+    python3 - "$repo_root" <<'PYDOC'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+doc = (root / "docs/guide/adapters/http.md").read_text()
+block = doc.split("<!-- BEGIN COMPILED HTTP EXAMPLE -->", 1)[1].split("<!-- END COMPILED HTTP EXAMPLE -->", 1)[0]
+code = block.split("```cpp\n", 1)[1].rsplit("```", 1)[0]
+expected = (root / "modules/adapters/http/tests/http_guide_example.cpp").read_text()
+if code.strip() != expected.strip():
+    sys.exit("HTTP guide example differs from the compiled CTest source")
+print("check-docs-api: compiled HTTP example is in sync")
+PYDOC
+fi

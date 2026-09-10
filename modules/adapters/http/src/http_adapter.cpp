@@ -19,7 +19,14 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
+#include <charconv>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+#include <tuple>
+#include <type_traits>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -85,6 +92,54 @@ inline std::string sse_frame(const std::string& dump) {
     return out;
 }
 
+// Keep native shadow values exact; only the JSON wire representation changes.
+json wire_value(std::string_view kind, const json& value) {
+    constexpr std::int64_t safe = 9007199254740991LL;
+    if (kind == wire::field_kinds::kInt64 && value.is_number_integer()) {
+        auto n = value.get<std::int64_t>();
+        if (n < -safe || n > safe) return std::to_string(n);
+    }
+    if (kind == wire::field_kinds::kUInt64 && value.is_number_integer()) {
+        auto n = value.get<std::uint64_t>();
+        if (n > static_cast<std::uint64_t>(safe)) return std::to_string(n);
+    }
+    return value;
+}
+
+template<class T>
+T exact_integer(const json& value, bool allow_string = false) {
+    if (allow_string && value.is_string()) {
+        const auto& text = value.get_ref<const std::string&>();
+        T n{};
+        auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), n);
+        if (ec == std::errc{} && end == text.data() + text.size()) return n;
+    } else if (value.is_number_unsigned()) {
+        auto n = value.get<std::uint64_t>();
+        if (n <= static_cast<std::uint64_t>(std::numeric_limits<T>::max()))
+            return static_cast<T>(n);
+    } else if (value.is_number_integer()) {
+        auto n = value.get<std::int64_t>();
+        if constexpr (std::is_unsigned_v<T>) {
+            if (n >= 0 && static_cast<std::uint64_t>(n) <= std::numeric_limits<T>::max())
+                return static_cast<T>(n);
+        } else {
+            if (n >= std::numeric_limits<T>::min() && n <= std::numeric_limits<T>::max())
+                return static_cast<T>(n);
+        }
+    }
+    throw std::invalid_argument("expected an exact integer in range");
+}
+
+template<class T>
+T finite_number(const json& value) {
+    if (!value.is_number()) throw std::invalid_argument("expected a number");
+    double n = value.get<double>();
+    if (!std::isfinite(n) || n < -static_cast<double>(std::numeric_limits<T>::max()) ||
+        n > static_cast<double>(std::numeric_limits<T>::max()))
+        throw std::invalid_argument("number out of range");
+    return static_cast<T>(n);
+}
+
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -109,6 +164,14 @@ struct HttpAdapter::Impl {
     std::atomic<bool> running{false};
     std::atomic<std::uint16_t> bound_port{0};
     bool tls_active = false;
+    std::mutex lifecycle_mu;
+    std::mutex heartbeat_mu;
+    std::condition_variable heartbeat_cv;
+    std::atomic<bool> listener_finished{true};
+    std::atomic<bool> pool_ready{false};
+    std::function<httplib::TaskQueue*()> saved_queue_factory;
+    std::size_t workers = 0;
+    std::size_t sse_capacity = 0;
 
     // View registry.
     mutable std::mutex registry_mu;
@@ -143,7 +206,18 @@ struct HttpAdapter::Impl {
     std::vector<std::shared_ptr<SseClient>> sse_clients;
 
     explicit Impl(HttpAdapterConfig c) : config(std::move(c)) {
+        if (config.worker_threads < 0 || config.worker_threads == 1 ||
+            config.heartbeat_sec <= 0 || config.max_sse_clients < 0)
+            throw std::invalid_argument("invalid HTTP worker, heartbeat or SSE limit");
+        workers = config.worker_threads == 0
+            ? std::max(2u, std::thread::hardware_concurrency())
+            : static_cast<std::size_t>(config.worker_threads);
+        sse_capacity = config.max_sse_clients == 0 ? workers - 1
+            : std::min(workers - 1, static_cast<std::size_t>(config.max_sse_clients));
         construct_server();
+        server().new_task_queue = [count = workers] {
+            return new httplib::ThreadPool(count, count);
+        };
         register_routes();
     }
 
@@ -237,7 +311,7 @@ struct HttpAdapter::Impl {
 
         server().Get(prefix + "/health",
             [](const httplib::Request&, httplib::Response& res) {
-                res.set_content(R"({"ok":true,"protocol":1})",
+                res.set_content(json{{"ok", true}, {"protocol", wire::kProtocolVersion}}.dump(),
                                 "application/json");
             });
 
@@ -286,7 +360,7 @@ struct HttpAdapter::Impl {
             {wire::fields::kType,  wire::event_types::kState},
             {wire::fields::kView,  view_id},
             {wire::fields::kField, std::string(field)},
-            {wire::fields::kValue, value},
+            {wire::fields::kValue, wire_value(field, value)},
         };
         broadcast(env.dump());
     }
@@ -348,52 +422,67 @@ struct HttpAdapter::Impl {
         json out = {
             {"view",  view_id},
             {"kind",  std::string(it->second->kind())},
-            {"value", shadow.count(view_id) ? shadow[view_id] : json{}},
+            {"value", wire_value(it->second->kind(), shadow.count(view_id) ? shadow[view_id] : json{})},
+            {"visible", !shadow_visible.count(view_id) || shadow_visible[view_id]},
+            {"enabled", !shadow_enabled.count(view_id) || shadow_enabled[view_id]},
         };
         res.set_content(out.dump(), "application/json");
     }
 
+    // Caller holds registry_mu: mutation and publication form one ordered commit.
+    template<class T, class Map>
+    std::function<void()> commit_state(const std::string& id, const std::string& field,
+                                       T value, Map& callbacks) {
+        std::vector<typename Map::mapped_type::mapped_type> snapshot;
+        auto it = callbacks.find(id);
+        if (it != callbacks.end())
+            for (auto& [_, cb] : it->second) snapshot.push_back(cb);
+        shadow[id] = value;
+        broadcast_state(id, field, shadow[id]);
+        return [snapshot = std::move(snapshot), value = std::move(value)] {
+            for (auto& cb : snapshot) cb(value);
+        };
+    }
+
     void handle_post_state(const httplib::Request& req,
                            httplib::Response& res) {
-        json body;
-        try { body = json::parse(req.body); }
-        catch (const json::parse_error& e) {
-            send_error(res, 400, std::string("bad json: ") + e.what());
-            return;
-        }
-        if (!body.is_object() ||
-            !body.contains("view") || !body.contains("field") ||
-            !body.contains("value")) {
-            send_error(res, 400, "missing view/field/value");
-            return;
-        }
-        std::string view_id = body["view"].get<std::string>();
-        std::string field = body["field"].get<std::string>();
-        json value = body["value"];
-
+        std::function<void()> notify;
         try {
-            if (field == wire::field_kinds::kText) {
-                fire_text(view_id, value.get<std::string>());
-            } else if (field == wire::field_kinds::kBool) {
-                fire_bool(view_id, value.get<bool>());
-            } else if (field == wire::field_kinds::kInt) {
-                fire_int(view_id, value.get<int>());
-            } else if (field == wire::field_kinds::kInt64) {
-                fire_int64(view_id, value.get<std::int64_t>());
-            } else if (field == wire::field_kinds::kUInt64) {
-                fire_uint64(view_id, value.get<std::uint64_t>());
-            } else if (field == wire::field_kinds::kFloat) {
-                fire_float(view_id, value.get<float>());
-            } else if (field == wire::field_kinds::kDouble) {
-                fire_double(view_id, value.get<double>());
-            } else {
-                send_error(res, 400, "unknown field kind");
+            const auto body = json::parse(req.body);
+            if (!body.is_object() || !body.contains("view") || !body["view"].is_string() ||
+                !body.contains("field") || !body["field"].is_string() || !body.contains("value")) {
+                send_error(res, 400, "expected string view/field and a value");
                 return;
             }
-        } catch (const json::type_error& e) {
-            send_error(res, 400, std::string("type mismatch: ") + e.what());
+            auto id = body["view"].get<std::string>();
+            auto field = body["field"].get<std::string>();
+            const auto& value = body["value"];
+            std::lock_guard<std::mutex> lk(registry_mu);
+            auto view = views.find(id);
+            if (view == views.end()) {
+                send_error(res, 404, "unknown view");
+                return;
+            }
+            if (view->second->kind() != field) {
+                send_error(res, 400, "field does not match view kind");
+                return;
+            }
+            if (field == "text") notify = commit_state(id, field, value.get<std::string>(), on_text);
+            else if (field == "bool") notify = commit_state(id, field, value.get<bool>(), on_bool);
+            else if (field == "int") notify = commit_state(id, field, exact_integer<int>(value), on_int);
+            else if (field == "int64") notify = commit_state(id, field, exact_integer<std::int64_t>(value, true), on_int64);
+            else if (field == "uint64") notify = commit_state(id, field, exact_integer<std::uint64_t>(value, true), on_uint64);
+            else if (field == "float") notify = commit_state(id, field, finite_number<float>(value), on_float);
+            else if (field == "double") notify = commit_state(id, field, finite_number<double>(value), on_double);
+            else { send_error(res, 400, "unknown state field"); return; }
+        } catch (const json::exception& e) {
+            send_error(res, 400, std::string("invalid state: ") + e.what());
+            return;
+        } catch (const std::invalid_argument& e) {
+            send_error(res, 400, e.what());
             return;
         }
+        notify(); // User code runs outside registry/SSE locks.
         res.set_content(R"({"ok":true})", "application/json");
     }
 
@@ -401,11 +490,11 @@ struct HttpAdapter::Impl {
                            httplib::Response& res) {
         json body;
         try { body = json::parse(req.body); }
-        catch (const json::parse_error& e) {
+        catch (const json::exception& e) {
             send_error(res, 400, std::string("bad json: ") + e.what());
             return;
         }
-        if (!body.is_object() || !body.contains("view")) {
+        if (!body.is_object() || !body.contains("view") || !body["view"].is_string()) {
             send_error(res, 400, "missing view");
             return;
         }
@@ -413,6 +502,11 @@ struct HttpAdapter::Impl {
         std::vector<ClickCb> snap;
         {
             std::lock_guard<std::mutex> lk(registry_mu);
+            auto view = views.find(view_id);
+            if (view == views.end()) { send_error(res, 404, "unknown view"); return; }
+            if (view->second->kind() != wire::field_kinds::kClick) {
+                send_error(res, 400, "view is not a click view"); return;
+            }
             auto it = on_click.find(view_id);
             if (it != on_click.end())
                 for (auto& [_, cb] : it->second) snap.push_back(cb);
@@ -426,12 +520,13 @@ struct HttpAdapter::Impl {
                              httplib::Response& res) {
         json body;
         try { body = json::parse(req.body); }
-        catch (const json::parse_error& e) {
+        catch (const json::exception& e) {
             send_error(res, 400, std::string("bad json: ") + e.what());
             return;
         }
         if (!body.is_object() ||
-            !body.contains("view") || !body.contains("command")) {
+            !body.contains("view") || !body["view"].is_string() ||
+            !body.contains("command") || !body["command"].is_string()) {
             send_error(res, 400, "missing view/command");
             return;
         }
@@ -443,6 +538,7 @@ struct HttpAdapter::Impl {
         CommandHandler handler;
         {
             std::lock_guard<std::mutex> lk(registry_mu);
+            if (!views.count(view_id)) { send_error(res, 404, "unknown view"); return; }
             auto it = commands.find({view_id, cmd_name});
             if (it != commands.end()) handler = it->second;
         }
@@ -456,46 +552,30 @@ struct HttpAdapter::Impl {
     }
 
     void handle_sse(const httplib::Request&, httplib::Response& res) {
-        // Capacity check.
+        auto client = std::make_shared<SseClient>();
         {
-            std::lock_guard<std::mutex> lk(sse_mu);
-            if (config.max_sse_clients > 0 &&
-                static_cast<int>(sse_clients.size()) >= config.max_sse_clients) {
+            // Identical order to a state commit: no live event can precede its snapshot.
+            std::lock_guard<std::mutex> registry_lock(registry_mu);
+            std::lock_guard<std::mutex> clients_lock(sse_mu);
+            if (!running || sse_clients.size() >= sse_capacity) {
                 send_error(res, 503, "sse capacity");
                 return;
             }
-        }
-
-        auto client = std::make_shared<SseClient>();
-        {
-            std::lock_guard<std::mutex> lk(sse_mu);
-            sse_clients.push_back(client);
-        }
-
-        // Seed the queue with hello + initial snapshots BEFORE the
-        // streaming loop starts, so the first chunked write delivers
-        // them in one shot.
-        json hello = {
-            {wire::fields::kType, wire::event_types::kHello},
-            {"platform", "http"},
-            {"protocol", wire::kProtocolVersion},
-        };
-        client->push(sse_frame(hello.dump()));
-
-        {
-            std::lock_guard<std::mutex> lk(registry_mu);
+            client->push(sse_frame(json{{"type", "hello"}, {"platform", "http"},
+                                       {"protocol", wire::kProtocolVersion}}.dump()));
             for (auto& [id, view] : views) {
-                std::string_view k = view->kind();
-                if (k == wire::field_kinds::kClick) continue;
-                json env = {
-                    {wire::fields::kType,  wire::event_types::kState},
-                    {wire::fields::kView,  id},
-                    {wire::fields::kField, std::string(k)},
-                    {wire::fields::kValue,
-                        shadow.count(id) ? shadow[id] : json{}},
-                };
-                client->push(sse_frame(env.dump()));
+                auto kind = view->kind();
+                if (kind != wire::field_kinds::kClick) {
+                    client->push(sse_frame(json{{"type", "state"}, {"view", id},
+                        {"field", std::string(kind)},
+                        {"value", wire_value(kind, shadow.count(id) ? shadow[id] : json{})}}.dump()));
+                }
+                client->push(sse_frame(json{{"type", "visibility"}, {"view", id},
+                    {"value", !shadow_visible.count(id) || shadow_visible[id]}}.dump()));
+                client->push(sse_frame(json{{"type", "enabled"}, {"view", id},
+                    {"value", !shadow_enabled.count(id) || shadow_enabled[id]}}.dump()));
             }
+            sse_clients.push_back(client);
         }
 
         // SSE-specific headers.
@@ -548,161 +628,98 @@ struct HttpAdapter::Impl {
                                          std::move(on_complete));
     }
 
-    // ── Shadow-state mutators (post-state path) ────────────────────────
-
-    void fire_text(const std::string& view_id, const std::string& s) {
-        std::vector<TextCb> snap;
-        {
-            std::lock_guard<std::mutex> lk(registry_mu);
-            shadow[view_id] = s;
-            auto it = on_text.find(view_id);
-            if (it != on_text.end())
-                for (auto& [_, cb] : it->second) snap.push_back(cb);
-        }
-        for (auto& cb : snap) cb(s);
-        broadcast_state(view_id, wire::field_kinds::kText, json(s));
-    }
-
-    void fire_bool(const std::string& view_id, bool b) {
-        std::vector<BoolCb> snap;
-        {
-            std::lock_guard<std::mutex> lk(registry_mu);
-            shadow[view_id] = b;
-            auto it = on_bool.find(view_id);
-            if (it != on_bool.end())
-                for (auto& [_, cb] : it->second) snap.push_back(cb);
-        }
-        for (auto& cb : snap) cb(b);
-        broadcast_state(view_id, wire::field_kinds::kBool, json(b));
-    }
-
-    void fire_int(const std::string& view_id, int i) {
-        std::vector<IntCb> snap;
-        {
-            std::lock_guard<std::mutex> lk(registry_mu);
-            shadow[view_id] = i;
-            auto it = on_int.find(view_id);
-            if (it != on_int.end())
-                for (auto& [_, cb] : it->second) snap.push_back(cb);
-        }
-        for (auto& cb : snap) cb(i);
-        broadcast_state(view_id, wire::field_kinds::kInt, json(i));
-    }
-
-    void fire_int64(const std::string& view_id, std::int64_t x) {
-        std::vector<Int64Cb> snap;
-        {
-            std::lock_guard<std::mutex> lk(registry_mu);
-            shadow[view_id] = x;
-            auto it = on_int64.find(view_id);
-            if (it != on_int64.end())
-                for (auto& [_, cb] : it->second) snap.push_back(cb);
-        }
-        for (auto& cb : snap) cb(x);
-        broadcast_state(view_id, wire::field_kinds::kInt64, json(x));
-    }
-
-    void fire_uint64(const std::string& view_id, std::uint64_t x) {
-        std::vector<UInt64Cb> snap;
-        {
-            std::lock_guard<std::mutex> lk(registry_mu);
-            shadow[view_id] = x;
-            auto it = on_uint64.find(view_id);
-            if (it != on_uint64.end())
-                for (auto& [_, cb] : it->second) snap.push_back(cb);
-        }
-        for (auto& cb : snap) cb(x);
-        broadcast_state(view_id, wire::field_kinds::kUInt64, json(x));
-    }
-
-    void fire_float(const std::string& view_id, float f) {
-        std::vector<FloatCb> snap;
-        {
-            std::lock_guard<std::mutex> lk(registry_mu);
-            shadow[view_id] = static_cast<double>(f);
-            auto it = on_float.find(view_id);
-            if (it != on_float.end())
-                for (auto& [_, cb] : it->second) snap.push_back(cb);
-        }
-        for (auto& cb : snap) cb(f);
-        broadcast_state(view_id, wire::field_kinds::kFloat,
-                        json(static_cast<double>(f)));
-    }
-
-    void fire_double(const std::string& view_id, double d) {
-        std::vector<DoubleCb> snap;
-        {
-            std::lock_guard<std::mutex> lk(registry_mu);
-            shadow[view_id] = d;
-            auto it = on_double.find(view_id);
-            if (it != on_double.end())
-                for (auto& [_, cb] : it->second) snap.push_back(cb);
-        }
-        for (auto& cb : snap) cb(d);
-        broadcast_state(view_id, wire::field_kinds::kDouble, json(d));
-    }
-
     // ── Lifecycle ──────────────────────────────────────────────────────
 
     bool start_server() {
-        if (running.exchange(true)) return false;
-
-        // cpp-httplib has two bind APIs with different return types:
-        //   * bind_to_port(host, port)  -> bool   (success/fail)
-        //   * bind_to_any_port(host)    -> int    (the OS-picked port,
-        //                                          or -1 on failure)
-        // The earlier implementation always called bind_to_port and
-        // assigned its bool to an int, which made `actual < 0` dead
-        // and clobbered bound_port to 0/1 — breaking actual_port()
-        // entirely when config.port == 0 (OS pick).
-        std::uint16_t resolved_port = 0;
+        std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mu);
+        if (running) return false;
+        stop_locked(); // Also reap a listener that exited unexpectedly.
+        std::uint16_t resolved_port = config.port;
+        if (!server().is_valid()) return false;
         if (config.port == 0) {
             int picked = server().bind_to_any_port(config.host);
-            if (picked < 0) {
-                running = false;
-                return false;
-            }
+            if (picked < 0) return false;
             resolved_port = static_cast<std::uint16_t>(picked);
-        } else {
-            if (!server().bind_to_port(config.host, config.port)) {
-                running = false;
-                return false;
-            }
-            resolved_port = config.port;
-        }
+        } else if (!server().bind_to_port(config.host, config.port)) return false;
+
         bound_port = resolved_port;
-
-        server_thread = std::thread([this] {
-            server().listen_after_bind();
-        });
-
-        heartbeat_thread = std::thread([this] {
-            while (running) {
-                std::this_thread::sleep_for(
-                    std::chrono::seconds(config.heartbeat_sec));
-                if (!running) break;
-                json env = {{wire::fields::kType, wire::event_types::kPing}};
-                broadcast(env.dump());
-            }
-        });
-
+        running = true;
+        listener_finished = false;
+        pool_ready = false;
+        try {
+            saved_queue_factory = std::move(server().new_task_queue);
+            server().new_task_queue = [this, factory = saved_queue_factory] {
+                auto* queue = factory();
+                if (!queue) throw std::runtime_error("HTTP task queue factory returned null");
+                pool_ready = true;
+                return queue;
+            };
+            server_thread = std::thread([this] {
+                try { server().listen_after_bind(); } catch (...) {}
+                running = false;
+                bound_port = 0;
+                listener_finished = true;
+                heartbeat_cv.notify_all();
+            });
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (!pool_ready && !listener_finished &&
+                   std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (listener_finished || !pool_ready) { stop_locked(); return false; }
+            heartbeat_thread = std::thread([this] {
+                std::unique_lock<std::mutex> lk(heartbeat_mu);
+                while (!heartbeat_cv.wait_for(lk, std::chrono::seconds(config.heartbeat_sec),
+                                               [this] { return !running.load(); })) {
+                    lk.unlock();
+                    broadcast(json{{wire::fields::kType, wire::event_types::kPing}}.dump());
+                    lk.lock();
+                }
+            });
+        } catch (...) { stop_locked(); return false; }
         return true;
     }
 
-    void stop_server() {
-        if (!running.exchange(false)) return;
+    void stop_locked() {
+        {
+            std::lock_guard<std::mutex> lk(heartbeat_mu);
+            running = false;
+        }
+        heartbeat_cv.notify_all();
         server().stop();
-
-        // Close all SSE clients so their content providers return.
         {
             std::lock_guard<std::mutex> lk(sse_mu);
             for (auto& c : sse_clients) c->close();
             sse_clients.clear();
         }
-
-        if (server_thread.joinable())    server_thread.join();
+        if (server_thread.joinable()) server_thread.join();
         if (heartbeat_thread.joinable()) heartbeat_thread.join();
+        if (saved_queue_factory) server().new_task_queue = std::move(saved_queue_factory);
+        pool_ready = false;
+        bound_port = 0;
     }
+
+    void stop_server() {
+        std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mu);
+        stop_locked();
+    }
+
+    // Node handles keep destructors (including on_destroy and callback captures)
+    // out of registry_mu, where they may reenter subscription cleanup.
+    auto retire_view_locked(const std::string& id) {
+        std::vector<decltype(commands)::node_type> retired_commands;
+        for (auto it = commands.begin(); it != commands.end();) {
+            if (it->first.first == id) retired_commands.push_back(commands.extract(it++));
+            else ++it;
+        }
+        shadow.erase(id);
+        shadow_visible.erase(id);
+        shadow_enabled.erase(id);
+        return std::tuple{views.extract(id), on_text.extract(id), on_bool.extract(id),
+            on_int.extract(id), on_int64.extract(id), on_uint64.extract(id),
+            on_float.extract(id), on_double.extract(id), on_click.extract(id),
+            std::move(retired_commands)};
+    }
+
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -735,10 +752,14 @@ std::size_t HttpAdapter::client_count() const noexcept {
 }
 
 HttpView& HttpAdapter::register_view(std::string id, std::string kind) {
-    std::lock_guard<std::mutex> lk(p_->registry_mu);
     auto v = std::make_unique<HttpView>(id, kind);
     HttpView& ref = *v;
-    p_->views[id] = std::move(v);
+    decltype(p_->retire_view_locked(id)) retired;
+    {
+        std::lock_guard<std::mutex> lk(p_->registry_mu);
+        retired = p_->retire_view_locked(id);
+        p_->views.emplace(id, std::move(v));
+    }
     return ref;
 }
 
@@ -749,15 +770,9 @@ HttpView* HttpAdapter::find_view(std::string_view id) noexcept {
 }
 
 void HttpAdapter::unregister_view(std::string_view id) {
-    std::unique_ptr<HttpView> dead;
-    {
-        std::lock_guard<std::mutex> lk(p_->registry_mu);
-        auto it = p_->views.find(std::string(id));
-        if (it != p_->views.end()) {
-            dead = std::move(it->second);
-            p_->views.erase(it);
-        }
-    }
+    std::unique_lock<std::mutex> lk(p_->registry_mu);
+    auto retired = p_->retire_view_locked(std::string(id));
+    lk.unlock();
 }
 
 std::vector<HttpAdapter::ViewInfo> HttpAdapter::list_views() const {
@@ -783,9 +798,8 @@ void HttpAdapter::set_text(binding::IView& v, std::string_view text) {
     {
         std::lock_guard<std::mutex> lk(p_->registry_mu);
         p_->shadow[hv.id()] = std::string(text);
+        p_->broadcast_state(hv.id(), wire::field_kinds::kText, p_->shadow[hv.id()]);
     }
-    p_->broadcast_state(hv.id(), wire::field_kinds::kText,
-                        json(std::string(text)));
 }
 
 std::string HttpAdapter::get_text(binding::IView& v) {
@@ -807,9 +821,12 @@ std::string HttpAdapter::get_text(binding::IView& v) {
     Impl* impl = p_.get();
     std::string view_id = hv.id();
     return ::aria::Subscription([impl, view_id, id]() {
-        std::lock_guard<std::mutex> lk(impl->registry_mu);
+        std::unique_lock<std::mutex> lk(impl->registry_mu);
         auto it = impl->on_text.find(view_id);
-        if (it != impl->on_text.end()) it->second.erase(id);
+        if (it != impl->on_text.end()) {
+            auto retired = it->second.extract(id);
+            lk.unlock();
+        }
     });
 }
 
@@ -820,8 +837,8 @@ void HttpAdapter::set_bool(binding::IView& v, bool value) {
     {
         std::lock_guard<std::mutex> lk(p_->registry_mu);
         p_->shadow[hv.id()] = value;
+        p_->broadcast_state(hv.id(), wire::field_kinds::kBool, json(value));
     }
-    p_->broadcast_state(hv.id(), wire::field_kinds::kBool, json(value));
 }
 
 bool HttpAdapter::get_bool(binding::IView& v) {
@@ -843,9 +860,12 @@ bool HttpAdapter::get_bool(binding::IView& v) {
     Impl* impl = p_.get();
     std::string view_id = hv.id();
     return ::aria::Subscription([impl, view_id, id]() {
-        std::lock_guard<std::mutex> lk(impl->registry_mu);
+        std::unique_lock<std::mutex> lk(impl->registry_mu);
         auto it = impl->on_bool.find(view_id);
-        if (it != impl->on_bool.end()) it->second.erase(id);
+        if (it != impl->on_bool.end()) {
+            auto retired = it->second.extract(id);
+            lk.unlock();
+        }
     });
 }
 
@@ -857,8 +877,8 @@ bool HttpAdapter::get_bool(binding::IView& v) {
         {                                                                      \
             std::lock_guard<std::mutex> lk(p_->registry_mu);                   \
             p_->shadow[hv.id()] = value;                                       \
+            p_->broadcast_state(hv.id(), KindName, json(value));               \
         }                                                                      \
-        p_->broadcast_state(hv.id(), KindName, json(value));                   \
     }                                                                          \
     Type HttpAdapter::get_##Field(binding::IView& v) {                         \
         auto& hv = cast_view(v);                                               \
@@ -879,9 +899,12 @@ bool HttpAdapter::get_bool(binding::IView& v) {
         Impl* impl = p_.get();                                                 \
         std::string view_id = hv.id();                                         \
         return ::aria::Subscription([impl, view_id, id]() {                    \
-            std::lock_guard<std::mutex> lk(impl->registry_mu);                 \
+            std::unique_lock<std::mutex> lk(impl->registry_mu);                \
             auto it = impl->OnMap.find(view_id);                               \
-            if (it != impl->OnMap.end()) it->second.erase(id);                 \
+            if (it != impl->OnMap.end()) {                                     \
+                auto retired = it->second.extract(id);                         \
+                lk.unlock();                                                  \
+            }                                                                 \
         });                                                                    \
     }
 
@@ -902,10 +925,8 @@ ARIA_HTTP_NUMERIC_IMPL(double,        double, wire::field_kinds::kDouble,
 
 void HttpAdapter::set_visible(binding::IView& v, bool visible) {
     auto& hv = cast_view(v);
-    {
-        std::lock_guard<std::mutex> lk(p_->registry_mu);
-        p_->shadow_visible[hv.id()] = visible;
-    }
+    std::lock_guard<std::mutex> lk(p_->registry_mu);
+    p_->shadow_visible[hv.id()] = visible;
     json env = {
         {wire::fields::kType,  wire::event_types::kVisibility},
         {wire::fields::kView,  hv.id()},
@@ -916,10 +937,8 @@ void HttpAdapter::set_visible(binding::IView& v, bool visible) {
 
 void HttpAdapter::set_enabled(binding::IView& v, bool enabled) {
     auto& hv = cast_view(v);
-    {
-        std::lock_guard<std::mutex> lk(p_->registry_mu);
-        p_->shadow_enabled[hv.id()] = enabled;
-    }
+    std::lock_guard<std::mutex> lk(p_->registry_mu);
+    p_->shadow_enabled[hv.id()] = enabled;
     json env = {
         {wire::fields::kType,  wire::event_types::kEnabled},
         {wire::fields::kView,  hv.id()},
@@ -941,9 +960,12 @@ void HttpAdapter::set_enabled(binding::IView& v, bool enabled) {
     Impl* impl = p_.get();
     std::string view_id = hv.id();
     return ::aria::Subscription([impl, view_id, id]() {
-        std::lock_guard<std::mutex> lk(impl->registry_mu);
+        std::unique_lock<std::mutex> lk(impl->registry_mu);
         auto it = impl->on_click.find(view_id);
-        if (it != impl->on_click.end()) it->second.erase(id);
+        if (it != impl->on_click.end()) {
+            auto retired = it->second.extract(id);
+            lk.unlock();
+        }
     });
 }
 
@@ -952,15 +974,19 @@ void HttpAdapter::set_enabled(binding::IView& v, bool enabled) {
 void HttpAdapter::register_command(std::string_view view_id,
                                     std::string_view command_name,
                                     CommandHandler handler) {
-    std::lock_guard<std::mutex> lk(p_->registry_mu);
-    p_->commands[{std::string(view_id), std::string(command_name)}] =
-        std::move(handler);
+    CommandHandler retired;
+    {
+        std::lock_guard<std::mutex> lk(p_->registry_mu);
+        retired = std::exchange(p_->commands[{std::string(view_id), std::string(command_name)}],
+                                std::move(handler));
+    }
 }
 
 void HttpAdapter::unregister_command(std::string_view view_id,
                                       std::string_view command_name) {
-    std::lock_guard<std::mutex> lk(p_->registry_mu);
-    p_->commands.erase({std::string(view_id), std::string(command_name)});
+    std::unique_lock<std::mutex> lk(p_->registry_mu);
+    auto retired = p_->commands.extract({std::string(view_id), std::string(command_name)});
+    lk.unlock();
 }
 
 }  // namespace aria::adapters::http

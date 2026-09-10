@@ -1,6 +1,6 @@
 #pragma once
 /// @file wire_protocol.hpp
-/// @brief Wire protocol v1 for the HTTP adapter.
+/// @brief Wire protocol v2 for the HTTP adapter.
 ///
 /// All payloads are JSON, UTF-8 encoded. The protocol is intentionally
 /// simple — anything that needs to be efficient should use a different
@@ -13,11 +13,11 @@
 ///        ▲                          │
 ///        └────────SSE stream────────┘
 ///
-/// SSE (Server-Sent Events) is used for server→client push. WebSockets
-/// would be marginally better but are not natively supported by the
-/// embedded HTTP server (cpp-httplib v0.18). v2 of the protocol is
-/// planned to add WebSocket as the preferred transport with SSE as
-/// fallback.
+/// SSE (Server-Sent Events) carries server-to-client updates. Protocol 2
+/// preserves int64/uint64 outside JavaScript's safe integer range as decimal
+/// strings, with the same typed field tag. Safe integers remain JSON numbers.
+/// The SDK exposes unsafe values as BigInt; upgrade v1 clients accordingly.
+/// WebSocket transport and list envelopes remain reserved, not implemented.
 ///
 /// # Endpoints
 ///
@@ -35,9 +35,10 @@
 ///
 /// **Server → Client (SSE)** — `data:` lines carry JSON of these shapes:
 ///
-///   {"type":"hello","platform":"http","protocol":1}
-///   {"type":"state","view":"<id>","field":"text|bool|int|double","value":<v>}
+///   {"type":"hello","platform":"http","protocol":2}
+///   {"type":"state","view":"<id>","field":"text|bool|int|int64|uint64|float|double","value":<v>}
 ///   {"type":"event","view":"<id>","field":"click"}
+///   // Reserved for future list adapter support:
 ///   {"type":"list","view":"<id>","op":"insert|remove|replace|reset|move",
 ///                  "index":<n>,"to":<n>,"value":<json>}
 ///   {"type":"visibility","view":"<id>","value":true|false}
@@ -64,7 +65,7 @@
 namespace aria::adapters::http::wire {
 
 /// Protocol version. Incremented on incompatible changes only.
-inline constexpr int kProtocolVersion = 1;
+inline constexpr int kProtocolVersion = 2;
 
 /// Default API path prefix. All endpoints are mounted under this.
 inline constexpr const char* kDefaultApiPrefix = "/aria";

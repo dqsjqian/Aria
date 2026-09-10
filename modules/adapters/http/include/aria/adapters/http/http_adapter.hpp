@@ -21,36 +21,27 @@
 ///    like React/Vue/Svelte can wrap the SDK trivially.
 ///
 /// 3. **Reasonable defaults; safe-by-default.**
-///    Bind to localhost; rate-limit SSE clients; no CORS by default;
+///    Bind to localhost; limit SSE connections; no CORS by default;
 ///    no auth (rely on the network boundary or a reverse proxy). The
 ///    framework's job is to ship a usable adapter, not a production
-///    web server — see `docs/security.md` for hardening guidance.
+///    web server — see `docs/guide/adapters/http.md` for deployment notes.
 ///
-/// # Example
+/// # Usage and threading
 ///
-///   #include <aria/adapters/http/http_adapter.hpp>
-///   #include <aria/binding/binding_engine.hpp>
+/// See docs/guide/adapters/http.md for a compiled complete example.
+/// Construct a shared HttpAdapter and pass it with the graph owner's
+/// dispatcher to BindingEngine using DispatchPolicy::SmartMarshal.
 ///
-///   aria::core::Property<std::string> keyword;
-///   aria::adapters::http::HttpAdapter http;
-///   auto& search = http.register_view("search_keyword", "text");
-///   aria::binding::BindingEngine bind(http);
-///   bind.bind_text(search, keyword);
-///   http.start();   // non-blocking; spawns server thread
-///   // Open http://localhost:9090 in a browser. State now flows in
-///   // both directions.
-///
-/// # Threading
-///
-/// * `register_view`/`unregister_view`/`start`/`stop` are thread-safe.
-/// * IViewAdapter setters (set_text/set_bool/...) may be called from
-///   any thread; they enqueue an SSE broadcast on the server's worker
-///   pool and return without blocking.
-/// * IViewAdapter getters return the current shadow state under a
-///   shared mutex; they are O(log N) in the number of registered views.
-/// * User callbacks (registered via on_text_changed/on_click/...) are
-///   invoked on HTTP server worker threads. If you need to marshal back
-///   to a UI/main thread, wrap the callback with your own dispatcher.
+/// * Registry maps and shadow state are mutex protected. Returned view
+///   pointers/references are not lifetime pins: coordinate replacement,
+///   removal and binding teardown on the graph owner thread.
+/// * Setters enqueue SSE data without waiting for socket writes; getters
+///   copy shadow state under the registry mutex.
+/// * Direct subscriptions and custom command handlers run on HTTP workers.
+///   BindingEngine marshals bound Property/Command callbacks when configured
+///   with a dispatcher. Custom handlers must marshal graph access themselves.
+/// * start/stop are serialized; invoke them from the host lifecycle thread,
+///   outside an HTTP callback (stop joins the worker pool).
 
 #include "aria/abi/export.hpp"
 #include "aria/binding/view_adapter.hpp"
@@ -84,7 +75,7 @@ public:
     // ── Lifecycle ──────────────────────────────────────────────────────
 
     /// Start the HTTP server on a background thread.
-    /// Returns true on success; false if already running or bind failed.
+    /// Returns true after listening readiness; false if already running or startup failed.
     bool start();
 
     /// Stop the server; closes all SSE connections. Idempotent. Safe to

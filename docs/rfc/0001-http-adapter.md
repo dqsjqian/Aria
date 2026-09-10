@@ -2,14 +2,25 @@
 
 | Field | Value |
 |-------|-------|
-| Status | **Accepted** |
+| Status | **Accepted — historical design; see current implementation notes below** |
 | Author | dqsjqian |
 | Created | 2026-06-08 |
 | Module | `modules/adapters/http/` |
 
+## Current implementation notes
+
+This RFC records the original design, not a current API reference. Use the
+[HTTP guide](../guide/adapters/http.md) and its compiled example for integration.
+The current working branch uses protocol 2: unsafe 64-bit integers use decimal
+strings and the SDK exposes BigInt. SSE remains the implemented push transport;
+references below to future WebSockets or list support are proposals. Worker
+capacity, lifecycle, input validation and initial visibility/enablement are
+covered by in-repository HTTP tests. The protocol version is independent of
+the framework's package version.
+
 ## Summary
 
-Add a new platform adapter — **`aria::http::HttpAdapter`** — that
+Add a new platform adapter — **`aria::adapters::http::HttpAdapter`** — that
 exposes Aria ViewModels to a remote browser via a small HTTP/1.1 +
 REST + Server-Sent-Events protocol. The adapter is the "Web sibling"
 of `QtAdapter` / `AppKitAdapter` / `UIKitAdapter`: same `IView` and
