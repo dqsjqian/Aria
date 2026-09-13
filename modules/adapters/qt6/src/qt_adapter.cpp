@@ -101,9 +101,11 @@ struct QtAdapter::Impl : std::enable_shared_from_this<QtAdapter::Impl> {
             // a single bit. Mixing through the magic constant +
             // self-shifts spreads it into the high bits, which the
             // unordered_map's truncation modulo prime then samples.
+            constexpr size_t hash_mix = sizeof(size_t) >= 8
+                ? 0x9e3779b97f4a7c15ULL : 0x9e3779b9ULL;
             size_t h = std::hash<QObject*>{}(key.o);
             h ^= static_cast<size_t>(static_cast<unsigned char>(key.k))
-                 + static_cast<size_t>(0x9e3779b97f4a7c15ULL) + (h << 6) + (h >> 2);
+                 + hash_mix + (h << 6) + (h >> 2);
             return h;
         }
     };

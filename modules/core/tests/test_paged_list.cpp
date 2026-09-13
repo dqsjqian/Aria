@@ -346,7 +346,7 @@ TEST_CASE("PG-3: removing in front of the window pulls the next item in") {
 }
 
 TEST_CASE("PG-3: moves within a full page preserve downstream rows") {
-    for (const auto [from, to] : {
+    for (const auto& [from, to] : {
              std::pair<std::size_t, std::size_t>{3, 0}, {0, 3}, {1, 2}}) {
         CAPTURE(from);
         CAPTURE(to);
@@ -370,7 +370,7 @@ TEST_CASE("PG-3: moves within a full page preserve downstream rows") {
 }
 
 TEST_CASE("PG-3: moves across either page boundary keep downstream in sync") {
-    for (const auto [from, to] : {
+    for (const auto& [from, to] : {
              std::pair<std::size_t, std::size_t>{0, 5}, {5, 0}, {7, 3},
              {3, 7}, {0, 7}, {7, 0}}) {
         CAPTURE(from);

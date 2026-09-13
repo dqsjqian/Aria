@@ -75,6 +75,13 @@ implementation status.
   retain their completion state, and command destruction cancels every
   in-flight invocation token. Executor queue clearing releases captures
   outside locks; extreme delays saturate instead of overflowing.
+- Detached tasks complete through compiler-managed frame destruction,
+  avoiding a final-awaiter use-after-free detected by MSVC AddressSanitizer.
+  Detaching an already-completed task releases its frame without resuming
+  the final suspension point.
+- GCC 13 collection notification helpers use a named default callable;
+  Windows builds avoid width-dependent hash casts and an unnecessary move
+  of grouped-list events.
 - Stateful callable and converter objects retain their identity across
   invocations. Empty function pointers are represented consistently;
   failed callable construction leaves wrappers disengaged.
@@ -132,7 +139,6 @@ implementation status.
 
 - Project descriptions explicitly state C++23 support and retain C++20 as
   the default and minimum; language-mode support is distinct from a baseline upgrade.
-
 - Corrected the HTTP guide to use actual routes, request fields, adapter
   ownership, and the shipped `AriaClient` ESM SDK, with a compiled example.
 - Added framework-owned HTTP/SSE and Node SDK regressions, deterministic

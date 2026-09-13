@@ -69,6 +69,10 @@ aria::async::Task<void> background_work() {
 background_work().start_detached();
 ```
 
+Pass a fresh task to `start_detached()`. An already-completed task is released
+without being resumed; a task still suspended in an asynchronous operation
+must remain under that operation's resumption control.
+
 > **Warning:** Detached tasks have no lifetime guard. Ensure captured references outlive the coroutine.
 
 ---

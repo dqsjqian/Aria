@@ -26,39 +26,28 @@ struct TaskPromiseBase {
     std::coroutine_handle<> continuation;
     std::exception_ptr exception;
 
-    // Detached flag: when set (by Task::start_detached()), the promise's
-    // FinalAwaiter destroys the coroutine frame at final_suspend instead
-    // of transferring control to a `continuation`. This collapses the
-    // older wrapper-coroutine + lambda-IIFE detach mechanism into a
-    // single bit on the promise, and avoids GCC/MinGW codegen edge
-    // cases around immediately-invoked lambda coroutines under -O2.
+    // Detached tasks run through final suspend so the compiler destroys
+    // their frames. Owned tasks remain suspended for their Task/awaiter.
     bool detached = false;
 
     auto initial_suspend() noexcept { return std::suspend_always{}; }
 
     struct FinalAwaiter {
-        bool await_ready() const noexcept { return false; }
+        bool detached;
+
+        bool await_ready() const noexcept { return detached; }
 
         // Templated to accept any coroutine_handle whose promise inherits TaskPromiseBase<T>
         template<typename Promise>
         std::coroutine_handle<> await_suspend(std::coroutine_handle<Promise> h) noexcept {
             TaskPromiseBase<T>& base = h.promise();
-            if (base.detached) {
-                // Self-destroy: the original Task object is gone, no one
-                // is awaiting the result. Any captured exception was
-                // already swallowed by `unhandled_exception` into
-                // `base.exception`; the detached path intentionally
-                // ignores it (matches the legacy wrapper's `catch (...)`).
-                h.destroy();
-                return std::noop_coroutine();
-            }
             return base.continuation ? base.continuation : std::noop_coroutine();
         }
 
         void await_resume() const noexcept {}
     };
 
-    auto final_suspend() noexcept { return FinalAwaiter{}; }
+    auto final_suspend() noexcept { return FinalAwaiter{detached}; }
 
     void unhandled_exception() noexcept { exception = std::current_exception(); }
 };
@@ -116,7 +105,7 @@ public:
     /// IMPORTANT: For a temporary `co_await Task<T>{h}` we must MOVE the
     /// handle into the awaiter, not copy it.  Otherwise the temporary Task's
     /// destructor calls handle.destroy() while the coroutine is still
-    /// executing → UAF.  See cpp20-coroutine-pitfalls #9.
+    /// executing, causing a use-after-free.
     auto operator co_await() && noexcept {
         struct Awaiter {
             handle_type h;
@@ -157,31 +146,24 @@ public:
     /// Start the task and detach it: the coroutine frame stays alive until
     /// the coroutine completes, even after this Task object is destroyed.
     /// The frame is automatically destroyed on completion — no leaks.
+    /// Pass a fresh task or an already-completed task. An asynchronous
+    /// operation must retain control of resuming a task already parked in it.
     ///
-    /// Implementation: we set `promise.detached = true` and resume the
-    /// frame. When the coroutine reaches `final_suspend`, the templated
-    /// `FinalAwaiter::await_suspend` observes the flag and calls
-    /// `h.destroy()` itself, releasing the frame and all of its locals
-    /// (captures, awaiters, etc.) in a single step.
-    ///
-    /// This replaces an earlier wrapper-coroutine + lambda-IIFE design.
-    /// That design was correct on Apple Clang and libc++ but tripped a
-    /// GCC/MinGW UCRT64 codegen edge case (heap corruption on process
-    /// exit) under `-O2 Release`. The flag-based approach has no
-    /// wrapper frame, no awaiter destructor chain to unwind on the
-    /// detach path, and is the canonical "self-destroying coroutine"
-    /// pattern used by `cppcoro::task` and friends.
+    /// Detached final suspension is ready immediately: normal coroutine
+    /// completion releases the frame, including any unobserved result or
+    /// exception. No final awaiter destroys its own frame while returning
+    /// a continuation handle. An already-completed task is just released.
     void start_detached() && {
         if (!handle_) return;
         auto h = std::exchange(handle_, {});
+        if (h.done()) {
+            h.destroy();
+            return;
+        }
         h.promise().detached = true;
-        // Resume the frame. If the body is fully synchronous, this call
-        // will run it to completion; the frame self-destroys inside
-        // `FinalAwaiter::await_suspend` and `h` is dangling on return
-        // (we never touch it again). If the body suspends mid-flight,
-        // this call returns with `h` still alive; whoever resumes the
-        // suspension point later will eventually drive it to
-        // `final_suspend`, which then self-destroys.
+        // Completion may release the frame before resume() returns.
+        // If the body suspends, its eventual resumer drives completion.
+        // Never inspect h after resuming it.
         h.resume();
     }
 
