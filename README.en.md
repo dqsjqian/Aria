@@ -391,11 +391,15 @@ cmake --build build/flavors/release -j && sudo cmake --install build/flavors/rel
 
 ```cmake
 # In your project's CMakeLists.txt:
-find_package(aria 1.0 REQUIRED)
+find_package(aria 2.0 CONFIG REQUIRED)
 add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE aria::aria)
 # or pick individual modules: aria::core / ::async / ::runtime / ::binding
 ```
+
+Installed Linux shared libraries resolve other Aria libraries from their own
+directory. Keep these libraries together; after moving the SDK, configure
+consumers against its new installation path.
 
 **Option B — vendored (no install)**:
 
@@ -674,4 +678,3 @@ Contributions are welcome! Please open an issue first to discuss design changes.
 [简体中文](README.md)
 
 </div>
-

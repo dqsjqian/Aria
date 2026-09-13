@@ -15,6 +15,9 @@ using aria::adapters::qt6::QtDispatcher;
 using namespace std::chrono_literals;
 
 namespace {
+// Give optimizing compilers the heap parent's exact dynamic type.
+class TestParent final : public QObject {};
+
 void pump_qt_dispatcher() {
     QCoreApplication::processEvents();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
@@ -132,7 +135,7 @@ TEST_CASE("QtDispatcher shutdown releases reentrant captures outside the state m
 }
 
 TEST_CASE("QtDispatcher survives context destruction and releases captures") {
-    auto context = std::make_unique<QObject>();
+    auto context = std::make_unique<TestParent>();
     QtDispatcher dispatcher(context.get());
     auto capture = std::make_shared<int>(1);
     dispatcher.post([capture] {});
@@ -146,7 +149,7 @@ TEST_CASE("QtDispatcher survives context destruction and releases captures") {
 
 TEST_CASE("QtDispatcher gates worker posts while the context is destroyed") {
     for (int round = 0; round < 32; ++round) {
-        auto context = std::make_unique<QObject>();
+        auto context = std::make_unique<TestParent>();
         QtDispatcher dispatcher(context.get());
         std::atomic<bool> started{false};
         std::thread producer([&] {

@@ -273,6 +273,22 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
         list(APPEND ARIA_INSTALL_TARGETS aria_adapters_uikit)
     endif()
 
+    # ELF RUNPATH is not inherited by indirect dependencies. Each installed
+    # shared library must resolve its sibling Aria libraries independently,
+    # including after the SDK prefix moves or --as-needed prunes a consumer's
+    # direct dependencies. Preserve any explicitly configured install paths.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        foreach(aria_target IN LISTS ARIA_INSTALL_TARGETS)
+            get_target_property(aria_target_type ${aria_target} TYPE)
+            if(aria_target_type STREQUAL "SHARED_LIBRARY")
+                set_property(TARGET ${aria_target} APPEND PROPERTY
+                    INSTALL_RPATH "$ORIGIN")
+            endif()
+        endforeach()
+        unset(aria_target)
+        unset(aria_target_type)
+    endif()
+
     install(TARGETS ${ARIA_INSTALL_TARGETS}
         EXPORT ariaTargets
         ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
