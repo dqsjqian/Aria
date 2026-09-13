@@ -15,8 +15,7 @@
 #if defined(ARIA_ABI_BUILD)
 #  define ARIA_ABI_API ARIA_EXPORT
 #elif defined(ARIA_ABI_STATIC)
-// ARIA_ABI_STATIC is only defined on Windows (see modules/abi/CMakeLists.txt).
-// It prevents dllimport/dllexport on abi symbols when abi is a static library.
+// Static consumers do not import symbols from a DLL.
 #  define ARIA_ABI_API
 #else
 #  define ARIA_ABI_API ARIA_IMPORT

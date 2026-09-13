@@ -60,12 +60,11 @@ export class AriaClient {
     constructor(baseUrl, opts = {}) {
         this.baseUrl = baseUrl.replace(/\/$/, '');
         this.apiPrefix = opts.apiPrefix || '/aria';
-        // (viewId, field) -> Set<callback>
-        this._stateSubs = new Map();
+        // Separate channels keep IDs such as "item.enabled" unambiguous.
+        this._stateChannels = new Map(['value', 'visibility', 'enabled'].map(field =>
+            [field, { values: new Map(), subscribers: new Map() }]));
         // viewId -> Set<callback>
         this._eventSubs = new Map();
-        // Latest known shadow state, keyed by viewId.
-        this._state = new Map();
         // EventSource instance.
         this._es = null;
         // Connection lifecycle callbacks.
@@ -156,10 +155,11 @@ export class AriaClient {
      * Subscribe to state changes for a view's primary value field.
      * @param {string} viewId
      * @param {(value:any) => void} cb
+     * @param {'value'|'visibility'|'enabled'} [field='value']
      * @returns {() => void}  unsubscribe function
      */
-    subscribe(viewId, cb) {
-        return this._addSub(this._stateSubs, viewId, cb);
+    subscribe(viewId, cb, field = 'value') {
+        return this._addSub(this._stateChannel(field).subscribers, viewId, cb);
     }
 
     /**
@@ -173,8 +173,8 @@ export class AriaClient {
     }
 
     /** Latest known value. Int64/uint64 values outside Number's safe range are BigInt. */
-    getState(viewId) {
-        return this._state.get(viewId);
+    getState(viewId, field = 'value') {
+        return this._stateChannel(field).values.get(viewId);
     }
 
     // ── Outbound (client → server) ──────────────────────────────────────
@@ -257,21 +257,38 @@ export class AriaClient {
     }
 
     _addSub(map, viewId, cb) {
+        if (typeof cb !== 'function') throw new TypeError('subscriber must be a function');
         if (!map.has(viewId)) map.set(viewId, new Set());
-        map.get(viewId).add(cb);
+        const subscribers = map.get(viewId);
+        let active = true;
+        const invoke = (...args) => { if (active) cb(...args); };
+        subscribers.add(invoke);
         return () => {
-            const s = map.get(viewId);
-            if (s) s.delete(cb);
+            if (!active) return;
+            active = false;
+            subscribers.delete(invoke);
+            if (!subscribers.size && map.get(viewId) === subscribers) map.delete(viewId);
         };
+    }
+
+    _stateChannel(field) {
+        const channel = this._stateChannels.get(field);
+        if (!channel) throw new RangeError('state field must be value, visibility or enabled');
+        return channel;
+    }
+
+    _dispatchState(viewId, field, value) {
+        const channel = this._stateChannel(field);
+        channel.values.set(viewId, value);
+        const subscribers = channel.subscribers.get(viewId);
+        if (subscribers) this._notify(subscribers, value);
     }
 
     _dispatch(env) {
         switch (env.type) {
             case 'state': {
                 const value = decodeValue(env.field, env.value);
-                this._state.set(env.view, value);
-                const subs = this._stateSubs.get(env.view);
-                if (subs) this._notify(subs, value);
+                this._dispatchState(env.view, 'value', value);
                 break;
             }
             case 'event': {
@@ -281,13 +298,7 @@ export class AriaClient {
             }
             case 'visibility':
             case 'enabled': {
-                // Mirror as state for convenience; consumers can
-                // subscribe via subscribe(viewId+'.'+type, ...) if they
-                // really need to differentiate.
-                const key = env.view + '.' + env.type;
-                this._state.set(key, env.value);
-                const subs = this._stateSubs.get(key);
-                if (subs) this._notify(subs, env.value);
+                this._dispatchState(env.view, env.type, env.value);
                 break;
             }
             case 'list':

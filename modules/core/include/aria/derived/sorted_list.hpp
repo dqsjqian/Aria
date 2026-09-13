@@ -27,9 +27,8 @@
 //     // sorted sees: Insert(0), Insert(0)   — the prio=2 ends up at index 0.
 //
 //     source->at(0)->set_priority(10);
-//     // if Task::on_changed propagates, sorted sees Move(0, 1)
-//     // (NOT Remove+Insert — Move carries semantic "same object,
-//     //  different position").
+//     // if Task::on_changed propagates, sorted sees Move then ItemChanged
+//     // so downstream views refresh the same object at its new position.
 //
 // Event-translation contract (mandatory; pinned by tests):
 //
@@ -40,13 +39,18 @@
 //     Replace(i, x_new)       d_new == d_old → Replace(d_old, x_new)
 //                             otherwise      → Remove(d_old), Insert(d_new)
 //     ItemChanged(i)          d_new == d_old → ItemChanged(d_old)
-//                             otherwise      → Move(d_old, d_new, x)
-//     Move(from, to)          no derived event — derived ordering is
-//                             purely a function of (comparator,
-//                             source_index). We merely re-index the
-//                             internal d2s / s2d maps so future events
-//                             resolve to the right source slots.
+//                             otherwise      → Move(d_old, d_new, x),
+//                                              ItemChanged(d_new)
+//     Move(from, to)          no event for distinct keys; equivalent keys
+//                             follow the new source order using Moves.
 //     Reset                   Reset
+//
+// Objects may mutate before their notifications arrive, including several
+// distinct objects in one graph batch. Binary-search inputs are validated in
+// O(n); an unordered remainder uses a complete stable permutation repair.
+// Repair emits owning Moves (possibly for unchanged rows) plus the primary
+// content/structural event in replay order. It costs O(n log n + n*m), where
+// m is the number of Moves; ordinary ordered edits remain incremental.
 //
 // set_comparator() reshuffles the derived list against the new
 // comparator and emits a single Reset event (rather than trying to
@@ -56,9 +60,7 @@
 //
 // Stability contract:
 //   Equivalent items (by the comparator) are ordered by ascending
-//   source index. When a source Move changes indices, the derived
-//   positions of already-equivalent items stay put — see the Move
-//   handling above.
+//   source index, including after a source Move changes those indices.
 //
 // Thread-safety:
 //   Same policy as FilteredList: internal `shared_mutex`, source
@@ -95,7 +97,7 @@ public:
     /// the lifetime of the SortedList (or until `set_comparator`).
     /// Owning, heap-free comparator handle (capacity 32 bytes).
     using Comparator = aria::inplace_function<bool(const T&, const T&), 32>;
-    using Signal     = detail::TypedSignal<ListChange<T>>;
+    using Signal     = detail::ListSignal<T>;
 
     SortedList(std::shared_ptr<Source> source,
                Comparator comparator)
@@ -166,12 +168,19 @@ public:
     // computed, but the cost would dominate the re-sort itself and the
     // wider Qt/AppKit adapter ecosystem handles Reset cleanly anyway.
     void set_comparator(Comparator new_comparator) {
+        auto signal = signal_;
+        ListChange<T> reset;
         {
             std::unique_lock lk(state_->m);
             state_->comparator = std::move(new_comparator);
-            rebuild_from_snapshot_unlocked_(*state_, source_->snapshot());
+            std::vector<std::shared_ptr<T>> source_items(state_->items.size());
+            for (std::size_t i = 0; i < state_->items.size(); ++i) {
+                source_items[state_->derived_to_source[i]] = state_->items[i];
+            }
+            rebuild_from_snapshot_unlocked_(*state_, std::move(source_items));
+            reset = ListChange<T>::reset(state_->items);
         }
-        signal_->emit(ListChange<T>{ListChangeKind::Reset, 0, nullptr, 0});
+        signal->emit(std::move(reset));
     }
 
 private:
@@ -216,6 +225,7 @@ private:
             st.source_to_derived[s] = d;
             st.items.push_back(snap[s]);
         }
+        renumber_s2d_(st);
     }
 
     // ── Translation: one source event -> zero or more derived events ──
@@ -229,7 +239,7 @@ private:
         case ListChangeKind::Replace:     handle_replace_(st, sig, src, ch);     return;
         case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, src, ch); return;
         case ListChangeKind::Move:        handle_move_(st, sig, ch);             return;
-        case ListChangeKind::Reset:       handle_reset_(st, sig, src);           return;
+        case ListChangeKind::Reset:       handle_reset_(st, sig, ch);           return;
         }
     }
 
@@ -302,8 +312,10 @@ private:
 
         // Shift all source indices >= src_idx by +1 (the source just
         // grew one slot before/at them).
-        for (auto& s : st.derived_to_source) {
-            if (s >= src_idx) ++s;
+        if (src_idx != st.items.size()) {
+            for (auto& s : st.derived_to_source) {
+                if (s >= src_idx) ++s;
+            }
         }
         st.source_to_derived.insert(st.source_to_derived.begin()
                                     + static_cast<std::ptrdiff_t>(src_idx),
@@ -311,10 +323,10 @@ private:
 
         // Resolve the current shared_ptr from the source. source has
         // already released its own lock by the time emit() runs.
-        auto shared = src.at(src_idx);
+        auto shared = ch.item;
 
-        // Binary-search the sorted position for the new item.
-        const std::size_t d_idx = binary_search_insert_(st, *shared, src_idx);
+        const bool ordered = ordered_unlocked_(st);
+        const std::size_t d_idx = ordered ? binary_search_insert_(st, *shared, src_idx) : st.items.size();
 
         st.derived_to_source.insert(st.derived_to_source.begin()
                                     + static_cast<std::ptrdiff_t>(d_idx),
@@ -325,10 +337,17 @@ private:
 
         // Rebuild s2d from d2s (the insert shifted all derived
         // indices >= d_idx by +1).
-        renumber_s2d_(st);
+        renumber_s2d_(st, d_idx);
 
-        lk.unlock();
-        sig.emit(ListChange<T>{ListChangeKind::Insert, d_idx, ch.item, 0});
+        if (!ordered) {
+            auto moves = reorder_unlocked_(st);
+            moves.insert(moves.begin(), {ListChangeKind::Insert, d_idx, ch.item, 0});
+            lk.unlock();
+            sig.emit_batch(std::move(moves));
+        } else {
+            lk.unlock();
+            sig.emit(ListChange<T>{ListChangeKind::Insert, d_idx, ch.item, 0});
+        }
     }
 
     static void handle_remove_(SharedState& st, Signal& sig,
@@ -352,8 +371,15 @@ private:
         }
         renumber_s2d_(st);
 
-        lk.unlock();
-        sig.emit(ListChange<T>{ListChangeKind::Remove, d_idx, removed.get(), 0});
+        if (!ordered_unlocked_(st)) {
+            auto moves = reorder_unlocked_(st);
+            moves.insert(moves.begin(), {ListChangeKind::Remove, d_idx, removed, 0});
+            lk.unlock();
+            sig.emit_batch(std::move(moves));
+        } else {
+            lk.unlock();
+            sig.emit(ListChange<T>{ListChangeKind::Remove, d_idx, removed, 0});
+        }
     }
 
     static void handle_replace_(SharedState& st, Signal& sig,
@@ -374,6 +400,89 @@ private:
                              /*cross_slot_use_move=*/true);
     }
 
+    // Objects can change before their notifications arrive (graph batches,
+    // shared handles, or reentrant observers). Never binary-search until the
+    // remaining rows have been checked against their current values.
+    static bool ordered_unlocked_(const SharedState& st,
+                                  std::optional<std::size_t> skip = std::nullopt) {
+        std::optional<std::size_t> previous;
+        for (std::size_t d = 0; d < st.items.size(); ++d) {
+            if (skip == d) continue;
+            if (previous) {
+                const auto p = *previous;
+                // Source order resolves equal keys. When source indices are
+                // inverted, the preceding key must be strictly smaller;
+                // otherwise it need only be no greater. One comparison is
+                // enough in either case for a strict weak ordering.
+                if (st.derived_to_source[d] < st.derived_to_source[p]) {
+                    if (!st.comparator(*st.items[p], *st.items[d])) return false;
+                } else if (st.comparator(*st.items[d], *st.items[p])) {
+                    return false;
+                }
+            }
+            previous = d;
+        }
+        return true;
+    }
+
+    // Move one row by shifting its interval once. Unlike a general rotate,
+    // this does not swap shared handles repeatedly around permutation cycles.
+    static void move_row_unlocked_(SharedState& st, std::size_t from, std::size_t to) noexcept {
+        auto item = std::move(st.items[from]);
+        const auto source_index = st.derived_to_source[from];
+        const auto first = static_cast<std::ptrdiff_t>(std::min(from, to));
+        const auto last = static_cast<std::ptrdiff_t>(std::max(from, to));
+        if (from < to) {
+            std::move(st.items.begin() + first + 1, st.items.begin() + last + 1, st.items.begin() + first);
+            std::move(st.derived_to_source.begin() + first + 1, st.derived_to_source.begin() + last + 1,
+                      st.derived_to_source.begin() + first);
+        } else {
+            std::move_backward(st.items.begin() + first, st.items.begin() + last, st.items.begin() + last + 1);
+            std::move_backward(st.derived_to_source.begin() + first, st.derived_to_source.begin() + last,
+                               st.derived_to_source.begin() + last + 1);
+        }
+        st.items[to] = std::move(item);
+        st.derived_to_source[to] = source_index;
+        for (auto d = std::min(from, to); d <= std::max(from, to); ++d)
+            st.source_to_derived[st.derived_to_source[d]] = d;
+    }
+
+    /// General fallback: compute the target permutation and replayable Moves.
+    /// Ordered inputs keep their ordinary single-row incremental path;
+    /// a reorder costs O(n log n + n*m), where m is the emitted Move count.
+    static std::vector<ListChange<T>> reorder_unlocked_(SharedState& st) {
+        auto before = [&](std::size_t a, std::size_t b) {
+            const auto& lhs = *st.items[st.source_to_derived[a]];
+            const auto& rhs = *st.items[st.source_to_derived[b]];
+            if (st.comparator(lhs, rhs)) return true;
+            if (st.comparator(rhs, lhs)) return false;
+            return a < b;
+        };
+        std::vector<ListChange<T>> events;
+        if (std::is_sorted(st.derived_to_source.begin(), st.derived_to_source.end(), before)) return events;
+        auto target = st.derived_to_source;
+        std::sort(target.begin(), target.end(), before);
+        events.reserve(target.size());
+        // Move the farther-displaced end of the interval into place. This
+        // avoids moving a long repeated block one occurrence at a time when
+        // shifting the few intervening rows represents the same permutation.
+        std::size_t first = 0, last = target.size();
+        while (first < last && target[first] == st.derived_to_source[first]) ++first;
+        while (last > first && target[last - 1] == st.derived_to_source[last - 1]) --last;
+        const bool reverse = st.source_to_derived[target[first]] - first <
+                             last - 1 - st.source_to_derived[target[last - 1]];
+        auto place = [&](std::size_t to) {
+            const auto from = st.source_to_derived[target[to]];
+            if (from == to) return;
+            const auto item = st.items[from];
+            events.push_back({ListChangeKind::Move, to, item, from});
+            move_row_unlocked_(st, from, to);
+        };
+        if (reverse) { for (auto i = last; i-- > first;) place(i); }
+        else { for (auto i = first; i < last; ++i) place(i); }
+        return events;
+    }
+
     /// Shared body for Replace / ItemChanged.
     ///
     /// Both events mean "the item at source index `src_i` may now sort
@@ -383,7 +492,7 @@ private:
     ///     place).
     ///   * When the item moves to a different derived slot:
     ///       Replace    → Remove(d_old) + Insert(d_new)   (identity broke)
-    ///       ItemChanged→ Move(d_old, d_new, item)        (same object)
+    ///       ItemChanged→ Move(d_old, d_new, item) + ItemChanged(d_new)
     static void handle_slot_changed_(SharedState& st, Signal& sig,
                                      Source& src,
                                      const ListChange<T>& ch,
@@ -396,10 +505,22 @@ private:
 
         const std::size_t d_old = st.source_to_derived[src_idx];
 
-        // Refresh the shared_ptr for Replace (the source already
-        // dropped its lock before emitting, so at() is safe).
-        auto fresh = new_ptr_from_src ? src.at(src_idx) : st.items[d_old];
+        // Replace carries the new owning handle; ItemChanged keeps identity.
+        auto previous = st.items[d_old];
+        auto fresh = new_ptr_from_src ? ch.item : previous;
         if (new_ptr_from_src) st.items[d_old] = fresh;
+        if (!ordered_unlocked_(st, d_old)) {
+            auto moves = reorder_unlocked_(st);
+            if (new_ptr_from_src) {
+                // Replace the old logical row before replaying the permutation.
+                moves.insert(moves.begin(), {ListChangeKind::Replace, d_old, fresh, 0});
+            } else {
+                moves.push_back({ListChangeKind::ItemChanged, st.source_to_derived[src_idx], fresh, 0});
+            }
+            lk.unlock();
+            sig.emit_batch(std::move(moves));
+            return;
+        }
 
         // Where does the (possibly mutated) item belong now? Skip the
         // old slot in the search so we measure "new position if the
@@ -412,53 +533,29 @@ private:
         if (p_small == d_old) {
             // Item stayed in place — one same-slot event.
             lk.unlock();
-            sig.emit(ListChange<T>{same_slot_kind, d_old, fresh.get(), 0});
+            sig.emit(ListChange<T>{same_slot_kind, d_old, fresh, 0});
             return;
         }
 
-        // The slot moved. Erase from d_old, then insert at p_small
-        // (which already lives in the post-erase coordinate system).
-        auto item = st.items[d_old];
-        st.items.erase(st.items.begin() + static_cast<std::ptrdiff_t>(d_old));
-        st.derived_to_source.erase(
-            st.derived_to_source.begin() + static_cast<std::ptrdiff_t>(d_old));
-
+        // Shift only the affected interval. Erase followed by insert would
+        // shift the unchanged suffix twice and renumber unaffected rows.
         const std::size_t d_insert = p_small;
-        st.items.insert(st.items.begin()
-                        + static_cast<std::ptrdiff_t>(d_insert),
-                        item);
-        st.derived_to_source.insert(
-            st.derived_to_source.begin()
-            + static_cast<std::ptrdiff_t>(d_insert),
-            src_idx);
-
-        renumber_s2d_(st);
+        move_row_unlocked_(st, d_old, d_insert);
 
         lk.unlock();
         if (cross_slot_use_move) {
-            sig.emit(ListChange<T>{ListChangeKind::Move, d_insert,
-                                    fresh.get(), d_old});
+            sig.emit_batch({ListChange<T>{ListChangeKind::Move, d_insert, fresh, d_old},
+                            ListChange<T>{ListChangeKind::ItemChanged, d_insert, fresh, 0}});
         } else {
-            sig.emit(ListChange<T>{ListChangeKind::Remove, d_old,
-                                    fresh.get(), 0});
-            sig.emit(ListChange<T>{ListChangeKind::Insert, d_insert,
-                                    fresh.get(), 0});
+            sig.emit_batch({ListChange<T>{ListChangeKind::Remove, d_old, previous, 0},
+                            ListChange<T>{ListChangeKind::Insert, d_insert, fresh, 0}});
         }
     }
 
-    /// Source Move(from, to) changes source indices but the derived
-    /// ordering is a pure function of (comparator, source_index).
-    /// So the derived layout is unchanged — we only need to repair
-    /// the s2d / d2s index maps to match the new source positions.
-    ///
-    /// Subtlety: the stability tie-breaker uses source index, so a
-    /// Move CAN in principle change the relative order of items
-    /// that compare equivalent. That would be a re-shuffle inside an
-    /// equivalence class. The choice here is to tolerate it — the common case
-    /// (keys are distinct) is untouched, and "Move of an equivalent
-    /// item breaks stability" is an extremely niche contract people
-    /// pay for by using equivalent-but-distinguishable items.
-    static void handle_move_(SharedState& st, Signal& /*sig*/,
+    /// Source Move changes the stability tie-breaker. Distinct keys retain
+    /// their positions; equivalent keys follow the new source order. The
+    /// same repair also handles keys changed before their notifications.
+    static void handle_move_(SharedState& st, Signal& sig,
                              const ListChange<T>& ch) {
         std::unique_lock lk(st.m);
         const std::size_t from = ch.from_index;
@@ -484,22 +581,31 @@ private:
         }
         st.derived_to_source[moved_d] = to;
         renumber_s2d_(st);
+        // A source Move normally changes only source-index metadata. Pending
+        // object-key writes can also have invalidated the visible key order.
+        if (!ordered_unlocked_(st)) {
+            auto moves = reorder_unlocked_(st);
+            lk.unlock();
+            sig.emit_batch(std::move(moves));
+        }
     }
 
     static void handle_reset_(SharedState& st, Signal& sig,
-                              Source& src) {
+                              const ListChange<T>& ch) {
+        ListChange<T> reset;
         {
             std::unique_lock lk(st.m);
-            rebuild_from_snapshot_unlocked_(st, src.snapshot());
+            rebuild_from_snapshot_unlocked_(st, *ch.snapshot);
+            reset = ListChange<T>::reset(st.items);
         }
-        sig.emit(ListChange<T>{ListChangeKind::Reset, 0, nullptr, 0});
+        sig.emit(std::move(reset));
     }
 
     /// Restore the `source_to_derived` inverse mapping from the
     /// authoritative `derived_to_source` after any mutation that
     /// shifted indices.
-    static void renumber_s2d_(SharedState& st) {
-        for (std::size_t d = 0; d < st.derived_to_source.size(); ++d) {
+    static void renumber_s2d_(SharedState& st, std::size_t first = 0) {
+        for (std::size_t d = first; d < st.derived_to_source.size(); ++d) {
             st.source_to_derived[st.derived_to_source[d]] = d;
         }
     }

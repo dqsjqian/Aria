@@ -8,7 +8,9 @@ add_executable(test_qt6
     test_qt_view_for.cpp
     test_qt_demo_patterns.cpp
     test_list_model.cpp
+    test_combo_box_binding.cpp
     test_qt_conformance.cpp
+    test_qt_dispatcher.cpp
 )
 target_link_libraries(test_qt6 PRIVATE
     # aria::qt6 transitively brings in binding/core/... so we only name

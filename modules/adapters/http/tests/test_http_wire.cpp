@@ -7,6 +7,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <future>
 #include <limits>
 #include <mutex>
 #include <queue>
@@ -324,4 +325,135 @@ TEST_CASE("HTTP callback captures can reenter registry during subscription and c
     capture.reset();
     http.unregister_command("v", "c");
     CHECK(destroyed == 3);
+}
+
+TEST_CASE("HTTP state notifications follow commit order and bounded admission") {
+    auto cfg = config();
+    cfg.max_pending_notifications = 1;
+    HttpAdapter http(cfg);
+    auto& view = http.register_view("v", "int");
+    std::promise<void> entered, release;
+    auto entered_future = entered.get_future();
+    auto release_future = release.get_future().share();
+    std::mutex seen_mu;
+    std::vector<int> seen;
+    auto sub = http.on_int_changed(view, [&](int value) {
+        if (value == 1) {
+            entered.set_value();
+            release_future.wait();
+        }
+        std::lock_guard lock(seen_mu);
+        seen.push_back(value);
+    });
+    REQUIRE(http.start());
+    const int port = http.actual_port();
+    int first_status = 0;
+    std::thread first([&] {
+        httplib::Client client("127.0.0.1", port);
+        timeouts(client);
+        auto result = client.Post("/aria/state", R"({"view":"v","field":"int","value":1})", "application/json");
+        if (result) first_status = result->status;
+    });
+    const bool started = entered_future.wait_for(2s) == std::future_status::ready;
+    if (!started) {
+        release.set_value();
+        first.join();
+        REQUIRE(started);
+    }
+    httplib::Client client("127.0.0.1", port);
+    timeouts(client);
+    auto second = client.Post("/aria/state", R"({"view":"v","field":"int","value":2})", "application/json");
+    auto excess = client.Post("/aria/state", R"({"view":"v","field":"int","value":3})", "application/json");
+    const int committed = http.get_int(view);
+    release.set_value();
+    first.join();
+    REQUIRE(second);
+    REQUIRE(excess);
+    CHECK(first_status == 200);
+    CHECK(second->status == 200);
+    CHECK(excess->status == 503);
+    CHECK(committed == 2);
+    CHECK(seen == std::vector<int>{1, 2});
+}
+
+TEST_CASE("HTTP callback identity survives requests and disconnection cancels pending fanout") {
+    HttpAdapter http(config());
+    auto& view = http.register_view("v", "int");
+    std::vector<int> counters;
+    aria::Subscription later;
+    auto first = http.on_int_changed(view, [&, count = 0](int) mutable {
+        counters.push_back(++count);
+        later.release();
+    });
+    int later_calls = 0;
+    later = http.on_int_changed(view, [&](int) { ++later_calls; });
+    auto throwing = http.on_int_changed(view, [](int) { throw std::runtime_error("expected callback failure"); });
+    int final_calls = 0;
+    auto last = http.on_int_changed(view, [&](int) { ++final_calls; });
+    REQUIRE(http.start());
+    httplib::Client client("127.0.0.1", http.actual_port());
+    timeouts(client);
+    for (int i = 1; i <= 2; ++i) {
+        auto result = client.Post("/aria/state",
+            json{{"view", "v"}, {"field", "int"}, {"value", i}}.dump(), "application/json");
+        REQUIRE(result);
+        CHECK(result->status == 200);
+    }
+    http.stop();
+    CHECK(counters == std::vector<int>{1, 2});
+    CHECK(later_calls == 0);
+    CHECK(final_calls == 2);
+}
+
+TEST_CASE("HTTP lifecycle calls from native routes fail promptly") {
+    HttpAdapter http(config());
+    http.native_server().Get("/lifecycle", [&](const httplib::Request&, httplib::Response& response) {
+        int rejected = 0;
+        try { http.stop(); } catch (const std::logic_error&) { ++rejected; }
+        try { http.start(); } catch (const std::logic_error&) { ++rejected; }
+        response.set_content(std::to_string(rejected), "text/plain");
+    });
+    REQUIRE(http.start());
+    httplib::Client client("127.0.0.1", http.actual_port());
+    timeouts(client);
+    auto result = client.Get("/lifecycle");
+    REQUIRE(result);
+    CHECK(result->status == 200);
+    CHECK(result->body == "2");
+    http.stop();
+}
+
+TEST_CASE("HTTP callback can destroy its adapter while native work finishes") {
+    auto http = std::make_unique<HttpAdapter>(config());
+    auto& button = http->register_view("button", "click");
+    std::promise<void> destroyed;
+    auto destroyed_future = destroyed.get_future();
+    auto sub = http->on_click(button, [&] {
+        http.reset();
+        destroyed.set_value();
+    });
+    REQUIRE(http->start());
+    const int port = http->actual_port();
+    httplib::Client client("127.0.0.1", port);
+    timeouts(client);
+    // Shutdown can close the socket before a response; completion is observed
+    // through the callback, independently of that transport race.
+    (void)client.Post("/aria/click", R"({"view":"button"})", "application/json");
+    REQUIRE(destroyed_future.wait_for(2s) == std::future_status::ready);
+    CHECK_FALSE(http);
+}
+
+TEST_CASE("HTTP SSE rejects an initial snapshot larger than the configured buffer") {
+    auto cfg = config();
+    cfg.max_pending_sse_bytes = 128;
+    HttpAdapter http(cfg);
+    auto& view = http.register_view("v", "text");
+    http.set_text(view, std::string(1024, 'x'));
+    REQUIRE(http.start());
+    httplib::Client client("127.0.0.1", http.actual_port());
+    timeouts(client);
+    auto result = client.Get("/aria/stream");
+    REQUIRE(result);
+    CHECK(result->status == 503);
+    CHECK(http.client_count() == 0);
 }

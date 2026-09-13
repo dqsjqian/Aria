@@ -44,8 +44,8 @@
 //     Insert(i, x)            Insert(i, mapper(x))
 //     Remove(i)               Remove(i, old_target.get())
 //     Replace(i, x_new)       Replace(i, mapper(x_new))
-//     ItemChanged(i)          ItemChanged(i, target_ptr)
-//                             (slot unchanged unless remap_on_change was set)
+//     ItemChanged(i)          ItemChanged(i, target_ptr) by default;
+//                             Replace(i, new_target) with remap_on_change
 //     Move(from, to)          Move(from, to, target_ptr)
 //     Reset                   Reset (fully rebuilt from the post-reset
 //                             source snapshot)
@@ -83,7 +83,7 @@ public:
     using value_type = Target;
     /// Owning, heap-free mapper handle (capacity 32 bytes).
     using Mapper = aria::inplace_function<std::shared_ptr<Target>(const Source&), 32>;
-    using Signal = detail::TypedSignal<ListChange<Target>>;
+    using Signal = detail::ListSignal<Target>;
 
     /// Construct a MappedList.
     ///
@@ -176,7 +176,7 @@ private:
         case ListChangeKind::Replace:     handle_replace_(st, sig, src, ch);     return;
         case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, src, ch);return;
         case ListChangeKind::Move:        handle_move_(st, sig, ch);             return;
-        case ListChangeKind::Reset:       handle_reset_(st, sig, src);           return;
+        case ListChangeKind::Reset:       handle_reset_(st, sig, ch);           return;
         }
     }
 
@@ -187,12 +187,12 @@ private:
         {
             std::unique_lock lk(st.m);
             const std::size_t idx = ch.index;
-            auto shared_src = src.at(idx);
+            auto shared_src = ch.item;
             t = st.mapper(*shared_src);
             st.targets.insert(st.targets.begin()
                               + static_cast<std::ptrdiff_t>(idx), t);
         }
-        sig.emit(ListChange<Target>{ListChangeKind::Insert, ch.index, t.get(), 0});
+        sig.emit(ListChange<Target>{ListChangeKind::Insert, ch.index, t, 0});
     }
 
     static void handle_remove_(SharedState& st, Signal& sig,
@@ -207,7 +207,7 @@ private:
                              + static_cast<std::ptrdiff_t>(idx));
         }
         sig.emit(ListChange<Target>{ListChangeKind::Remove, ch.index,
-                                     removed.get(), 0});
+                                     removed, 0});
     }
 
     static void handle_replace_(SharedState& st, Signal& sig,
@@ -218,14 +218,14 @@ private:
             std::unique_lock lk(st.m);
             const std::size_t idx = ch.index;
             if (idx >= st.targets.size()) return;
-            auto shared_new = src.at(idx);
+            auto shared_new = ch.item;
             t = st.mapper(*shared_new);
             // Overwriting st.targets[idx] drops the old Target; any
             // external shared_ptr keeps it alive.
             st.targets[idx] = t;
         }
         sig.emit(ListChange<Target>{ListChangeKind::Replace, ch.index,
-                                     t.get(), 0});
+                                     t, 0});
     }
 
     static void handle_item_changed_(SharedState& st, Signal& sig,
@@ -238,7 +238,7 @@ private:
             if (idx >= st.targets.size()) return;
 
             if (st.remap_on_change) {
-                auto shared_new = src.at(idx);
+                auto shared_new = ch.item;
                 t = st.mapper(*shared_new);
                 st.targets[idx] = t;
             } else {
@@ -248,8 +248,9 @@ private:
                 t = st.targets[idx];
             }
         }
-        sig.emit(ListChange<Target>{ListChangeKind::ItemChanged,
-                                     ch.index, t.get(), 0});
+        sig.emit(ListChange<Target>{st.remap_on_change ? ListChangeKind::Replace
+                                                     : ListChangeKind::ItemChanged,
+                                     ch.index, t, 0});
     }
 
     static void handle_move_(SharedState& st, Signal& sig,
@@ -269,21 +270,23 @@ private:
                               + static_cast<std::ptrdiff_t>(to), moved);
         }
         sig.emit(ListChange<Target>{ListChangeKind::Move, ch.index,
-                                     moved.get(), ch.from_index});
+                                     moved, ch.from_index});
     }
 
     static void handle_reset_(SharedState& st, Signal& sig,
-                              SourceList& src) {
+                              const ListChange<Source>& ch) {
+        ListChange<Target> reset;
         {
             std::unique_lock lk(st.m);
             st.targets.clear();
-            auto snap = src.snapshot();
+            const auto& snap = *ch.snapshot;
             st.targets.reserve(snap.size());
             for (const auto& s : snap) {
                 st.targets.push_back(st.mapper(*s));
             }
+            reset = ListChange<Target>::reset(st.targets);
         }
-        sig.emit(ListChange<Target>{ListChangeKind::Reset, 0, nullptr, 0});
+        sig.emit(std::move(reset));
     }
 };
 

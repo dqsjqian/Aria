@@ -9,12 +9,17 @@
 
 #include <functional>
 #include <initializer_list>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace aria {
+
+namespace async {
+template<class T> class AsyncValidator;
+}
 
 // ---------------------------------------------------------------------------
 //  ValidationResult -- legacy "valid + errors" projection
@@ -153,6 +158,12 @@ public:
         });
     }
 
+    ~Validator() {
+        // Async drivers must stop using this object before any member starts
+        // destruction. Synchronous-only validators never allocate this token.
+        lifetime_.reset();
+    }
+
     [[nodiscard]] const std::string& field_path() const noexcept {
         return field_path_;
     }
@@ -287,6 +298,15 @@ public:
         finish_pending_();
     }
 
+    /// Cancel pending work while preserving the previous validation result,
+    /// including async errors and warnings. Cancellation is not a new result.
+    void cancel_pending() {
+        if (!state_.peek_ref().pending) return;
+        auto s = state_.peek_ref();
+        s.pending = false;
+        state_.set(std::move(s));
+    }
+
     // ── Accessors ─────────────────────────────────────────────────────
 
     [[nodiscard]] Property<ValidationState>& state() noexcept { return state_; }
@@ -296,6 +316,13 @@ public:
     [[nodiscard]] const Property<ValidationResult>& result() const noexcept { return result_; }
 
 private:
+    template<class U> friend class async::AsyncValidator;
+
+    std::weak_ptr<void> lifetime_token_() {
+        if (!lifetime_) lifetime_ = std::make_shared<char>();
+        return lifetime_;
+    }
+
     struct RuleEntry {
         Rule        body;
         std::string rule_id;
@@ -345,23 +372,6 @@ private:
                     });
             }
         }
-        for (const auto& e : async_errors_) {
-            // Backfill field_path / kind / source defaults so the
-            // resulting Error is well-formed regardless of how the
-            // caller constructed it.
-            Error fixed = e;
-            if (fixed.kind != ErrorKind::Validation) {
-                fixed.kind = ErrorKind::Validation;
-            }
-            if (fixed.key.field_path.empty()) {
-                fixed.key.field_path = field_path_;
-            }
-            if (fixed.source.empty()) {
-                fixed.source = "Validator";
-            }
-            s.errors.push_back(std::move(fixed));
-        }
-
         s.warnings.clear();
         for (auto& entry : warnings_) {
             if (auto msg = entry.body(v)) {
@@ -384,6 +394,17 @@ private:
                         std::string{},
                     });
             }
+        }
+
+        for (const auto& e : async_errors_) {
+            // Preserve severity while backfilling the owning field and
+            // validation defaults for both failures and soft advisories.
+            Error fixed = e;
+            fixed.kind = ErrorKind::Validation;
+            if (fixed.key.field_path.empty()) fixed.key.field_path = field_path_;
+            if (fixed.source.empty()) fixed.source = "Validator";
+            if (fixed.is_warning()) s.warnings.push_back(std::move(fixed));
+            else s.errors.push_back(std::move(fixed));
         }
 
         s.valid = s.errors.empty();
@@ -412,6 +433,7 @@ private:
     Subscription                sub_;
     std::size_t                 auto_id_counter_ = 0;
     bool                        suspend_ = false;
+    std::shared_ptr<void>        lifetime_;
 };
 
 }  // namespace aria

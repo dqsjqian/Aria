@@ -147,8 +147,8 @@ TEST_CASE("Signal: moved-from instance is a safe no-op (B6)") {
 }
 
 TEST_CASE("Version constants are sane") {
-    CHECK(version_major == 1);
-    CHECK(abi_version == 1);
+    CHECK(version_major == 2);
+    CHECK(abi_version == 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -168,4 +168,63 @@ TEST_CASE("Runtime ABI version agrees with the headers") {
     REQUIRE(runtime_version_string() != nullptr);
     CHECK(std::string_view{runtime_version_string()} ==
           std::string_view{version_string});
+}
+
+#include "aria/abi/slot_factory.hpp"
+
+TEST_CASE("Signal: disconnect skips later callbacks in the active emission") {
+    SignalErased signal;
+    int calls = 0;
+    SlotId second;
+    signal.connect(make_slot_erased([&](void*) { signal.disconnect(second); }));
+    second = signal.connect(make_slot_erased([&](void*) { ++calls; }));
+    signal.emit(nullptr);
+    CHECK(calls == 0);
+}
+
+TEST_CASE("Signal: disconnection destroys user captures outside the lock") {
+    SignalErased signal;
+    bool released = false;
+    auto capture = std::shared_ptr<int>(new int, [&](int* value) {
+        delete value;
+        CHECK(signal.slot_count() == 0);
+        released = true;
+    });
+    auto id = signal.connect(make_slot_erased([capture = std::move(capture)](void*) {}));
+    SUBCASE("direct") { signal.disconnect(id); }
+    SUBCASE("weak") { SignalErased::disconnect_via_weak(signal.weak_handle(), id); }
+    SUBCASE("clear") { signal.clear(); }
+    CHECK(released);
+}
+
+TEST_CASE("Signal: destruction invalidates the rest of an active emission") {
+    auto signal = std::make_unique<SignalErased>();
+    int calls = 0;
+    signal->connect(make_slot_erased([&](void*) { signal.reset(); }));
+    signal->connect(make_slot_erased([&](void*) { ++calls; }));
+    signal->emit(nullptr);
+    CHECK_FALSE(signal);
+    CHECK(calls == 0);
+}
+
+TEST_CASE("Signal: capture teardown may query and reconnect during destruction") {
+    auto signal = std::make_unique<SignalErased>();
+    auto* raw = signal.get();
+    bool released = false;
+    auto capture = std::shared_ptr<int>(new int, [&](int* value) {
+        delete value;
+        CHECK(raw->slot_count() == 0);
+        CHECK_FALSE(raw->connect(make_slot_erased([](void*) {})).valid());
+        released = true;
+    });
+    signal->connect(make_slot_erased([capture = std::move(capture)](void*) {}));
+    signal.reset();
+    CHECK(released);
+}
+
+TEST_CASE("Slot: a stateless invoker accepts null state") {
+    SlotErased slot{[](void*, void* args) noexcept { ++*static_cast<int*>(args); }, nullptr, nullptr};
+    int calls = 0;
+    slot.invoke(&calls);
+    CHECK(calls == 1);
 }

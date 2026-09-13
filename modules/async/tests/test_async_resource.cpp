@@ -424,3 +424,40 @@ TEST_CASE("Loadable: Refreshing state surfaces while a refresh is in flight") {
     ui.drain_all();
     CHECK(r.loadable.get().is_success());
 }
+
+TEST_CASE("AsyncResource: clear drops a completed fetch queued for UI write-back") {
+    MainThreadExecutor ui;
+    InlineExecutor worker;
+    FetchCounter counter;
+    AsyncResource<std::string, int> resource{ui, worker,
+        [&](int id) { return fetch_user_impl(id, counter); }};
+    resource.fetch(1);
+    ui.run_one();
+    REQUIRE(counter.hits == 1);
+    resource.clear();
+    ui.drain();
+    CHECK_FALSE(resource.has_data());
+    CHECK_FALSE(resource.is_loading.get());
+    resource.fetch(1);
+    ui.drain();
+    CHECK(resource.data.get() == std::optional<std::string>{"user#1"});
+    CHECK(counter.hits == 2);
+}
+
+TEST_CASE("AsyncResource: destruction drops already queued UI write-back") {
+    MainThreadExecutor ui;
+    InlineExecutor worker;
+    FetchCounter counter;
+    auto resource = std::make_unique<AsyncResource<std::string, int>>(ui, worker,
+        [&](int id) { return fetch_user_impl(id, counter); });
+    int writes = 0;
+    auto subscription = resource->data.on_changed([&](const std::optional<std::string>&) {
+        ++writes;
+    });
+    resource->fetch(1);
+    ui.run_one();
+    REQUIRE(counter.hits == 1);
+    resource.reset();
+    ui.drain();
+    CHECK(writes == 0);
+}

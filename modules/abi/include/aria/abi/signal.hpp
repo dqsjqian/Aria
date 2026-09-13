@@ -29,7 +29,8 @@ public:
     /// Add a slot. Returns its id (used for disconnection).
     SlotId connect(SlotErased slot);
 
-    /// Disconnect by id. Safe to call after the signal is destroyed.
+    /// Disconnect by id. Later callbacks in an active emission are skipped.
+    /// A callback already executing on another thread may finish.
     void disconnect(SlotId id) noexcept;
 
     /// Emit to all slots. The args pointer is passed to each slot's invoker.
@@ -39,7 +40,7 @@ public:
     /// Number of currently connected slots.
     [[nodiscard]] std::size_t slot_count() const noexcept;
 
-    /// Drop all slots.
+    /// Drop all slots, releasing captures outside the signal lock.
     void clear() noexcept;
 
     // ── Internal: weak control-block handle (used for safe disconnect) ──
@@ -54,11 +55,7 @@ public:
         SlotId id) noexcept;
 
 private:
-    struct Impl;
-    // RAII pImpl. The shared_ptr<ControlBlock> lives inside Impl
-    // (signal.cpp). A moved-from SignalErased has `impl_ == nullptr`; every
-    // public method null-checks and degrades to a safe no-op (see .cpp).
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<ControlBlock> cb_;
 };
 
 }  // namespace aria::abi

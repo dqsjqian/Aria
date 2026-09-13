@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <queue>
+#include <stdexcept>
 #include <vector>
 
 using namespace aria;
@@ -32,6 +33,19 @@ struct FakeTimer : public IDelayedScheduler {
         }
         q.swap(still_pending);
     }
+};
+
+struct ThrowOnceValue {
+    int value = 0;
+    static inline bool reject_copy = false;
+    explicit ThrowOnceValue(int v = 0) : value(v) {}
+    ThrowOnceValue(const ThrowOnceValue& other) : value(other.value) {
+        if (std::exchange(reject_copy, false)) throw std::runtime_error("value copy failed");
+    }
+    ThrowOnceValue(ThrowOnceValue&&) noexcept = default;
+    ThrowOnceValue& operator=(const ThrowOnceValue&) = default;
+    ThrowOnceValue& operator=(ThrowOnceValue&&) noexcept = default;
+    bool operator==(const ThrowOnceValue&) const = default;
 };
 
 }  // namespace
@@ -251,4 +265,92 @@ TEST_CASE("combine_latest: tears down both upstreams when dropped") {
     a = 99;
     b = 99;
     CHECK(hits == 2);
+}
+
+TEST_CASE("throttle resumes after its scheduler rejects a timer") {
+    struct RejectOnce : FakeTimer {
+        bool reject = true;
+        void post_after(std::chrono::milliseconds delay, std::function<void()> fn) override {
+            if (std::exchange(reject, false)) throw std::runtime_error("timer rejected");
+            FakeTimer::post_after(delay, std::move(fn));
+        }
+    } timer;
+    Property<int> source{0};
+    auto limited = throttle(source, 20ms, timer);
+    CHECK_THROWS_AS(source = 1, std::runtime_error);
+    CHECK(limited->get() == 1);
+    source = 2;
+    CHECK(limited->get() == 2);
+    source = 3;
+    CHECK(limited->get() == 2);
+    timer.advance(20ms);
+    source = 4;
+    CHECK(limited->get() == 4);
+}
+
+TEST_CASE("throttle resumes after a downstream observer throws") {
+    FakeTimer timer;
+    Property<int> source{0};
+    auto limited = throttle(source, 20ms, timer);
+    bool throw_once = true;
+    auto sub = limited->on_changed([&](int) {
+        if (std::exchange(throw_once, false)) throw std::runtime_error("observer failed");
+    });
+    CHECK_THROWS_AS(source = 1, std::runtime_error);
+    CHECK(limited->get() == 1);
+    source = 2;
+    CHECK(limited->get() == 1); // The accepted cooldown survives downstream failure.
+    timer.advance(20ms);
+    source = 3;
+    CHECK(limited->get() == 3);
+}
+
+TEST_CASE("throttle resumes when copying a value to its output fails") {
+    FakeTimer timer;
+    Property<ThrowOnceValue> source{ThrowOnceValue{0}};
+    auto arm = source.on_changed([](const ThrowOnceValue& v) {
+        if (v.value == 1) ThrowOnceValue::reject_copy = true;
+    });
+    auto limited = throttle(source, 20ms, timer);
+    CHECK_THROWS_AS(source = ThrowOnceValue{1}, std::runtime_error);
+    CHECK(limited->get().value == 0);
+    source = ThrowOnceValue{2};
+    CHECK(limited->get().value == 2);
+    timer.advance(20ms);
+    source = ThrowOnceValue{3};
+    CHECK(limited->get().value == 3);
+}
+
+TEST_CASE("scan retains a mutable move-only reducer across source changes") {
+    Property<int> source{0};
+    auto total = scan(source, 0, [calls = std::make_unique<int>(0)](int acc, int v) mutable {
+        return acc + v + ++*calls;
+    });
+    source = 1;
+    CHECK(total->get() == 2);
+    source = 2;
+    CHECK(total->get() == 6);
+}
+
+TEST_CASE("combine_latest initializes and retains a mutable move-only combiner") {
+    Property<int> a{1}, b{2};
+    auto combined = combine_latest(a, b, [calls = std::make_unique<int>(0)](int x, int y) mutable {
+        return x + y + ++*calls;
+    });
+    CHECK(combined->get() == 4);
+    a = 3;
+    CHECK(combined->get() == 7);
+    b = 4;
+    CHECK(combined->get() == 10);
+}
+
+TEST_CASE("combine_latest invokes its combiner as a retained lvalue") {
+    struct Combine {
+        int operator()(const int& a, const int& b) & { return a + b; }
+    };
+    Property<int> a{1}, b{2};
+    auto sum = combine_latest(a, b, Combine{});
+    CHECK(sum->get() == 3);
+    a = 5;
+    CHECK(sum->get() == 7);
 }

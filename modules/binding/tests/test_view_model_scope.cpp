@@ -12,15 +12,10 @@ using namespace std::chrono_literals;
 
 namespace {
 
-// Free-function coroutine bodies (lambda captures + coroutines = dangling).
-Task<void> poll_loop(CancellationToken tok,
-                     VirtualTimeExecutor& vt,
-                     int& tick_count) {
-    while (!tok.is_cancelled()) {
-        co_await schedule_after(vt, 100ms);
-        tok.throw_if_cancelled();
-        ++tick_count;
-    }
+// Cancellation-aware suspension proves teardown drains before returning.
+Task<void> wait_for_scope_cancel(CancellationToken tok, bool& exited) {
+    co_await tok;
+    exited = true;
 }
 
 }  // namespace
@@ -63,45 +58,45 @@ TEST_CASE("CancellationSource auto-cancels on destruction") {
 }
 
 TEST_CASE("CoroutineScope cancels in-flight coroutines on destroy") {
-    VirtualTimeExecutor vt;
-    int ticks = 0;
+    bool exited = false;
     {
         CoroutineScope scope;
-        scope.launch([&vt, &ticks](CancellationToken tok) {
-            return poll_loop(tok, vt, ticks);
-        });
-
-        vt.advance_by(100ms);  // tick 1
-        vt.advance_by(100ms);  // tick 2
-        vt.advance_by(100ms);  // tick 3
-        CHECK(ticks == 3);
-    }   // <-- scope dtor cancels
-
-    // Even if more virtual time advances, no new ticks.
-    vt.advance_by(500ms);
-    CHECK(ticks == 3);
+        scope.launch([&](CancellationToken tok) { return wait_for_scope_cancel(tok, exited); });
+        CHECK_FALSE(exited);
+    }
+    CHECK(exited);
 }
 
 TEST_CASE("ViewModelScope: VM destruction cancels coroutines") {
-    VirtualTimeExecutor vt;
-    int ticks = 0;
-
+    bool exited = false;
     struct PollerVm : ViewModel {
         ViewModelScope scope;
         PollerVm() { scope.attach(*this); }
     };
-
     {
         auto vm = std::make_shared<PollerVm>();
-        vm->scope.launch([&vt, &ticks](CancellationToken tok) {
-            return poll_loop(tok, vt, ticks);
-        });
+        vm->scope.launch([&](CancellationToken tok) { return wait_for_scope_cancel(tok, exited); });
+        CHECK_FALSE(exited);
+    }
+    CHECK(exited);
+}
 
-        vt.advance_by(100ms);
-        vt.advance_by(100ms);
-        CHECK(ticks == 2);
-    }   // vm dtor → add_destroy_hook fires → scope.cancel()
-
-    vt.advance_by(500ms);
-    CHECK(ticks == 2);
+TEST_CASE("ViewModelScope: cancellation precedes earlier declared VM members") {
+    bool resource_destroyed = false;
+    bool cancelled_while_alive = false;
+    struct Resource {
+        bool& destroyed;
+        ~Resource() { destroyed = true; }
+    };
+    struct ScopedVm : ViewModel {
+        Resource resource;
+        ViewModelScope scope; // Declared last, therefore cancelled first.
+        explicit ScopedVm(bool& destroyed) : resource{destroyed} { scope.attach(*this); }
+    };
+    {
+        ScopedVm vm(resource_destroyed);
+        vm.scope.token().on_cancel([&] { cancelled_while_alive = !resource_destroyed; });
+    }
+    CHECK(resource_destroyed);
+    CHECK(cancelled_while_alive);
 }

@@ -9,6 +9,7 @@
 #import "aria/adapters/uikit/UIKitTableSource.hpp"
 
 #include "aria/abi/signal.hpp"
+#include "aria/callback_boundary.hpp"
 #include "aria/abi/slot_factory.hpp"
 #include "aria/binding/detail/numeric_saturate.hpp"
 #include "aria/runtime/logger.hpp"
@@ -18,11 +19,41 @@
 #import <objc/runtime.h>
 
 #include <memory>
+#include <cmath>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
-#include <cstring>
+
+namespace {
+int native_int_(double value) noexcept {
+    if (std::isnan(value)) return 0;
+    if (value >= static_cast<double>(std::numeric_limits<int>::max())) return std::numeric_limits<int>::max();
+    if (value <= static_cast<double>(std::numeric_limits<int>::min())) return std::numeric_limits<int>::min();
+    return static_cast<int>(value);
+}
+
+template<class Fn, class... Args>
+void native_callback_(const Fn& callback, Args&&... args) noexcept {
+    try {
+        auto snapshot = callback; // Keep captures alive if the native target is destroyed.
+        if (snapshot) snapshot(std::forward<Args>(args)...);
+    } catch (...) {
+        ::aria::report_callback_failure("uikit.callback", std::current_exception());
+    }
+}
+template<class Result, class Fn, class... Args>
+Result native_result_(const Fn& callback, Result fallback, Args&&... args) noexcept {
+    try {
+        auto snapshot = callback;
+        return snapshot ? snapshot(std::forward<Args>(args)...) : fallback;
+    } catch (...) {
+        ::aria::report_callback_failure("uikit.datasource", std::current_exception());
+        return fallback;
+    }
+}
+} // namespace
 
 // ═══════════════════════════════════════════════════════════════════════
 //  ObjC bridging targets
@@ -37,14 +68,14 @@
 }
 - (void)fire:(id)sender {
     (void)sender;
-    if (_cb) _cb();
+    native_callback_(_cb);
 }
 // Backwards-compat: legacy examples (demo3 RootViewController) wired
 // `[btn addTarget:wrapper action:@selector(fire) ...]`. Keep that
 // zero-arg selector working so existing example code does not crash
 // with `unrecognized selector`.
 - (void)fire {
-    if (_cb) _cb();
+    native_callback_(_cb);
 }
 @end
 
@@ -57,7 +88,7 @@
 }
 - (void)fire:(id)sender {
     UISwitch* s = (UISwitch*)sender;
-    if (_cb) _cb(s.isOn);
+    native_callback_(_cb, s.isOn);
 }
 @end
 
@@ -69,8 +100,11 @@
     return self;
 }
 - (void)fire:(id)sender {
-    UIStepper* s = (UIStepper*)sender;
-    if (_cb) _cb((int)s.value);
+    double value;
+    if ([sender isKindOfClass:UISlider.class]) value = static_cast<double>(((UISlider*)sender).value);
+    else if ([sender isKindOfClass:UIStepper.class]) value = ((UIStepper*)sender).value;
+    else return;
+    native_callback_(_cb, native_int_(value));
 }
 @end
 
@@ -90,7 +124,7 @@
     } else {
         return;
     }
-    if (_cb) _cb(value);
+    native_callback_(_cb, value);
 }
 @end
 
@@ -105,8 +139,8 @@
     UITextField* tf = (UITextField*)sender;
     NSString* ns = tf.text ?: @"";
     const char* utf8 = ns.UTF8String;
-    std::string_view sv(utf8, std::strlen(utf8));
-    if (_cb) _cb(sv);
+    std::string_view sv = utf8 ? std::string_view{utf8, [ns lengthOfBytesUsingEncoding:NSUTF8StringEncoding]} : std::string_view{};
+    native_callback_(_cb, sv);
 }
 @end
 
@@ -144,7 +178,7 @@
  numberOfRowsInSection:(NSInteger)section {
     (void)tableView;
     (void)section;
-    return _rowCountFn ? _rowCountFn() : 0;
+    return native_result_<NSInteger>(_rowCountFn, 0);
 }
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
@@ -154,7 +188,8 @@
                     initWithStyle:UITableViewCellStyleDefault
                   reuseIdentifier:@"empty"];
     }
-    return _cellForFn(tableView, indexPath);
+    UITableViewCell* result = native_result_<UITableViewCell*>(_cellForFn, nil, tableView, indexPath);
+    return result ?: [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"empty"];
 }
 
 @end
@@ -181,7 +216,8 @@ template<typename Fn>
 }
 
 struct Bridge {
-    ::aria::abi::SignalErased sig;
+    std::shared_ptr<::aria::abi::SignalErased> sig = std::make_shared<::aria::abi::SignalErased>();
+    ~Bridge() { sig->clear(); } // Retire slots even while an in-flight action keeps the signal alive.
     id __strong target = nil;
 };
 
@@ -248,9 +284,13 @@ struct UIKitAdapter::Impl {
             doomed.swap(views);
         }
         doomed.clear();
-        std::lock_guard lk{mu};
-        bridges.clear();
-        destroy_subs.clear();
+        decltype(bridges) retired_bridges;
+        decltype(destroy_subs) retired_subs;
+        {
+            std::lock_guard lk{mu};
+            retired_bridges.swap(bridges);
+            retired_subs.swap(destroy_subs);
+        }
     }
 
     // Destroy a cached view outside the lock, for the same reason as ~Impl.
@@ -277,8 +317,11 @@ struct UIKitAdapter::Impl {
 
         auto& subs = destroy_subs[key_ptr];
         subs.push_back(view.on_destroy([this, k = Key{key_ptr, kind}]() {
-            std::lock_guard lk2{mu};
-            bridges.erase(k);
+            decltype(bridges)::node_type retired;
+            {
+                std::lock_guard lk2{mu};
+                retired = bridges.extract(k);
+            }
         }));
         return *raw;
     }
@@ -337,7 +380,7 @@ std::string UIKitAdapter::get_text(::aria::binding::IView& v) {
     else                                          { warn_unsupported_("get_text", o); return {}; }
     if (!ns) return {};
     const char* utf8 = ns.UTF8String;
-    return utf8 ? std::string(utf8) : std::string{};
+    return utf8 ? std::string{utf8, [ns lengthOfBytesUsingEncoding:NSUTF8StringEncoding]} : std::string{};
 }
 
 ::aria::Subscription UIKitAdapter::on_text_changed(::aria::binding::IView& v,
@@ -348,19 +391,19 @@ std::string UIKitAdapter::get_text(::aria::binding::IView& v) {
 
     auto& br = p_->bridge_for(v, o, 't', [tf](Bridge& bridge) {
         AriaUITextTarget* t = [[AriaUITextTarget alloc]
-            initWithCallback:[bp = &bridge](std::string_view sv) {
+            initWithCallback:[weak = std::weak_ptr{bridge.sig}](std::string_view sv) {
                 StringArgs a{sv};
-                bp->sig.emit(&a);
+                if (auto signal = weak.lock()) signal->emit(&a);
             }];
         bridge.target = t;
         [tf addTarget:t
                 action:@selector(fire:)
       forControlEvents:UIControlEventEditingChanged];
     });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* args) {
+    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<StringArgs*>(args)->sv);
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br.sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -392,19 +435,19 @@ bool UIKitAdapter::get_bool(::aria::binding::IView& v) {
 
     auto& br = p_->bridge_for(v, o, 'b', [sw](Bridge& bridge) {
         AriaUIToggleTarget* t = [[AriaUIToggleTarget alloc]
-            initWithCallback:[bp = &bridge](bool x) {
+            initWithCallback:[weak = std::weak_ptr{bridge.sig}](bool x) {
                 BoolArgs a{x};
-                bp->sig.emit(&a);
+                if (auto signal = weak.lock()) signal->emit(&a);
             }];
         bridge.target = t;
         [sw addTarget:t
                 action:@selector(fire:)
       forControlEvents:UIControlEventValueChanged];
     });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* args) {
+    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<BoolArgs*>(args)->v);
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br.sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -425,8 +468,8 @@ void UIKitAdapter::set_int(::aria::binding::IView& v, int value) {
 
 int UIKitAdapter::get_int(::aria::binding::IView& v) {
     UIView* o = native_of(v); if (!o) return 0;
-    if ([o isKindOfClass:[UIStepper class]])  return (int)((UIStepper*)o).value;
-    if ([o isKindOfClass:[UISlider class]])   return (int)((UISlider*)o).value;
+    if ([o isKindOfClass:[UIStepper class]])  return native_int_(((UIStepper*)o).value);
+    if ([o isKindOfClass:[UISlider class]])   return native_int_(static_cast<double>(((UISlider*)o).value));
     warn_unsupported_("get_int", o);
     return 0;
 }
@@ -434,24 +477,24 @@ int UIKitAdapter::get_int(::aria::binding::IView& v) {
 ::aria::Subscription UIKitAdapter::on_int_changed(::aria::binding::IView& v,
         std::function<void(int)> cb) {
     UIView* o = native_of(v); if (!o) return {};
-    if (![o isKindOfClass:[UIControl class]]) { warn_unsupported_("on_int_changed", o); return {}; }
+    if (![o isKindOfClass:UIStepper.class] && ![o isKindOfClass:UISlider.class]) { warn_unsupported_("on_int_changed", o); return {}; }
     UIControl* ctl = (UIControl*)o;
 
     auto& br = p_->bridge_for(v, o, 'i', [ctl](Bridge& bridge) {
         AriaUIStepperTarget* t = [[AriaUIStepperTarget alloc]
-            initWithCallback:[bp = &bridge](int x) {
+            initWithCallback:[weak = std::weak_ptr{bridge.sig}](int x) {
                 IntArgs a{x};
-                bp->sig.emit(&a);
+                if (auto signal = weak.lock()) signal->emit(&a);
             }];
         bridge.target = t;
         [ctl addTarget:t
                  action:@selector(fire:)
        forControlEvents:UIControlEventValueChanged];
     });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* args) {
+    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<IntArgs*>(args)->v);
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br.sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -520,24 +563,24 @@ double UIKitAdapter::get_double(::aria::binding::IView& v) {
 ::aria::Subscription UIKitAdapter::on_double_changed(::aria::binding::IView& v,
         std::function<void(double)> cb) {
     UIView* o = native_of(v); if (!o) return {};
-    if (![o isKindOfClass:[UIControl class]]) { warn_unsupported_("on_double_changed", o); return {}; }
+    if (![o isKindOfClass:UIStepper.class] && ![o isKindOfClass:UISlider.class]) { warn_unsupported_("on_double_changed", o); return {}; }
     UIControl* ctl = (UIControl*)o;
 
     auto& br = p_->bridge_for(v, o, 'd', [ctl](Bridge& bridge) {
         AriaUISliderTarget* t = [[AriaUISliderTarget alloc]
-            initWithCallback:[bp = &bridge](double x) {
+            initWithCallback:[weak = std::weak_ptr{bridge.sig}](double x) {
                 DoubleArgs a{x};
-                bp->sig.emit(&a);
+                if (auto signal = weak.lock()) signal->emit(&a);
             }];
         bridge.target = t;
         [ctl addTarget:t
                  action:@selector(fire:)
        forControlEvents:UIControlEventValueChanged];
     });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* args) {
+    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<DoubleArgs*>(args)->v);
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br.sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -569,19 +612,19 @@ void UIKitAdapter::set_enabled(::aria::binding::IView& v, bool enabled) {
 
     auto& br = p_->bridge_for(v, o, 'c', [btn](Bridge& bridge) {
         AriaUIClickTarget* t = [[AriaUIClickTarget alloc]
-            initWithCallback:[bp = &bridge]() {
+            initWithCallback:[weak = std::weak_ptr{bridge.sig}]() {
                 VoidArgs a{};
-                bp->sig.emit(&a);
+                if (auto signal = weak.lock()) signal->emit(&a);
             }];
         bridge.target = t;
         [btn addTarget:t
                  action:@selector(fire:)
        forControlEvents:UIControlEventTouchUpInside];
     });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* /*args*/) {
+    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* /*args*/) {
         cb();
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br.sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};

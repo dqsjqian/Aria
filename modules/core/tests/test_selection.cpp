@@ -256,3 +256,21 @@ TEST_CASE("Selection: unbind stops following the list") {
     list.clear();               // would clear if still bound
     CHECK(sel.has_value());     // unbound -> selection retained
 }
+
+TEST_CASE("Selection: destruction by an earlier source observer is safe") {
+    ObservableList<Row> list;
+    auto row = std::make_shared<Row>(1);
+    list.push_back(row);
+    std::unique_ptr<Selection<Row>> single;
+    std::unique_ptr<MultiSelection<Row>> multi;
+    auto earlier = list.observe([&](const auto&) { single.reset(); multi.reset(); });
+    single = std::make_unique<Selection<Row>>();
+    multi = std::make_unique<MultiSelection<Row>>();
+    single->bind_to(list);
+    multi->bind_to(list);
+    single->select(row);
+    multi->add(row);
+    list.remove_at(0);
+    CHECK_FALSE(single);
+    CHECK_FALSE(multi);
+}

@@ -48,12 +48,34 @@ TEST_CASE("SimpleDispatcher: cross-thread post is safe") {
     CHECK(n.load() == 100);
 }
 
-TEST_CASE("main_dispatcher() returns a default if none installed") {
-    auto& d = main_dispatcher();
+TEST_CASE("main_dispatcher() returns an owning snapshot") {
+    set_main_dispatcher(nullptr);
+    auto snapshot = main_dispatcher();
+    REQUIRE(snapshot);
+    auto* simple = dynamic_cast<SimpleDispatcher*>(snapshot.get());
+    REQUIRE(simple);
     int n = 0;
-    d.post([&]() { n = 1; });
-    // We can't necessarily pump it (we don't know the type) — just verify post does not throw
-    CHECK(n == 0);  // not yet pumped
+    snapshot->post([&] { n = 1; });
+    set_main_dispatcher(std::make_shared<SimpleDispatcher>());
+    CHECK(main_dispatcher() != snapshot);
+    CHECK(simple->pump() == 1);
+    CHECK(n == 1);
+    set_main_dispatcher(nullptr);
+}
+
+TEST_CASE("main_dispatcher replacement releases old captures outside its mutex") {
+    bool released = false;
+    auto old = std::make_shared<SimpleDispatcher>();
+    auto token = std::shared_ptr<int>(new int, [&](int* value) {
+        delete value;
+        CHECK(main_dispatcher());
+        released = true;
+    });
+    old->post([token = std::move(token)] {});
+    set_main_dispatcher(std::move(old));
+    set_main_dispatcher(std::make_shared<SimpleDispatcher>());
+    CHECK(released);
+    set_main_dispatcher(nullptr);
 }
 
 // ── B1 regression: SimpleDispatcher::run_one used to drop tasks on race ──
@@ -74,29 +96,58 @@ TEST_CASE("SimpleDispatcher::run_one: post races a delayed wait without losing t
     // never expect it to fire on its own.
     d.post_delayed(std::chrono::seconds{60}, []{ /* never */ });
 
-    std::atomic<bool> ran{false};
-    std::thread runner([&]{
-        d.run_one();   // would hang forever before the fix
-        ran = true;
-    });
-
-    // Give the runner thread a moment to park inside cv.wait_until on
-    // the far-future deadline.
-    std::this_thread::sleep_for(std::chrono::milliseconds{50});
-
-    // Now post an immediate task. The fixed run_one should observe it,
-    // pop it from `queue`, run it, and exit cleanly.
     std::atomic<bool> fired{false};
-    d.post([&]{ fired = true; });
-
-    // Bounded wait — without the fix, runner stays stuck and `ran`
-    // never flips. With the fix, runner returns within a few ms.
-    auto start = std::chrono::steady_clock::now();
-    while (!ran.load() &&
-           std::chrono::steady_clock::now() - start < std::chrono::seconds{2}) {
-        std::this_thread::sleep_for(std::chrono::milliseconds{5});
-    }
-    CHECK(ran.load());
+    std::thread producer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        // Grow the delayed heap while the owner waits on its old top.
+        for (int i = 0; i < 64; ++i)
+            d.post_delayed(std::chrono::seconds{60}, [] {});
+        d.post([&] { fired = true; });
+    });
+    d.run_one();
+    producer.join();
     CHECK(fired.load());
-    if (runner.joinable()) runner.join();
+}
+
+TEST_CASE("SimpleDispatcher: callback can destroy its dispatcher during pump") {
+    auto dispatcher = std::make_unique<SimpleDispatcher>();
+    bool second = false;
+    dispatcher->post([&] { dispatcher.reset(); });
+    dispatcher->post([&] { second = true; });
+    CHECK(dispatcher->pump() == 1);
+    CHECK_FALSE(dispatcher);
+    CHECK_FALSE(second);
+}
+
+TEST_CASE("SimpleDispatcher: discarded captures may post during teardown") {
+    auto dispatcher = std::make_unique<SimpleDispatcher>();
+    auto* raw = dispatcher.get();
+    bool released = false;
+    auto capture = std::shared_ptr<int>(new int, [&](int* value) {
+        delete value;
+        released = true;
+        raw->post([] {});
+    });
+    dispatcher->post([capture = std::move(capture)] {});
+    dispatcher.reset();
+    CHECK(released);
+}
+
+TEST_CASE("SimpleDispatcher: extreme delay saturates without firing") {
+    SimpleDispatcher dispatcher;
+    bool fired = false;
+    dispatcher.post_delayed(std::chrono::milliseconds::max(), [&] { fired = true; });
+    CHECK(dispatcher.pump(std::chrono::milliseconds::max()) == 0);
+    CHECK_FALSE(fired);
+}
+
+TEST_CASE("SimpleDispatcher: pump and run_one enforce the owner thread") {
+    SimpleDispatcher dispatcher;
+    dispatcher.post([] {});
+    std::thread worker([&] {
+        CHECK_THROWS_AS(dispatcher.pump(), std::logic_error);
+        CHECK_THROWS_AS(dispatcher.run_one(), std::logic_error);
+    });
+    worker.join();
+    CHECK(dispatcher.pump() == 1);
 }

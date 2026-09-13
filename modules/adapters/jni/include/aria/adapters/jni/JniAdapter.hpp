@@ -35,8 +35,9 @@
 ///   assumes its methods run there. Cross-thread Property writes must be
 ///   marshalled through a Dispatcher before reaching the adapter.
 ///
-/// This header requires `<jni.h>` — it is only compilable with the
-/// Android NDK toolchain.
+/// This header requires `<jni.h>` from the Android NDK, or a JDK when
+/// running host tests. Text uses standard UTF-8, including embedded NUL;
+/// malformed UTF-8 and isolated Java surrogate units become U+FFFD.
 
 #include "aria/abi/export.hpp"
 #include "aria/binding/view_adapter.hpp"
@@ -85,7 +86,7 @@ private:
 /// Android JNI implementation of IViewAdapter.
 ///
 /// Bridges Aria's property system to Android View widgets via JNI,
-/// caching jclass/jmethodID lookups for the supported widget operations.
+/// resolving jmethodID lookups on the runtime class for supported operations.
 class ARIA_JNI_API JniAdapter : public ::aria::binding::IViewAdapter {
 public:
     /// @param env  JNI environment from the current (UI) thread.
@@ -164,7 +165,7 @@ public:
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> p_;
+    std::shared_ptr<Impl> p_;
 };
 
 }  // namespace aria::adapters::jni

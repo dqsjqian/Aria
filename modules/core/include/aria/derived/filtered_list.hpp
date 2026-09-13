@@ -79,6 +79,7 @@
 #include "aria/observable_list.hpp"
 #include "aria/subscription.hpp"
 #include "aria/detail/list_signal_mixin.hpp"
+#include "aria/detail/list_replay.hpp"
 #include "aria/detail/typed_signal.hpp"
 
 #include <algorithm>
@@ -104,7 +105,7 @@ public:
     /// larger captures are a compile-time error (by design — derived
     /// list hot paths must never allocate behind the user's back).
     using Predicate  = aria::inplace_function<bool(const T&), 32>;
-    using Signal     = detail::TypedSignal<ListChange<T>>;
+    using Signal     = detail::ListSignal<T>;
 
     FilteredList(std::shared_ptr<Source> source,
                  Predicate predicate)
@@ -114,13 +115,13 @@ public:
     {
         state_->predicate = std::move(predicate);
 
-        // Build the initial mapping from the source snapshot. Taking
-        // the snapshot BEFORE subscribing means concurrent source
-        // mutations that arrive mid-construction are delivered as
-        // normal listener callbacks on top of the known-good baseline.
+        // Construct on the source writer thread or while its writer is
+        // quiescent: snapshot + subscribe is not a cross-thread transaction.
+        // The signal watermark excludes an active batch already in snapshot.
         {
             std::unique_lock lk(state_->m);
             auto snap = source_->snapshot();
+            state_->source_items = snap;
             state_->source_to_derived.assign(snap.size(), std::nullopt);
             for (std::size_t i = 0; i < snap.size(); ++i) {
                 if (state_->predicate(*snap[i])) {
@@ -185,18 +186,14 @@ public:
     // as if every in-item had changed", they should instead send a
     // proper source-side mutation or iterate ItemChanged manually.
     void set_predicate(Predicate new_predicate) {
-        struct PendingEmit {
-            ListChangeKind kind;
-            std::size_t    derived_index;
-            const T*       item_ptr;
-        };
-        std::vector<PendingEmit> emissions;
+        auto signal = signal_;
+        std::vector<ListChange<T>> emissions;
 
         {
             std::unique_lock lk(state_->m);
             state_->predicate = std::move(new_predicate);
 
-            auto snap = source_->snapshot();
+            const auto& snap = state_->source_items;
 
             // Build new mapping in a single pass; the OLD mapping is
             // still in `state_->source_to_derived` at this point so we
@@ -245,13 +242,13 @@ public:
                     emissions.push_back({
                         ListChangeKind::Remove,
                         observed_pos,
-                        snap[i].get()});
+                        snap[i], 0});
                 } else if (!was_in && is_in) {
                     // Newly admitted: lands at `observed_pos` in the mirror.
                     emissions.push_back({
                         ListChangeKind::Insert,
                         observed_pos,
-                        snap[i].get()});
+                        snap[i], 0});
                     ++observed_pos;
                 } else if (was_in && is_in) {
                     // Unchanged member: no event, but it occupies a slot in
@@ -269,9 +266,7 @@ public:
         // Emit outside the lock. Observers that call back into at() /
         // snapshot() see the new state, matching ObservableList's own
         // post-mutation emission contract.
-        for (const auto& e : emissions) {
-            signal_->emit(ListChange<T>{e.kind, e.derived_index, e.item_ptr, 0});
-        }
+        signal->emit_batch(std::move(emissions));
     }
 
 private:
@@ -287,6 +282,7 @@ private:
         std::vector<std::size_t>                  derived_to_source;
         // parallel to derived_to_source; strong refs for at() / snapshot().
         std::vector<std::shared_ptr<T>>           items;
+        std::vector<std::shared_ptr<T>>           source_items;
     };
 
     std::shared_ptr<Source> source_;
@@ -299,13 +295,17 @@ private:
                                         Signal& sig,
                                         Source& src,
                                         const ListChange<T>& ch) {
+        {
+            std::unique_lock lock(st.m);
+            detail::replay_list_change(st.source_items, ch);
+        }
         switch (ch.kind) {
         case ListChangeKind::Insert:      handle_insert_(st, sig, src, ch);      return;
         case ListChangeKind::Remove:      handle_remove_(st, sig, ch);           return;
         case ListChangeKind::Replace:     handle_replace_(st, sig, src, ch);     return;
         case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, src, ch); return;
         case ListChangeKind::Move:        handle_move_(st, sig, ch);             return;
-        case ListChangeKind::Reset:       handle_reset_(st, sig);                return;
+        case ListChangeKind::Reset:       handle_reset_(st, sig, ch);                return;
         }
     }
 
@@ -315,40 +315,30 @@ private:
         std::unique_lock lk(st.m);
         const std::size_t src_idx = ch.index;
 
-        // All existing d2s entries >= src_idx shifted by +1 in the
-        // source (the source just inserted one slot before/at them).
-        for (auto& s : st.derived_to_source) {
-            if (s >= src_idx) ++s;
-        }
+        const bool is_in = st.predicate(*ch.item);
+        // Source indices are ordered, so this locates both the insertion
+        // position and the only suffix whose source indices change. A tail
+        // append leaves every existing mapping intact.
+        const auto position = st.derived_to_source.empty() || st.derived_to_source.back() < src_idx
+            ? st.derived_to_source.end()
+            : std::lower_bound(st.derived_to_source.begin(), st.derived_to_source.end(), src_idx);
+        const auto d_idx = static_cast<std::size_t>(position - st.derived_to_source.begin());
+        for (auto it = position; it != st.derived_to_source.end(); ++it) ++*it;
         // Insert the new "not yet classified" source slot.
         st.source_to_derived.insert(st.source_to_derived.begin() + static_cast<std::ptrdiff_t>(src_idx),
                                     std::nullopt);
 
-        const bool is_in = st.predicate(*ch.item);
-        if (!is_in) {
-            renumber_s2d_(st);
-            return;
-        }
-
-        // Compute derived insertion index: number of in-filter source
-        // slots strictly before src_idx.
-        std::size_t d_idx = 0;
-        for (std::size_t i = 0; i < src_idx; ++i) {
-            if (st.source_to_derived[i].has_value()) ++d_idx;
-        }
+        if (!is_in) return;
 
         st.derived_to_source.insert(st.derived_to_source.begin() + static_cast<std::ptrdiff_t>(d_idx),
                                     src_idx);
 
-        // Resolve the current shared_ptr from the source by index.
-        // The source has already released its own lock by the time
-        // emit() runs (see ObservableList::push_back), so this at()
-        // is deadlock-free.
-        auto shared = src.at(src_idx);
+        // The event owns the row even if the source has committed later edits.
+        auto shared = ch.item;
         st.items.insert(st.items.begin() + static_cast<std::ptrdiff_t>(d_idx), std::move(shared));
 
-        st.source_to_derived[src_idx] = d_idx;
-        renumber_s2d_(st);
+        for (std::size_t d = d_idx; d < st.derived_to_source.size(); ++d)
+            st.source_to_derived[st.derived_to_source[d]] = d;
 
         lk.unlock();
         sig.emit(ListChange<T>{ListChangeKind::Insert, d_idx, ch.item, 0});
@@ -377,7 +367,7 @@ private:
             renumber_s2d_(st);
             lk.unlock();
             sig.emit(ListChange<T>{ListChangeKind::Remove, d_idx,
-                                   removed.get(), 0});
+                                   removed, 0});
             return;
         }
 
@@ -413,7 +403,7 @@ private:
         if (was_in && is_in) {
             const std::size_t d_idx = *st.source_to_derived[src_idx];
             if (refresh_value) {
-                st.items[d_idx] = src.at(src_idx);
+                st.items[d_idx] = ch.item;
             }
             lk.unlock();
             sig.emit(ListChange<T>{kind_for_in_in, d_idx, ch.item, 0});
@@ -429,7 +419,7 @@ private:
             renumber_s2d_(st);
             lk.unlock();
             sig.emit(ListChange<T>{ListChangeKind::Remove, d_idx,
-                                   removed.get(), 0});
+                                   removed, 0});
             return;
         }
 
@@ -440,7 +430,7 @@ private:
         }
         st.derived_to_source.insert(st.derived_to_source.begin() + static_cast<std::ptrdiff_t>(d_idx),
                                     src_idx);
-        st.items.insert(st.items.begin() + static_cast<std::ptrdiff_t>(d_idx), src.at(src_idx));
+        st.items.insert(st.items.begin() + static_cast<std::ptrdiff_t>(d_idx), ch.item);
         st.source_to_derived[src_idx] = d_idx;
         renumber_s2d_(st);
         lk.unlock();
@@ -525,13 +515,22 @@ private:
         renumber_s2d_(st);
     }
 
-    static void handle_reset_(SharedState& st, Signal& sig) {
+    static void handle_reset_(SharedState& st, Signal& sig, const ListChange<T>& ch) {
+        const auto& snapshot = *ch.snapshot;
         std::unique_lock lk(st.m);
         st.source_to_derived.clear();
         st.derived_to_source.clear();
         st.items.clear();
+        st.source_to_derived.resize(snapshot.size(), std::nullopt);
+        for (std::size_t i = 0; i < snapshot.size(); ++i) {
+            if (!st.predicate(*snapshot[i])) continue;
+            st.source_to_derived[i] = st.items.size();
+            st.derived_to_source.push_back(i);
+            st.items.push_back(snapshot[i]);
+        }
+        auto reset = ListChange<T>::reset(st.items);
         lk.unlock();
-        sig.emit(ListChange<T>{ListChangeKind::Reset, 0, nullptr, 0});
+        sig.emit(std::move(reset));
     }
 
     // Walk source_to_derived and assign successive derived indices to
@@ -539,8 +538,12 @@ private:
     // structural mutation.
     static void renumber_s2d_(SharedState& st) {
         std::size_t d = 0;
-        for (auto& slot : st.source_to_derived) {
-            if (slot.has_value()) slot = d++;
+        for (std::size_t s = 0; s < st.source_to_derived.size(); ++s) {
+            auto& slot = st.source_to_derived[s];
+            if (slot.has_value()) {
+                slot = d;
+                st.derived_to_source[d++] = s;
+            }
         }
     }
 

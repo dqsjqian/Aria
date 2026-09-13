@@ -24,6 +24,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace aria::async;
@@ -56,7 +57,85 @@ private:
     ErrorSink prev_;
 };
 
+Task<void> wait_for_cancellation(CancellationToken token) {
+    co_await token;
+}
+
 }  // namespace
+
+TEST_CASE("CancellationSource: replacing a source cancels its previous token") {
+    int old_callbacks = 0;
+    int new_callbacks = 0;
+    CancellationSource source;
+    auto old_token = source.token();
+    old_token.on_cancel([&] { ++old_callbacks; });
+    auto old_waiter = wait_for_cancellation(old_token);
+    old_waiter.start();
+    CHECK_FALSE(old_waiter.done());
+
+    source = CancellationSource{};
+
+    CHECK(old_token.is_cancelled());
+    CHECK(old_callbacks == 1);
+    CHECK(old_waiter.done());
+    CHECK_FALSE(source.is_cancelled());
+
+    auto new_token = source.token();
+    new_token.on_cancel([&] { ++new_callbacks; });
+    auto new_waiter = wait_for_cancellation(new_token);
+    new_waiter.start();
+    CHECK_FALSE(new_waiter.done());
+    source.cancel();
+    CHECK(new_token.is_cancelled());
+    CHECK(new_callbacks == 1);
+    CHECK(new_waiter.done());
+    CHECK(old_callbacks == 1);
+}
+
+TEST_CASE("CancellationSource: moved-from destruction leaves transferred token active") {
+    int callbacks = 0;
+    CancellationSource destination;
+    CancellationToken token;
+    Task<void> waiter;
+    {
+        CancellationSource original;
+        token = original.token();
+        token.on_cancel([&] { ++callbacks; });
+        waiter = wait_for_cancellation(token);
+        waiter.start();
+        destination = std::move(original);
+        original.cancel();
+        CHECK_FALSE(token.is_cancelled());
+    }
+    CHECK_FALSE(token.is_cancelled());
+    CHECK_FALSE(waiter.done());
+    CHECK(callbacks == 0);
+
+    destination.cancel();
+    CHECK(token.is_cancelled());
+    CHECK(waiter.done());
+    CHECK(callbacks == 1);
+}
+
+TEST_CASE("CancellationSource: self move preserves pending cancellation") {
+    int callbacks = 0;
+    CancellationSource source;
+    auto token = source.token();
+    token.on_cancel([&] { ++callbacks; });
+    auto waiter = wait_for_cancellation(token);
+    waiter.start();
+
+    auto& same_source = source;
+    source = std::move(same_source);
+    CHECK_FALSE(token.is_cancelled());
+    CHECK_FALSE(waiter.done());
+    CHECK(callbacks == 0);
+
+    source.cancel();
+    CHECK(token.is_cancelled());
+    CHECK(waiter.done());
+    CHECK(callbacks == 1);
+}
 
 TEST_CASE("CoroutineScope tracks inflight count across launch and drain") {
     CoroutineScope scope;
@@ -257,4 +336,47 @@ TEST_CASE("CoroutineScope: OperationCancelled is silently absorbed (no sink nois
     }
 
     CHECK(sink_hits.load() == 0);
+}
+
+namespace {
+struct ScopeManualResume {
+    std::coroutine_handle<>* parked;
+    bool await_ready() const noexcept { return false; }
+    void await_suspend(std::coroutine_handle<> h) const noexcept { *parked = h; }
+    void await_resume() const noexcept {}
+};
+Task<void> scope_park_until_resumed(std::coroutine_handle<>& parked) {
+    co_await ScopeManualResume{&parked};
+}
+Task<void> scope_observe_drain(CoroutineScope& scope, bool& joined) {
+    co_await scope.join_existing();
+    joined = true;
+}
+}
+
+TEST_CASE("CoroutineScope: a synchronous timeout does not complete asynchronous joiners") {
+    SinkGuard sink([](std::string_view) {});
+    CoroutineScope scope;
+    std::coroutine_handle<> parked;
+    bool joined = false;
+    scope.launch_simple(scope_park_until_resumed(parked));
+    auto observer = scope_observe_drain(scope, joined);
+    observer.start();
+    CHECK_FALSE(scope.cancel_and_join(std::chrono::milliseconds{0}));
+    CHECK_FALSE(joined);
+    CHECK(scope.inflight_count() == 1);
+    parked.resume();
+    CHECK(joined);
+    CHECK(observer.done());
+    CHECK(scope.inflight_count() == 0);
+}
+
+TEST_CASE("CoroutineScope: a parent broadcast can destroy a child from its cancellation callback") {
+    CancellationSource parent;
+    auto child = std::make_unique<CoroutineScope>(parent.token());
+    auto token = child->token();
+    token.on_cancel([&] { child.reset(); });
+    parent.cancel();
+    CHECK_FALSE(child);
+    CHECK(token.is_cancelled());
 }

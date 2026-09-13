@@ -26,6 +26,19 @@
 
 #include <memory>
 #include <string>
+#include <thread>
+
+@interface AriaReloadProbeTable : NSTableView
+@property(nonatomic, copy) void (^onReload)(void);
+@end
+@implementation AriaReloadProbeTable
+- (void)reloadData {
+    [super reloadData];
+    auto callback = self.onReload;
+    self.onReload = nil;
+    if (callback) callback();
+}
+@end
 
 namespace {
 
@@ -50,6 +63,83 @@ NSTableView* make_table() {
 }
 
 }  // namespace
+
+TEST_CASE("AppKit table bridge: source change during initial reload is observed") {
+    ensure_nsapp();
+    aria::ObservableList<Item> list;
+    AriaReloadProbeTable* table = [[AriaReloadProbeTable alloc] initWithFrame:NSZeroRect];
+    auto* source = &list;
+    table.onReload = ^{ source->push_back(std::make_shared<Item>(Item{"added during reload"})); };
+    aria::adapters::appkit::ObservableTableSource<Item> bridge{
+        table, list, [](NSTableView*, NSTableColumn*, std::shared_ptr<Item>, NSInteger) -> NSView* { return nil; }};
+    REQUIRE(bridge.row_count() == 1);
+    CHECK(bridge.at(0)->title == "added during reload");
+}
+
+TEST_CASE("AppKit table bridge: queued worker change precedes main-thread replacement") {
+    ensure_nsapp();
+    aria::ObservableList<Item> list;
+    NSTableView* table = make_table();
+    aria::adapters::appkit::ObservableTableSource<Item> bridge{
+        table, list, [](NSTableView*, NSTableColumn*, std::shared_ptr<Item>, NSInteger) -> NSView* { return nil; }};
+    std::thread worker([&] { list.push_back(std::make_shared<Item>(Item{"old"})); });
+    worker.join();
+    list.replace_at(0, std::make_shared<Item>(Item{"new"}));
+    NSDate* limit = [NSDate dateWithTimeIntervalSinceNow:1];
+    while (bridge.row_count() == 0 && [limit timeIntervalSinceNow] > 0) {
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+    }
+    REQUIRE(bridge.row_count() == 1);
+    CHECK(bridge.at(0)->title == "new");
+}
+
+TEST_CASE("AppKit table bridge: Reset consumes its complete owned snapshot") {
+    ensure_nsapp();
+    struct Source {
+        std::vector<std::shared_ptr<Item>> rows;
+        aria::detail::ListSignal<Item> signal;
+        auto snapshot() const { return rows; }
+        std::size_t size() const { return rows.size(); }
+        auto at(std::size_t index) const { return rows.at(index); }
+        aria::Subscription observe(std::function<void(const aria::ListChange<Item>&)> fn) { return signal.connect(std::move(fn)); }
+    } source;
+    NSTableView* table = make_table();
+    aria::adapters::appkit::ObservableTableSource<Item> bridge{
+        table, source, [](NSTableView*, NSTableColumn*, std::shared_ptr<Item>, NSInteger) -> NSView* { return nil; }};
+    source.rows = {std::make_shared<Item>(Item{"reset row"})};
+    source.signal.emit(aria::ListChange<Item>::reset(source.rows));
+    REQUIRE(bridge.row_count() == 1);
+    CHECK(bridge.at(0) == source.rows[0]);
+}
+
+TEST_CASE("AppKit table bridge: worker teardown releases native state and captures on main") {
+    ensure_nsapp();
+    aria::ObservableList<Item> list;
+    NSTableView* table = make_table();
+    bool released_on_main = false;
+    auto capture = std::shared_ptr<int>(new int(0), [&](int* value) {
+        released_on_main = [NSThread isMainThread];
+        delete value;
+    });
+    std::weak_ptr<int> weak = capture;
+    using Bridge = aria::adapters::appkit::ObservableTableSource<Item>;
+    auto bridge = std::make_unique<Bridge>(table, list,
+        [capture = std::move(capture)](NSTableView*, NSTableColumn*, std::shared_ptr<Item>, NSInteger) -> NSView* { return nil; });
+    std::thread worker([&list, owned = std::move(bridge)]() mutable {
+        list.push_back(std::make_shared<Item>(Item{"queued"}));
+        owned.reset();
+    });
+    worker.join();
+    CHECK_FALSE(weak.expired());
+    NSDate* limit = [NSDate dateWithTimeIntervalSinceNow:1];
+    while (!weak.expired() && [limit timeIntervalSinceNow] > 0) {
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+    }
+    CHECK(weak.expired());
+    CHECK(released_on_main);
+    CHECK((table.dataSource == nil));
+    CHECK((table.delegate == nil));
+}
 
 TEST_CASE("AppKit table bridge: ObservableList Insert/Remove/Move/Replace") {
     ensure_nsapp();

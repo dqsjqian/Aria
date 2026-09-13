@@ -74,23 +74,11 @@ const std::vector<Case>& catalogue() {
     // std::exception degrades to AsyncFailure; a non-std throw keeps
     // the exception_ptr but loses the message.
     //
-    // `expects_inner` follows the *factory* each branch calls, not the
-    // exception's own richness — which is counter-intuitive enough to be
-    // worth pinning:
-    //
-    //   * `Error::user_error(msg, source)` has no `inner` parameter at
-    //     all, so the two UserError branches DROP the exception_ptr even
-    //     though `from_exception` was handed one. Verified against
-    //     error.hpp: user_error constructs with `{}` in the inner slot.
-    //   * `catch (...)` calls `async_failure("unknown error", tag, ex)`
-    //     — it forwards `ex`. So an `int` throw, which carries the least
-    //     information of all, still ends up WITH an inner ptr.
-    //
-    // Anyone "tidying up" this asymmetry would change observable
-    // behaviour; that is what these two columns exist to catch.
+    // All non-null exceptions retain their original exception_ptr,
+    // including the UserError classifications.
     static const std::vector<Case> cases = {
-        {"std::invalid_argument", ErrorKind::UserError,    false, true,  &raise_invalid_argument},
-        {"std::out_of_range",     ErrorKind::UserError,    false, true,  &raise_out_of_range},
+        {"std::invalid_argument", ErrorKind::UserError,    true,  true,  &raise_invalid_argument},
+        {"std::out_of_range",     ErrorKind::UserError,    true,  true,  &raise_out_of_range},
         {"std::runtime_error",    ErrorKind::AsyncFailure, true,  true,  &raise_runtime_error},
         {"std::logic_error",      ErrorKind::AsyncFailure, true,  true,  &raise_logic_error},
         {"std::bad_alloc",        ErrorKind::AsyncFailure, true,  true,  &raise_bad_alloc},
@@ -141,7 +129,7 @@ TEST_CASE("E-13 fuzz: from_exception mapping is stable across std exception type
         CHECK(err.kind == c.expected_kind);
         // E-12: source is always carried through.
         CHECK(err.source == source);
-        // `inner` retained only for std::exception payloads.
+        // The original exception survives every classification.
         CHECK(static_cast<bool>(err.inner) == c.expects_inner);
 
         if (c.message_is_what) {

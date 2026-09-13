@@ -188,6 +188,7 @@ public:
     }
 
     void clear() {
+        cancel();
         state_->has_key = false;
         state_->dirty.store(false, std::memory_order_release);
         state_->is_loading    = false;
@@ -311,6 +312,7 @@ private:
         }
 
         co_await schedule_on(*state->ui);
+        tok.throw_if_cancelled();
 
         // Stale-result guard: only the latest fetch wins. Per the
         // resource's `in_flight` invariant (R-1, see

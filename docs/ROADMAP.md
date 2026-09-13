@@ -1,6 +1,6 @@
 # Aria Roadmap
 
-> Framework version: `1.2.1`. This is a working priority list, not a release
+> Development version: `2.0.0` (unreleased). This is a working priority list, not a release
 > schedule. Changes marked **Unreleased** are implemented on this branch and
 > are not part of the published release.
 
@@ -40,6 +40,15 @@ rationale remains available in this file's Git history.
 The correctness audit produced the following repairs and regression coverage.
 They are local changes awaiting the release verification gate below.
 
+- ABI 2 supplies one compiled graph, diagnostics registry, scheduler base and
+  node-ID sequence across compatible dynamic libraries. Installed core-only
+  consumers and cross-library dependency propagation have acceptance tests.
+- Property/Computed lifetime and exception paths, signal cancellation,
+  coroutine scope accounting, command destruction, collection event ownership,
+  duplicate occurrences and derived-view replay have regression coverage.
+- Stable-ID option selection, package consumption, build cache transitions,
+  and host/device validation are implemented. Breaking contracts are listed
+  in the [2.0 migration guide](migration-2.0.md).
 - Binding input from worker threads follows the configured dispatcher policy
   for scalars, converted text, and commands. Queued callbacks are invalidated
   by view destruction, engine clear, and engine destruction.
@@ -67,31 +76,33 @@ actual results and any unavailable platform coverage before marking a release.
 HTTP protocol 2 and worker-capacity behavior require migration notes in the
 [changelog](../CHANGELOG.md#unreleased) and [HTTP guide](guide/adapters/http.md).
 
-## Now — publish the generated API reference
+## Implemented — generated API reference publication
 
-The Doxygen target (`ARIA_BUILD_DOCS=ON`, `aria_docs`) exists. CI builds and
-uploads an HTML artifact; a stable public reference is still unshipped.
-Complete this after the correctness release gate:
-
-1. Publish generated HTML at a stable URL with a repeatable update process.
-2. Link that URL from `README.md`, `README.en.md`, and `docs/index.md`.
-3. Verify that the reference covers the supported public API and that its
-   links resolve from the published site.
+The Doxygen target (`ARIA_BUILD_DOCS=ON`, `aria_docs`) and Pages workflow
+build and validate the reference, including public API coverage and local
+links. GitHub Pages uses the Actions deployment source. Every push to `main`
+builds the reference, checks the generated pages, and publishes at
+[the canonical API reference](https://dqsjqian.github.io/Aria/), linked from
+both READMEs and the documentation index. A deployment is successful only
+when the workflow's build and deploy jobs both pass and the public site loads.
 
 Use the generated reference unless an actual reader need requires more.
 
-## Next — QComboBox options and selection
+## Implemented — option selection and integer conversion
 
-Text two-way binding is shipped. Remaining work is driven by a consumer that
-needs a changing option list or selection beyond its displayed text:
+`ObservableListModel` supplies changing QComboBox options through the common
+owning list event protocol. `bind_combo_box_selection` preserves selection by
+stable item ID, supports duplicate display labels and empty selection, and
+has real-control regressions for insert/remove/move/replace. The adapter also
+supports integer index binding and `BindingEngine::bind_int_converted` for
+non-contiguous enum values. See the [Qt guide](guide/adapters/qt6.md).
 
-- Bind option-list insertions, removals, moves, and replacements.
-- Define selected-index and stable item-ID semantics, including `itemData`
-  mapping, duplicate labels, removed selections, and an empty selection.
-- Add real-control tests for ViewModel-to-view and view-to-ViewModel updates,
-  preserving selection identity through option-list changes.
+## Language baseline
 
-Keep the adapter surface limited to those demonstrated needs.
+Retain C++20 as the minimum and validate opt-in C++23 builds. The available
+Apple and Android standard libraries do not provide a common C++23 feature
+set that justifies raising the minimum. See the
+[C++23 evaluation](cpp23-evaluation.md) for compiler/link probes and limits.
 
 ## Triggered — require a concrete consumer or failure
 
@@ -120,24 +131,17 @@ binding boundary. Acceptance is reproducible isolation and teardown tests.
 ### ObservableList slot identity
 
 Trigger: one object must occupy multiple independent logical rows and the
-current distinct-row-object workaround is unsuitable. Preserve the documented
-and tested duplicate-`shared_ptr` behavior until a replacement contract and
-identity-preserving diff tests exist.
+per-occurrence identity is needed beyond row indices. Repeated shared handles
+now receive ItemChanged for every valid occurrence with frozen indices; they
+no longer rely on a last-index sentinel. A new public slot-ID API remains
+conditional on a concrete consumer that needs identity independent of both
+object identity and position.
 
 ### Cross-toolchain ABI expansion
 
 Trigger: an actual binary adapter or plugin needs a boundary beyond the
-existing `IProperty<T>` smoke. Extend the cross-dylib acceptance tests for that
+existing `IProperty` and cross-library reactive tests. Extend the cross-dylib acceptance tests for that
 compiler/platform combination before making broader ABI claims.
-
-### Integer / enum two-way binding
-
-Trigger: a control needs enum selection through an integer value and existing
-bindings cannot express it. `bind_text_converted` requires
-`Converter<SomeEnum, std::string>` and supports a text representation only;
-`Converter<SomeEnum, int>` cannot be passed to that API. Consider a narrow
-underlying-type scalar binder once a concrete consumer supplies its semantics
-and round-trip tests.
 
 ### Write provenance
 

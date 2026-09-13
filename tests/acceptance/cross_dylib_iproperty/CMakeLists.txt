@@ -11,10 +11,9 @@
 #  This lives under tests/acceptance rather than examples: it is a
 #  cross-binary contract gate, not a user-facing plugin demo. It remains
 #  intentionally narrow rather than becoming a plugin framework.
-#  To extend it into a true
-#  libc++-vs-libstdc++ check, build this single directory with a different
-#  -stdlib= than the host; the C-linkage entry point keeps the symbol
-#  resolvable across that split.
+#  Host and plugin must use compatible C++ ABI settings and the same standard
+#  library. C linkage fixes symbol names; it does not bridge incompatible
+#  std::any, std::function, or C++ virtual-table layouts.
 # ============================================================================
 
 # ── Plugin: separate shared library, IProperty-only, no Property<T> here ──
@@ -31,13 +30,10 @@ set_target_properties(aria_test_iproperty_plugin PROPERTIES
     VISIBILITY_INLINES_HIDDEN ON)
 
 # ── Host: instantiates the real Property<T>, links the plugin dylib ──
-# Links aria::runtime as well as aria::core: the reactive Graph's flush
-# path references the process-wide diagnostics-sink storage, which is the
-# single shared definition compiled into libaria_runtime (so the exe and
-# every DSO share one sink instance).
+# The core target supplies all foundational symbols without aria::runtime.
 add_executable(test_cross_dylib_iproperty host.cpp)
 target_link_libraries(test_cross_dylib_iproperty
-    PRIVATE aria::core aria::runtime aria::warnings aria_test_iproperty_plugin)
+    PRIVATE aria::core aria::warnings aria_test_iproperty_plugin)
 target_include_directories(test_cross_dylib_iproperty
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 

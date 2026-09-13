@@ -96,7 +96,7 @@ public:
     static std::string to_dot(const std::vector<const Node*>& seeds,
                               std::string_view graph_name = "reactive") {
         std::ostringstream os;
-        os << "digraph " << graph_name << " {\n";
+        os << "digraph \"" << escape_(graph_name) << "\" {\n";
         os << "  rankdir=LR;\n";
         os << "  node [shape=box, style=rounded, fontname=\"monospace\"];\n";
 
@@ -199,6 +199,7 @@ public:
     /// (std::function invocation) per event plus a `steady_clock::now()`
     /// pair around every Pull.
     static void install_flush_tracer(FlushTracer tracer) {
+        Node::graph().assert_on_graph_thread();
         if (!tracer) {
             clear_flush_tracer();
             return;
@@ -212,7 +213,7 @@ public:
         // from it. Graph::flush is single-threaded (the graph-thread
         // invariant) so a plain by-value mutable capture is enough —
         // no heap allocation needed.
-        flush_trace_hook_() = [tracer = std::move(tracer),
+        auto next = std::make_shared<FlushTraceFn>([tracer = std::move(tracer),
                                last_pull = std::chrono::steady_clock::time_point{}](
                                   int phase_int,
                                   const Node* node,
@@ -231,14 +232,18 @@ public:
                     now - last_pull).count();
             }
             tracer(ev);
-        };
+        });
+        // Publish the replacement before releasing any user captures.
+        auto retired = std::exchange(flush_trace_hook_(), std::move(next));
     }
 
     static void clear_flush_tracer() noexcept {
-        flush_trace_hook_() = {};
+        Node::graph().assert_on_graph_thread();
+        auto retired = std::exchange(flush_trace_hook_(), {});
     }
 
     [[nodiscard]] static bool has_flush_tracer() noexcept {
+        Node::graph().assert_on_graph_thread();
         return static_cast<bool>(flush_trace_hook_());
     }
 
@@ -249,14 +254,17 @@ public:
     class ScopedTracer {
     public:
         explicit ScopedTracer(FlushTracer tracer) {
-            previous_ = std::move(flush_trace_hook_());
+            Node::graph().assert_on_graph_thread();
+            previous_ = flush_trace_hook_();
             install_flush_tracer(std::move(tracer));
         }
-        ~ScopedTracer() { flush_trace_hook_() = std::move(previous_); }
+        ~ScopedTracer() {
+            auto retired = std::exchange(flush_trace_hook_(), std::move(previous_));
+        }
         ScopedTracer(const ScopedTracer&)            = delete;
         ScopedTracer& operator=(const ScopedTracer&) = delete;
     private:
-        FlushTraceFn previous_;
+        std::shared_ptr<FlushTraceFn> previous_;
     };
 
     // ------------------------------------------------------------------
@@ -299,8 +307,8 @@ private:
 
     static std::string label_for_(const Node* n) {
         std::ostringstream os;
-        os << kind_name_(n->kind()) << "\\n";
-        os << n->effective_debug_name() << "\\n";
+        os << kind_name_(n->kind()) << '\n';
+        os << n->effective_debug_name() << '\n';
         os << "d=" << n->depth()
            << " v=" << n->version()
            << " " << state_name_(n->state());
@@ -337,7 +345,16 @@ private:
                 case '\n': out += "\\n";  break;
                 case '\r': out += "\\r";  break;
                 case '\t': out += "\\t";  break;
-                default:   out.push_back(c);
+                default:
+                    if (static_cast<unsigned char>(c) < 0x20) {
+                        constexpr char hex[] = "0123456789abcdef";
+                        out += "\\u00";
+                        const auto value = static_cast<unsigned char>(c);
+                        out.push_back(hex[value >> 4]);
+                        out.push_back(hex[value & 0x0f]);
+                    } else {
+                        out.push_back(c);
+                    }
             }
         }
         return out;

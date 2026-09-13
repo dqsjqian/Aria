@@ -24,11 +24,9 @@
 // Threading
 // ---------
 // RecyclerView notifications MUST be raised on the Android main thread.
-// This notifier does NOT marshal — it calls straight through, because
-// Aria owns no looper abstraction (see the JniListSource header). If the
-// list can mutate off-main, wrap `sink()` in a lambda that posts to a
-// `Handler`, and note that the notification value is copyable precisely
-// so it can be captured into such a post.
+// This notifier calls straight through. For off-main list mutations,
+// give JniListSource an owner-thread dispatcher so snapshot updates and
+// notifications both run on the main looper (see JniListSource.hpp).
 //
 // The notifier attaches a JNIEnv for the calling thread when needed, so
 // a sink invoked from a non-JNI thread does not crash — it will still be
@@ -36,10 +34,13 @@
 // surface as an Android RecyclerView complaint rather than as JNI UB.
 
 #include "aria/adapters/jni/JniListSource.hpp"
+#include "aria/adapters/jni/detail/jni_support.hpp"
 
 #include <jni.h>
 
+#include <atomic>
 #include <functional>
+#include <limits>
 #include <memory>
 
 namespace aria::adapters::jni {
@@ -53,120 +54,81 @@ namespace aria::adapters::jni {
 /// reflection on the scroll path.
 class JniRecyclerNotifier {
 public:
-    /// @param env      JNI environment of the calling (usually main) thread.
-    /// @param adapter  The managed RecyclerView.Adapter instance.
-    JniRecyclerNotifier(JNIEnv* env, jobject adapter) {
+    JniRecyclerNotifier(JNIEnv* env, jobject adapter) : state_(std::make_shared<State>()) {
         if (!env || !adapter) return;
-        env->GetJavaVM(&vm_);
-        adapter_ = env->NewGlobalRef(adapter);
-        if (!adapter_) return;
-
-        jclass cls = env->GetObjectClass(adapter_);
-        if (!cls) return;
-        // RecyclerView.Adapter's notify* methods are public final on
-        // androidx.recyclerview.widget.RecyclerView$Adapter, so they
-        // resolve against the concrete subclass too.
-        m_inserted_ = env->GetMethodID(cls, "notifyItemInserted", "(I)V");
-        m_removed_  = env->GetMethodID(cls, "notifyItemRemoved", "(I)V");
-        m_changed_  = env->GetMethodID(cls, "notifyItemChanged", "(I)V");
-        m_moved_    = env->GetMethodID(cls, "notifyItemMoved", "(II)V");
-        m_dataset_  = env->GetMethodID(cls, "notifyDataSetChanged", "()V");
-        env->DeleteLocalRef(cls);
-        // A failed lookup leaves an exception pending, which would abort
-        // the next JNI call made by unrelated code.
-        if (env->ExceptionCheck()) env->ExceptionClear();
+        auto& state = *state_;
+        state.vm = detail::vm_of(env);
+        if (!state.vm) return;
+        state.adapter = env->NewGlobalRef(adapter);
+        if (detail::check_exception(env, "NewGlobalRef") || !state.adapter) return;
+        state.inserted = detail::method(env, state.adapter, "notifyItemInserted", "(I)V");
+        if (!state.inserted) return;
+        state.removed = detail::method(env, state.adapter, "notifyItemRemoved", "(I)V");
+        if (!state.removed) return;
+        state.changed = detail::method(env, state.adapter, "notifyItemChanged", "(I)V");
+        if (!state.changed) return;
+        state.moved = detail::method(env, state.adapter, "notifyItemMoved", "(II)V");
+        if (!state.moved) return;
+        state.dataset = detail::method(env, state.adapter, "notifyDataSetChanged", "()V");
+        state.active.store(state.dataset != nullptr, std::memory_order_release);
     }
 
-    ~JniRecyclerNotifier() {
-        if (!adapter_ || !vm_) return;
-        JNIEnv* env = nullptr;
-        if (vm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK
-            && env) {
-            env->DeleteGlobalRef(adapter_);
-        }
-        adapter_ = nullptr;
-    }
-
-    JniRecyclerNotifier(const JniRecyclerNotifier&)            = delete;
+    ~JniRecyclerNotifier() { state_->active.store(false, std::memory_order_release); }
+    JniRecyclerNotifier(const JniRecyclerNotifier&) = delete;
     JniRecyclerNotifier& operator=(const JniRecyclerNotifier&) = delete;
 
-    /// True iff the managed adapter and every notify method resolved.
-    /// A false result means notifications will be dropped — check it
-    /// during bring-up rather than wondering why rows never refresh.
     [[nodiscard]] bool valid() const noexcept {
-        return adapter_ != nullptr && m_inserted_ && m_removed_
-            && m_changed_ && m_moved_ && m_dataset_;
+        return state_->active.load(std::memory_order_acquire);
     }
 
-    /// Sink to hand to `JniListSource<T>`. Captures `this`, so the
-    /// notifier must outlive the list source.
-    ///
-    /// The sink signature does not depend on the element type, so one
-    /// accessor serves every `JniListSource<T>`.
+    /// A retained sink becomes inert at notifier destruction. An already
+    /// executing notification retains its JNI state until the call returns.
     [[nodiscard]] std::function<void(const RecyclerNotification&)> sink() {
-        return [this](const RecyclerNotification& n) { dispatch(n); };
+        return [weak = std::weak_ptr{state_}](const RecyclerNotification& notification) {
+            if (auto state = weak.lock()) dispatch_(state, notification);
+        };
     }
 
-    /// Forward one notification to the managed adapter.
-    void dispatch(const RecyclerNotification& n) {
-        if (!valid()) return;
-        JNIEnv* env = env_for_current_thread();
-        if (!env) return;
-
-        const auto pos  = static_cast<jint>(n.position);
-        const auto from = static_cast<jint>(n.from_position);
-        switch (n.kind) {
-        case RecyclerNotify::ItemInserted:
-            env->CallVoidMethod(adapter_, m_inserted_, pos);
-            break;
-        case RecyclerNotify::ItemRemoved:
-            env->CallVoidMethod(adapter_, m_removed_, pos);
-            break;
-        case RecyclerNotify::ItemChanged:
-            env->CallVoidMethod(adapter_, m_changed_, pos);
-            break;
-        case RecyclerNotify::ItemMoved:
-            env->CallVoidMethod(adapter_, m_moved_, from, pos);
-            break;
-        case RecyclerNotify::DataSetChanged:
-            env->CallVoidMethod(adapter_, m_dataset_);
-            break;
-        }
-        // A managed exception (e.g. RecyclerView complaining about an
-        // inconsistency) must not leak into the next unrelated JNI call.
-        if (env->ExceptionCheck()) {
-            env->ExceptionDescribe();
-            env->ExceptionClear();
-        }
-    }
+    void dispatch(const RecyclerNotification& notification) { dispatch_(state_, notification); }
 
 private:
-    /// JNIEnv for the calling thread. Returns nullptr when the thread is
-    /// not attached and cannot be attached, rather than risking UB by
-    /// reusing an env from another thread.
-    JNIEnv* env_for_current_thread() {
-        if (!vm_) return nullptr;
-        JNIEnv* env = nullptr;
-        const jint rc =
-            vm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
-        if (rc == JNI_OK) return env;
-        if (rc == JNI_EDETACHED) {
-            // Attach as a daemon so a stray producer thread cannot keep
-            // the VM alive past shutdown.
-            if (vm_->AttachCurrentThreadAsDaemon(&env, nullptr) == JNI_OK) {
-                return env;
-            }
+    struct State {
+        JavaVM* vm = nullptr;
+        jobject adapter = nullptr;
+        jmethodID inserted = nullptr, removed = nullptr, changed = nullptr;
+        jmethodID moved = nullptr, dataset = nullptr;
+        std::atomic<bool> active{false};
+        ~State() { detail::delete_global_ref(vm, adapter); }
+    };
+
+    static void dispatch_(std::shared_ptr<State> state, const RecyclerNotification& n) {
+        if (!state->active.load(std::memory_order_acquire)) return;
+        constexpr auto maximum = static_cast<std::size_t>(std::numeric_limits<jint>::max());
+        if (n.kind != RecyclerNotify::DataSetChanged
+            && (n.position > maximum || (n.kind == RecyclerNotify::ItemMoved && n.from_position > maximum))) {
+            ::aria::report_callback_failure("jni.recycler", "notification position exceeds jint range");
+            return;
         }
-        return nullptr;
+        detail::Env scope(state->vm);
+        auto* env = scope.get();
+        if (!env || detail::check_exception(env, "RecyclerView notification")) return;
+        if (!state->active.load(std::memory_order_acquire)) return;
+        switch (n.kind) {
+        case RecyclerNotify::ItemInserted:
+            env->CallVoidMethod(state->adapter, state->inserted, static_cast<jint>(n.position)); break;
+        case RecyclerNotify::ItemRemoved:
+            env->CallVoidMethod(state->adapter, state->removed, static_cast<jint>(n.position)); break;
+        case RecyclerNotify::ItemChanged:
+            env->CallVoidMethod(state->adapter, state->changed, static_cast<jint>(n.position)); break;
+        case RecyclerNotify::ItemMoved:
+            env->CallVoidMethod(state->adapter, state->moved, static_cast<jint>(n.from_position), static_cast<jint>(n.position)); break;
+        case RecyclerNotify::DataSetChanged:
+            env->CallVoidMethod(state->adapter, state->dataset); break;
+        }
+        detail::check_exception(env, "RecyclerView notification");
     }
 
-    JavaVM*   vm_          = nullptr;
-    jobject   adapter_     = nullptr;   // JNI global reference
-    jmethodID m_inserted_  = nullptr;
-    jmethodID m_removed_   = nullptr;
-    jmethodID m_changed_   = nullptr;
-    jmethodID m_moved_     = nullptr;
-    jmethodID m_dataset_   = nullptr;
+    std::shared_ptr<State> state_;
 };
 
 }  // namespace aria::adapters::jni

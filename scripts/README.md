@@ -62,6 +62,8 @@ The generated `.vscode/*.json` files are ignored by Git. Edit the templates in
 Generated tasks cover framework configuration/build, ctest, sanitizer builds,
 documentation, benchmarks, Android NDK, and clang-tidy. The only generated
 launch profile debugs a selected framework test binary.
+The macOS/Linux clang-tidy task uses `tidy-gate.sh` and the configured build's
+translation units, with included headers checked through `.clang-tidy`.
 
 ## Build and package
 
@@ -102,10 +104,15 @@ under `build/dist/tree/`:
 Useful environment variables:
 
 - `CC` / `CXX`: override the compiler on macOS/Linux or MSYS2.
-- `QT_DIR`: point adapter builds at a Qt 6 installation.
-- `ARIA_NO_QT6=1`: disable Qt 6 adapter detection.
+- `QT_DIR`: point adapter builds at a Qt 6 installation matching the compiler.
+  The Windows scripts validate the kit's libraries and reject MSVC/MinGW mixing;
+  the MinGW script first searches the selected compiler's own prefix.
+- `ARIA_NO_QT6=1`: disable the Qt 6 adapter, including in an existing build cache.
 - `ARIA_NO_APPKIT=1`: disable AppKit adapter detection on macOS.
 - `JOBS=N`: set parallelism for `build.sh`.
+
+Each build mode explicitly sets all sanitizer flags. Switching the shared
+Visual Studio tree from `asan` to `release` therefore disables ASan again.
 
 ## Maintenance
 

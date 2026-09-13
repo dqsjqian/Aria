@@ -30,3 +30,20 @@ TEST_CASE("ThreadPoolExecutor: runs tasks across threads") {
     }
     CHECK(counter.load() == 100);
 }
+
+namespace {
+struct ExecutorClearCapture {
+    MainThreadExecutor* executor;
+    ~ExecutorClearCapture() { executor->post([] {}); }
+};
+}
+
+TEST_CASE("MainThreadExecutor: clear releases reentrant captures outside its lock") {
+    MainThreadExecutor executor;
+    auto capture = std::make_shared<ExecutorClearCapture>(&executor);
+    executor.post([capture] {});
+    capture.reset();
+    executor.clear();
+    CHECK(executor.pending() == 1);
+    CHECK(executor.drain() == 1);
+}

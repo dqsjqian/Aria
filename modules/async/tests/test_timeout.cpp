@@ -585,3 +585,37 @@ TEST_CASE("with_timeout::Fail: inner already done at await_suspend (sync race)")
     CHECK(out.kind == Outcome::Kind::Value);
     CHECK(out.value == 7);
 }
+
+namespace {
+Task<void> timeout_ignoring_token_void(VirtualTimeExecutor& timer) {
+    co_await schedule_after(timer, 20ms);
+}
+}
+
+TEST_CASE("with_timeout: Cancel relabels late success for non-cooperative work") {
+    VirtualTimeExecutor timer;
+    SUBCASE("no-token value factory") {
+        auto task = with_timeout(timer, 10ms, [&] { return coro_wait_then_99(timer, 20ms); });
+        task.start();
+        timer.advance_by(10ms);
+        CHECK_FALSE(task.done());
+        timer.advance_by(10ms);
+        CHECK_THROWS_AS(task.blocking_get(), TimeoutError);
+    }
+    SUBCASE("token-accepting factory ignoring cancellation") {
+        auto task = with_timeout(timer, 10ms, [&](CancellationToken) {
+            return coro_wait_then_99(timer, 20ms);
+        });
+        task.start();
+        timer.advance_by(20ms);
+        CHECK_THROWS_AS(task.blocking_get(), TimeoutError);
+    }
+    SUBCASE("void factory") {
+        auto task = with_timeout(timer, 10ms, [&] { return timeout_ignoring_token_void(timer); });
+        task.start();
+        timer.advance_by(10ms);
+        CHECK_FALSE(task.done());
+        timer.advance_by(10ms);
+        CHECK_THROWS_AS(task.blocking_get(), TimeoutError);
+    }
+}

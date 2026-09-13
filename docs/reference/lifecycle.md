@@ -237,7 +237,7 @@ not acceptable, `require_caps(s, ..., "context")` throws
 `aria::Subscription` is the unified RAII detach handle: **move-only,
 not copyable**.
 
-- Destruction (or `release()` / `detach()`) triggers detach **exactly
+- Destruction (or `release()`) triggers detach **exactly
   once**.
 - "Detach" means different things for the two backends:
   - **Reactive-backed** (from `Property::on_changed` /
@@ -272,9 +272,8 @@ multi-thread safe.
 
 ### L-12: SubscriptionBag destruction order
 
-`SubscriptionBag` is a `std::vector<Subscription>`. Destruction
-order follows `std::vector::~vector` semantics — **destroyed in
-reverse construction order**. Implications:
+`SubscriptionBag` explicitly disconnects handles in reverse insertion order;
+this does not depend on a standard library's vector destruction order. Implications:
 - The Subscription added later detaches first.
 - If the user requires "detach A before detach B", express that
   through the `+=` order.
@@ -289,18 +288,19 @@ uses **snapshot-then-invoke**:
 emit:
   snapshot = entries.copy()    // under mutex
   release mutex
-  for slot in snapshot: slot.invoke(args)
+  for slot in snapshot:
+    if slot.active: slot.invoke(args)
 ```
 
 Implications:
-- A slot in the snapshot will be invoked **even if `disconnect()`
-  was called during this emit**.
+- A disconnected slot is skipped if it has not begun its callback. A
+  callback already executing on another thread may finish.
 - A slot newly registered **during** this emit will **not** be
   invoked.
 - It is **safe and common** to `release()` your own Subscription
   inside a slot callback.
 - It is **safe** to `release()` someone else's Subscription inside
-  a slot callback (only affects subsequent emits).
+  a slot callback (also skips later callbacks in the current emit).
 
 **Reactive backend differs**: the graph processes via `pending_` in
 topological order. See L-20.
@@ -313,35 +313,28 @@ hold the lock; recursive emit is just another snapshot-then-invoke.
 ### L-15: destroying the signal itself during emit
 
 `abi::SignalErased` holds its control block via `shared_ptr`; during
-emit the snapshot keeps strong `shared_ptr<SlotErased>` references,
-so **destroying the original signal during emit is safe** — the
-snapshot keeps everything alive until emit completes, after which
-the control block is released.
+emit the snapshot keeps owning entry references. Destroying the signal
+invalidates every connection, so later callbacks are skipped while an
+already executing callback retains its storage until it returns. Capture
+destructors run outside the signal lock.
 
 `disconnect_via_weak` is a no-op when the control block is gone.
 
 ### L-16: a reactive Node destructor MUST detach every edge
 
-`Node::~Node()` strictly follows "detach downstream observers
-first, then `clear_sources()` upstream"; otherwise dangling Edge
-references to freed memory are left behind.
-
-If a derived class (`Property` / `AutoComputed` /
-`AutoReactionNode` / `ReactionNode`) holds members like
-`std::vector<std::unique_ptr<Edge>>`, **the derived destructor MUST
-call `clear_sources()` first** — C++ destruction order ("derived
-members first, base last") would otherwise let `~Node` access freed
-Edge storage when it calls `clear_sources()`.
-
-> Every existing derived class (incl. detail::ReactionNode /
-> AutoReactionNode / AutoComputed) calls `clear_sources()` in its
-> own destructor and complies with the contract.
+Built-in node destructors call `retire_()` before destroying their members.
+Retirement invalidates queued/work/tracker handles and detaches both incoming
+and outgoing edges while their backing storage is still valid. The base
+`Node` destructor repeats retirement safely as a fallback. Custom subclasses
+with edge storage or user-owned captures must retire at destructor entry.
 
 ### L-17: when a Computed releases dynamic dependencies
 
-`AutoComputed` / `AutoReactionNode` start each `recompute()` by
-`clear_sources(); edges_.clear();`, then collect a fresh dependency
-set under TrackerScope and call `attach_as_observer_of` to rewire.
+`AutoComputed` / `AutoReactionNode` collect reads under a fresh TrackerScope
+while retaining their previous dependency set. After the user callback
+succeeds, they replace the old edges with the new dependencies. A throwing
+callback therefore retains the previous edges and can be retried on the next
+source change.
 
 Implications:
 - "Ghost subscriptions" cannot exist — any upstream that was NOT
@@ -389,33 +382,28 @@ next round.
 Implications:
 - `prop.set` inside an `Effect` body or `Computed::recompute` body
   is **allowed** — it gets processed in the next round.
-- **Self-set never forms a cycle** — a subtle but critical
-  invariant. The first thing every `Effect::recompute` does is
-  `clear_sources()`: upstream edges are detached BEFORE `fn` runs.
-  Inside `fn`, `set(p)` triggers `notify_changed`, but
-  `p.observers_head_` is empty at that point (this Effect already
-  detached itself), so this Effect does not re-enqueue into
-  `pending_`. After `fn` returns, TrackerScope collects the
-  freshly-read sources and rebuilds the edges. Result: a
-  self-setting Effect converges naturally instead of looping.
+- A write to an Effect's own source does not recursively invoke the
+  running Effect. Its `Computing` state prevents re-coloring, and its
+  dependencies are reconciled to the versions seen when the body finishes.
+  Previous edges remain attached until a successful body completes, so
+  throwing callbacks do not orphan their subscriptions.
 - If flush exceeds `kMaxFlushRounds = 100` without converging →
   `CircularDependencyError` with the names of the still-pending
   nodes (up to 16). This safety net targets **real multi-node
   cycles** (A writes B, B writes C, C writes A) — not self-set.
-- Destroying a reactive Subscription during flush: the Reaction
-  node fires `clear_sources` to detach, but is **not** removed
-  from the current round's vector / `pending_` — its `recompute()`
-  may still be invoked in this round.
-  `AutoReactionNode::recompute()` is `clear_sources();
-  edges_.clear(); ... fn();`; if the node is dead, `fn` is
-  effectively empty (technically `fn_` is a `std::function` and
-  destructs after the node, so it still exists during emit).
-  > **Implicit contract**: "destroy a subscription during flush"
-  > on the reactive side is NOT as clean as on the signal side —
-  > nodes are reference-counted via `shared_ptr` while the round
-  > vector holds raw pointers. **Users MUST NOT destroy the
-  > Reaction node currently being invoked from inside its own
-  > Effect / Computed body.**
+- Releasing a reactive Subscription during a batch or flush invalidates
+  its queued references. A later callback for that retired node is skipped.
+  An executing reaction can release itself, and an Effect can call `stop()`
+  from its own body: the active invocation retains its node and captures
+  through completion, then disconnects before a subsequent invocation.
+- Queue entries, pull worklists and tracked reads use non-owning lifetime
+  handles. Nodes invalidate them before their derived members are destroyed;
+  this does not extend the lifetime of caller-owned Properties or Computeds.
+  As with ordinary C++ value objects, callers must keep a Property or
+  Computed alive while directly invoking its own member function.
+- Unresolved dependency cycles are detected during the iterative ancestor
+  walk as well as during recursive computation. A cycle cannot grow the
+  worklist indefinitely.
 
 ### L-21: Property writes are equality-gated
 
@@ -460,11 +448,14 @@ Any future change to `ObservableList` MUST preserve the rule
 ### L-31: ObservableList emit ordering
 
 `Insert` / `Remove` / `Replace` / `Move` / `Reset` / `ItemChanged`
-all multicast through `abi::SignalErased`, following L-13.
+use the owning event protocol in [list-diff-contract.md](list-diff-contract.md).
+List fanout is serialized: nested mutations follow the current batch and
+fanout, with incremental mirror coordinates and retained item/snapshot payloads.
+Subscription cancellation follows L-13.
 For batch operations such as `insert_range` /
 `remove_range` / `remove_all`, multiple single-element events are
-emitted; **each event's `index` reflects the list's state as
-observed at THAT emit**.
+emitted; each index belongs to the receiver's incrementally replayed mirror.
+The producer may already contain the batch's final state.
 
 **Anti-pattern**: an observer assumes "list size = idx + 1" upon
 receiving `Insert(idx=2)` — wrong, the list may already be larger.
@@ -490,11 +481,9 @@ documentation promise.
 2. A `static_assert` failure here is a contract violation, not a
    bug. We will not bypass it via `std::function`, nor will we
    "raise the default 32" to paper over individual offenders.
-3. `inplace_function` is **copyable** when the erased callable is
-   copyable (copy goes through `Op::CopyConstruct`); **movable**
-   when the erased callable is movable. A move-only lambda fails to
-   compile at the copy-construction site — an upgrade equivalent
-   to `std::function`'s behaviour, with zero caller change.
+3. `inplace_function` requires a copy-constructible target at construction.
+   Its copy and move operations propagate target exceptions. Move-only
+   targets are rejected immediately instead of failing during a later copy.
 4. `function_ref` does NOT play in the owning lane. If anyone
    accidentally uses `function_ref` as a derived-list storage
    field,    follow the "hot-path callable contract" section in
@@ -731,7 +720,9 @@ Contract:
    callbacks.
 2. Move out the entire `callbacks_` list and fire serially outside
    the lock.
-3. `~CancellationSource` cancels automatically.
+3. `~CancellationSource` cancels automatically. Move assignment cancels
+   the destination's previous state before transferring ownership, so
+   outstanding tokens and waiters are not orphaned. Self-move is a no-op.
 
 > **`on_cancel` fires immediately if cancellation already
 > occurred**: the implementation does a lock-free

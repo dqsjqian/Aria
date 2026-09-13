@@ -18,6 +18,7 @@
 #include "aria/async/async_validator.hpp"
 #include "aria/async/cancellation.hpp"
 #include "aria/async/executor.hpp"
+#include "aria/async/scope.hpp"
 #include "aria/async/task.hpp"
 
 #include <atomic>
@@ -69,7 +70,229 @@ void wait_until(const std::function<bool()>& done,
     }
 }
 
+Task<AsyncRuleResult> cancelled_rule(std::string, CancellationToken) {
+    throw OperationCancelled{};
+    co_return AsyncRuleResult::passed();
+}
+
+Task<AsyncRuleResult> counted_pass(std::string, CancellationToken, int& calls) {
+    ++calls;
+    co_return AsyncRuleResult::passed();
+}
+
+Task<AsyncRuleResult> wait_old_value(std::string value, CancellationToken token) {
+    if (value == "alice") {
+        co_await token;
+        token.throw_if_cancelled();
+    }
+    co_return AsyncRuleResult::passed();
+}
+
+Task<AsyncRuleResult> record_value(std::string value, std::vector<std::string>& calls) {
+    calls.push_back(std::move(value));
+    co_return AsyncRuleResult::passed();
+}
+
+Task<AsyncRuleResult> warning_rule(std::string, CancellationToken) {
+    AsyncRuleResult result;
+    result.warnings.push_back(Error::validation_warning({"", "remote_warning"}, "remote advisory"));
+    co_return result;
+}
+
 }  // namespace
+
+TEST_CASE("Async validation warnings remain advisory and survive cancellation") {
+    InlineExecutor ui, worker;
+    Property<std::string> source{"alice"};
+    Validator<std::string> validator{source, "username"};
+    validator.should([](const std::string&) { return false; }, "sync advisory");
+    AsyncValidator<std::string> async{ui, worker, warning_rule};
+    auto subscription = async.attach_to(validator, source);
+
+    auto state = validator.state().get();
+    CHECK(state.valid);
+    CHECK(state.errors.empty());
+    REQUIRE(state.warnings.size() == 2);
+    CHECK(state.warnings[1].key == ValidationKey{"username", "remote_warning"});
+    CHECK(validator.result().get().valid);
+    validator.begin_pending();
+    validator.cancel_pending();
+    CHECK(validator.state().get() == state);
+    source.set("bob");
+    CHECK(validator.state().get().warnings.size() == 2);
+}
+
+TEST_CASE("V-3: independent cancellation settles pending and preserves previous errors") {
+    InlineExecutor ui, worker;
+    Property<std::string> source{"alice"};
+    Validator<std::string> validator{source, "username"};
+    validator.end_pending(std::vector<std::string>{"previous remote error"});
+    const auto previous = validator.state().get();
+
+    AsyncValidator<std::string> async{ui, worker, cancelled_rule};
+    auto subscription = async.attach_to(validator, source);
+
+    CHECK_FALSE(validator.state().get().pending);
+    CHECK(validator.state().get().errors == previous.errors);
+    CHECK(validator.result().get().errors == previous.errors);
+}
+
+TEST_CASE("V-6: detaching before UI delivery settles without applying the queued result") {
+    MainThreadExecutor ui;
+    InlineExecutor worker;
+    int calls = 0;
+    Property<std::string> source{"alice"};
+    Validator<std::string> validator{source};
+    validator.end_pending(std::vector<std::string>{"keep this error"});
+    const auto previous = validator.state().get().errors;
+    AsyncValidator<std::string> async{ui, worker,
+        [&](std::string value, CancellationToken token) {
+            return counted_pass(std::move(value), token, calls);
+        }};
+    auto subscription = async.attach_to(validator, source);
+    REQUIRE(validator.state().get().pending);
+    REQUIRE(ui.pending() == 1);
+
+    subscription.release();
+    CHECK_FALSE(validator.state().get().pending);
+    ui.drain();
+    CHECK(validator.state().get().errors == previous);
+    source.set("bob");
+    CHECK(calls == 1);
+}
+
+TEST_CASE("V-6: AsyncValidator destruction disconnects a surviving subscription") {
+    MainThreadExecutor ui;
+    InlineExecutor worker;
+    int calls = 0;
+    Property<std::string> source{"alice"};
+    Validator<std::string> validator{source};
+    validator.end_pending(std::vector<std::string>{"keep this error"});
+    const auto previous = validator.state().get().errors;
+    Subscription subscription;
+    {
+        AsyncValidator<std::string> async{ui, worker,
+            [&](std::string value, CancellationToken token) {
+                return counted_pass(std::move(value), token, calls);
+            }};
+        subscription = async.attach_to(validator, source);
+        REQUIRE(validator.state().get().pending);
+    }
+    CHECK_FALSE(validator.state().get().pending);
+    ui.drain();
+    CHECK(validator.state().get().errors == previous);
+    source.set("bob");
+    CHECK(calls == 1);
+    ui.drain();
+}
+
+TEST_CASE("V-6: an old attachment cannot disconnect a newer attachment") {
+    MainThreadExecutor ui;
+    InlineExecutor worker;
+    int calls = 0;
+    Property<std::string> first{"alice"}, second{"bob"};
+    Validator<std::string> first_validator{first}, second_validator{second};
+    AsyncValidator<std::string> async{ui, worker,
+        [&](std::string value, CancellationToken token) {
+            return counted_pass(std::move(value), token, calls);
+        }};
+    auto old_subscription = async.attach_to(first_validator, first);
+    auto current_subscription = async.attach_to(second_validator, second);
+    CHECK_FALSE(first_validator.state().get().pending);
+    CHECK(second_validator.state().get().pending);
+    old_subscription.release();
+    ui.drain();
+    CHECK_FALSE(second_validator.state().get().pending);
+    first.set("stale input");
+    CHECK(calls == 2);
+    second.set("new input");
+    ui.drain();
+    CHECK(calls == 3);
+}
+
+TEST_CASE("V-6: Validator destruction invalidates queued completion and detach") {
+    MainThreadExecutor ui;
+    InlineExecutor worker;
+    int calls = 0;
+    Property<std::string> source{"alice"};
+    AsyncValidator<std::string> async{ui, worker,
+        [&](std::string value, CancellationToken token) {
+            return counted_pass(std::move(value), token, calls);
+        }};
+    auto validator = std::make_unique<Validator<std::string>>(source);
+    auto subscription = async.attach_to(*validator, source);
+    REQUIRE(ui.pending() == 1);
+    validator.reset();
+    ui.drain();
+    source.set("bob");
+    CHECK(calls == 1);
+    subscription.release();
+}
+
+TEST_CASE("V-1: superseded cancellation does not settle a newer pending run") {
+    MainThreadExecutor ui;
+    InlineExecutor worker;
+    Property<std::string> source{"alice"};
+    Validator<std::string> validator{source};
+    std::vector<bool> pending;
+    auto observer = validator.state().on_changed([&](const ValidationState& state) {
+        if (pending.empty() || pending.back() != state.pending) pending.push_back(state.pending);
+    });
+    AsyncValidator<std::string> async{ui, worker, wait_old_value};
+    auto subscription = async.attach_to(validator, source);
+    source.set("bob");
+    CHECK(validator.state().get().pending);
+    CHECK(pending == std::vector<bool>{true});
+    ui.drain();
+    CHECK_FALSE(validator.state().get().pending);
+    CHECK(pending == std::vector<bool>{true, false});
+}
+
+TEST_CASE("V-1: source change from pending notification supersedes the initial fire") {
+    InlineExecutor ui, worker;
+    Property<std::string> source{"alice"};
+    Validator<std::string> validator{source};
+    std::vector<std::string> calls;
+    auto observer = validator.state().on_changed([&](const ValidationState& state) {
+        if (state.pending && source.peek() == "alice") source.set("bob");
+    });
+    AsyncValidator<std::string> async{ui, worker,
+        [&](std::string value, CancellationToken) { return record_value(std::move(value), calls); }};
+    auto subscription = async.attach_to(validator, source);
+    CHECK(calls == std::vector<std::string>{"bob"});
+    CHECK_FALSE(validator.state().get().pending);
+}
+
+TEST_CASE("V-6: move assignment retires only the replaced attachment") {
+    MainThreadExecutor ui;
+    InlineExecutor worker;
+    int first_calls = 0, second_calls = 0;
+    Property<std::string> first{"alice"}, second{"bob"};
+    Validator<std::string> first_validator{first}, second_validator{second};
+    AsyncValidator<std::string> destination{ui, worker,
+        [&](std::string value, CancellationToken token) {
+            return counted_pass(std::move(value), token, first_calls);
+        }};
+    AsyncValidator<std::string> incoming{ui, worker,
+        [&](std::string value, CancellationToken token) {
+            return counted_pass(std::move(value), token, second_calls);
+        }};
+    auto first_subscription = destination.attach_to(first_validator, first);
+    auto second_subscription = incoming.attach_to(second_validator, second);
+    destination = std::move(incoming);
+    CHECK_FALSE(first_validator.state().get().pending);
+    CHECK(second_validator.state().get().pending);
+    auto& same_destination = destination;
+    destination = std::move(same_destination);
+    CHECK(second_validator.state().get().pending);
+    ui.drain();
+    first.set("old source");
+    second.set("new source");
+    ui.drain();
+    CHECK(first_calls == 1);
+    CHECK(second_calls == 2);
+    CHECK_FALSE(second_validator.state().get().pending);
+}
 
 // ----------------------------------------------------------------------------
 //  V-2: pending semantics + V-4: ValidationKey + rule_id
@@ -342,7 +565,7 @@ TEST_CASE("V-3 (real executor): cancellation never surfaces as Error") {
     pump_until(ui, [&]{ return g->fires.load() >= 1; });
 
     // Detach -> in-flight rule must observe cancellation and unwind.
-    sub.detach();
+    sub.release();
     g->release_now();   // wake the worker so it actually checks
     pump_until(ui, [&]{ return g->cancels.load() >= 1
                                 || g->completes.load() >= 1; },
@@ -353,11 +576,9 @@ TEST_CASE("V-3 (real executor): cancellation never surfaces as Error") {
     for (int i = 0; i < 8; ++i) ui.drain();
 
     auto state = v.state().get();
-    // V-3: the only acceptable terminal states are
-    //   (pending=true, errors=empty, valid=...)  -- still draining
-    //   (pending=false, errors=empty, valid=true) -- cancelled clean
-    // The forbidden case is (pending=false, errors=non-empty) with
-    // the cancellation-derived Error. We assert the negative.
+    // Detach settles the UI immediately; draining work cannot restore pending
+    // or produce a cancellation error afterward.
+    CHECK_FALSE(state.pending);
     for (const auto& e : state.errors) {
         CHECK(e.kind != ErrorKind::Cancellation);
     }
@@ -420,7 +641,7 @@ TEST_CASE("Lifetime: validator destroyed before in-flight rule completes is safe
         Validator<std::string>  v{username, "signup.username"};
         auto sub = av->attach_to(v, username);
         pump_until(ui, [&]{ return v.state().get().pending; });
-        // sub.detach() runs first via Subscription::~Subscription,
+        // Subscription destruction releases the connection first,
         // which clears the AsyncValidator's target_ and fires the
         // current CancellationSource. Validator dies next.
     }

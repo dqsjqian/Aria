@@ -201,10 +201,10 @@ ViewModel 是普通 C++ 类，不继承框架基类、不需要宏、不需要�
 
 ## ✨ 核心特性
 
-- 📦 **仅头文件核心** —— `Property<T>` / `Computed<T>` / `Effect` / `Command<>` / `ObservableList<T>` / `Validator<T>` 共享同一个响应式依赖图引擎。`Computed` 自动跟踪依赖，`reactive::batch` / `reactive::untracked` 精确控制通知范围。
-- 🔌 **类型擦除 ABI 层** —— `aria-abi` / `aria-runtime` / `aria-binding` 在主版本号内 ABI 稳定；模板层仅源码兼容。
+- 📦 **模板化响应式核心** —— `Property<T>` / `Computed<T>` / `Effect` / `Command<>` / `ObservableList<T>` / `Validator<T>` 共享同一个响应式依赖图引擎。`Computed` 自动跟踪依赖，`reactive::batch` / `reactive::untracked` 精确控制通知范围。
+- 🔌 **共享基础库与 ABI 层** —— `aria::core` 自动链接 `aria::abi`，统一跨动态库的响应式图、诊断和信号存储。ABI 要求一致的编译器、标准库、构建选项和主版本；模板及其宿主类型在更新后需要重新编译。
 - ⚡ **C++20 协程** —— `Task<T>`、执行器、`co_await schedule_on(pool)`，异步代码写起来像同步代码。
-- 🖥 **适配器抽象** (`IViewAdapter`) —— Qt6 / AppKit / UIKit / JNI / HTTP / WASM，任何 UI 工具包都能用同一套业务逻辑驱动。
+- 🖥 **适配器抽象** (`IViewAdapter`) —— Qt6 / AppKit / UIKit / JNI / HTTP，任何 UI 工具包都能用同一套业务逻辑驱动。
 
 ## 🏗 架构（10 个模块）
 
@@ -217,7 +217,7 @@ ViewModel 是普通 C++ 类，不继承框架基类、不需要宏、不需要�
    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
    │ Qt6 适配器    │    │ JNI 适配器    │    │ HTTP 适配器   │     (可选模块；
    │ (Win/Mac/Lin)│    │  (Android)   │    │ REST/SSE Web │      按需启用)
-   │ AppKit/UIKit │    │              │    │ WASM 计划中   │
+   │ AppKit/UIKit │    │              │    │ WASM 按需评估   │
    └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
           └───────────────────┴───────────────────┘
                               ▼
@@ -246,7 +246,7 @@ ViewModel 是普通 C++ 类，不继承框架基类、不需要宏、不需要�
               └────────────┬──────────────┘
                              ▼
               ┌─────────────────────────────┐
-              │  aria-abi  (STATIC .a)      │
+              │  aria-abi  (SHARED)      │
               │ 类型擦除 Signal/Slot         │
               │ ABI 稳定，无模板              │
               └─────────────────────────────┘
@@ -254,12 +254,12 @@ ViewModel 是普通 C++ 类，不继承框架基类、不需要宏、不需要�
 
 | 模块 | 类型 | 依赖 | 说明 |
 |------|------|------|------|
-| `aria-abi` | `STATIC` | 无 | 类型擦除的信号/槽，无模板，**ABI 稳定**。 |
+| `aria-abi` | 默认 `SHARED` | Threads | 编译型基础库：信号/槽、共享响应式图、诊断存储、调度器基类与版本信息；支持静态构建。 |
 | `aria-core` | 仅头文件 | abi | 全部模板：`Property`、`Computed`、`Command`、`ObservableList`、`Validator`。仅源码兼容。 |
 | `aria-async` | 仅头文件 | core | C++20 `Task<T>`、执行器。仅源码兼容。 |
 | `aria-runtime` | `SHARED` | core, abi | EventBus / Container / Dispatcher / Logger —— 单例统一放在**一个**动态库中。**ABI 稳定**。 |
 | `aria-binding` | `SHARED` | core, runtime | `BindingEngine`、`IViewAdapter`。**ABI 稳定**。 |
-| 适配器 | `SHARED`/`STATIC` | binding | Qt6 / AppKit / UIKit / JNI / HTTP（按需启用）；WASM 计划中。 |
+| 适配器 | `SHARED`/`STATIC` | binding | Qt6 / AppKit / UIKit / JNI / HTTP（按需启用）；WASM 按需评估。 |
 
 ## 📋 环境要求
 
@@ -268,6 +268,7 @@ ViewModel 是普通 C++ 类，不继承框架基类、不需要宏、不需要�
   - GCC >= 12（Windows 下可走 MSYS2 UCRT64 工具链）
   - Clang >= 15（macOS/iOS 上 AppleClang 15+ 即可）
   - **MSVC v143 / Visual Studio 2022**（Windows，详见下文）
+- **C++23** 可通过 `-DCMAKE_CXX_STANDARD=23` 选择；最低要求仍为 C++20，见[评估](docs/cpp23-evaluation.md)。
 - *(可选)* **Qt6** >= 6.4（用于 Qt6 适配器）
 
 > **Windows 同时支持 MSYS2 UCRT64（GCC）和 MSVC / Visual Studio 2022 两条工具链。** 团队栈里有哪个就用哪个 —— 同一棵源码树都能编出完整框架 + 测试 + 适配器，不需要分支或 fork。
@@ -379,7 +380,6 @@ target_link_libraries(my_app PRIVATE aria::core aria::async)
 | `ARIA_BUILD_UIKIT` | OFF | iOS UIKit 适配器（需 `APPLE`）。 |
 | `ARIA_BUILD_JNI` | OFF | Android JNI 适配器（需 NDK r26+）。 |
 | `ARIA_BUILD_HTTP` | OFF | 构建 HTTP/REST/SSE 适配器。 |
-| `ARIA_BUILD_WASM` | OFF | *(计划中)* WebAssembly 适配器。 |
 | `ARIA_ENABLE_ASAN` | OFF | AddressSanitizer。 |
 | `ARIA_ENABLE_UBSAN` | OFF | UndefinedBehaviorSanitizer。 |
 | `ARIA_ENABLE_TSAN` | OFF | ThreadSanitizer。 |
@@ -441,13 +441,13 @@ Task<std::string> fetch_user(int id) {
 
 | 平台 | UI 宿主 | 适配器 | 状态 |
 |------|---------|--------|------|
-| Windows | Qt6 / WinUI | `aria-qt6` | ✅ MSYS2 UCRT64 + MSVC 2022 |
+| Windows | Qt6 | `aria-qt6` | ✅ MSYS2 UCRT64 + MSVC 2022 |
 | macOS | AppKit / Qt6 | `aria-qt6` / `aria-appkit` | ✅ 可用 |
-| Linux | Qt6 / GTK | `aria-qt6` | ✅ 可用 |
-| iOS | UIKit / SwiftUI bridge | `aria-uikit` | ✅ 可用 |
+| Linux | Qt6 | `aria-qt6` | ✅ 可用 |
+| iOS | UIKit | `aria-uikit` | ✅ 可用 |
 | Android | Compose / View | `aria-jni` | ✅ 就绪（NDK r26+） |
 | **Web（服务端驱动）** | **浏览器 HTML/JS** | **`aria-http`** | **✅ REST + SSE** |
-| Web（浏览器内 C++） | DOM via WASM | `aria-wasm` | 🔜 计划中 |
+| Web（浏览器内 C++） | DOM via WASM | `aria-wasm` | 按实际需求评估，未实现 |
 
 ## 🖼 跨端实战成果
 
@@ -486,41 +486,34 @@ Aria HTTP 适配器驱动的书源管理 Web 端：左侧书源列表 + 右侧�
 | 书源管理（Web / REST+SSE） | ![OpenRead-Web](docs/marketing/images/OpenRead-Web.png) |
 | 书源管理（Web / SSR） | ![OpenRead-SSR](docs/marketing/images/OpenRead-SSR.png) |
 
-> **关于 Windows / Linux 截图**：Mac 的壳是基于 **Aria（框架技术底座）+ Qt6 适配器（View 层）**做的，在 Windows / Linux 上跑出来的程序与 Mac 视觉上完全一致（同一份 Qt 控件 + 同一份 C++ ViewModel），所以不必重复截图。Windows 下还另有 MSVC + Qt6 与 MSYS2 UCRT64 两条工具链可以独立验证。
+> 以上截图来自 macOS 示例应用。其他平台复用同一份 ViewModel；原生控件外观由平台、Qt 样式和宿主应用决定。框架的 Windows / Linux 构建与测试状态以 CI 为准。
 
 ## 🧪 测试状态
 
-```
-$ ctest --test-dir build --output-on-failure
-    Start 1: abi_tests           ✅ Passed
-    Start 2: core_tests          ✅ Passed
-    Start 3: fuzz_tests          ✅ Passed
-    Start 4: async_tests         ✅ Passed
-    Start 5: runtime_tests       ✅ Passed
-    Start 6: binding_tests       ✅ Passed
-    Start 7: qt6_tests           ✅ Passed   (ARIA_BUILD_QT6=ON)
-    Start 8: appkit_conformance  ✅ Passed   (Apple 平台)
-    Start 9: appkit_table_source ✅ Passed   (Apple 平台)
-
-100% tests passed, 0 tests failed
+```bash
+ctest --test-dir build/flavors/release --no-tests=error --output-on-failure
 ```
 
-75+ 个测试用例覆盖 `docs/reference/lifecycle.md`、`docs/reference/error-model.md` 中所有生命周期 / 重入 / 异常安全契约。
+测试涵盖响应式状态、集合事件、异步取消、绑定生命周期、ABI 和适配器契约；
+实际启用的测试取决于构建选项与平台。查看 [CI 结果](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml)
+以及 [生命周期契约](docs/reference/lifecycle.md)、[错误模型](docs/reference/error-model.md)。
 
-## 📊 性能基准（Apple M 系列, -O3 -DNDEBUG）
+## 📊 性能基准
 
-| 操作 | 纳秒/次 |
-|-----------|-------|
-| `Property<int>::get()` | 10.4 |
-| `Property<int>::set()` 无观察者 | 28.5 |
-| `Property<int>::set()` 1 个观察者 | 29.3 |
-| `Property<int>::set()` 10 个观察者 | 45.9 |
-| 订阅 + 自动取消订阅周期 | 54.9 |
-| Computed 链 x5（set + 重新计算 + get） | 289.1 |
-| `EventBus::publish`（1 个订阅者） | 13.4 |
-| `Container::resolve<Singleton>` | 7.6 |
-| 10 次 set 包在 `reactive::batch` 中 | 156.1 |
-| 批量更新加速比（对比逐次更新） | **1.91×** |
+2026-09-13，Apple M3 Pro / Apple Clang 21 / C++20 Release（`-O3 -DNDEBUG`）。
+下面是五次配对运行中，各次平均耗时的中位数；原版为 `eeb613f`，新版为本次 2.0 改造。
+
+| 操作 | 原版 | 新版 |
+|---|---:|---:|
+| Property set，无观察者 | 20.5 ns | 13.2 ns |
+| Property set，1 个观察者 | 98.9 ns | 35.0 ns |
+| Computed 链 ×5 | 570.8 ns | 229.0 ns |
+| 10 次 set 包在一个 batch 中 | 250.6 ns | 102.5 ns |
+| FilteredList 尾部追加，初始 10k 行 | 11.18 μs | 0.23 μs |
+| SortedList 随机键追加，初始 10k 行 | 8.38 μs | 17.28 μs |
+
+性能有升有降：拥有事件数据和维护批量修改后的排序正确性也有成本。
+完整场景、复杂度、剩余回退和复现方法见 [性能说明](docs/reference/performance.md)。
 
 ## 📋 框架本体契约
 
@@ -534,6 +527,9 @@ $ ctest --test-dir build --output-on-failure
 | [`list-diff-contract.md`](docs/reference/list-diff-contract.md) | `LD-N` | `Insert / Remove / Replace / Move / Reset` 语义 |
 | [`diagnostics.md`](docs/reference/diagnostics.md) | `D-N` | `TraceEvent` + `TraceSink` 诊断协议 |
 | [`performance.md`](docs/reference/performance.md) | `PERF-N` | 复杂度上界与实测基线 |
+
+公开 [API 参考](https://dqsjqian.github.io/Aria/) 由主分支自动构建并发布。
+从 1.2.x 升级请阅读 [2.0 迁移指南](docs/migration-2.0.md)。
 
 ## 🗺 路线图
 
@@ -552,7 +548,7 @@ Aria 已开源（MIT License），源码托管在 [GitHub](https://github.com/dq
 - [doctest](https://github.com/doctest/doctest) —— 轻量级测试框架
 - [nlohmann_json](https://github.com/nlohmann/json) —— JSON for Modern C++
 - [cpp-httplib](https://github.com/yhirose/cpp-httplib) —— HTTP/HTTPS server
-- [OpenSSL](https://www.openssl.org/) —— TLS 1.2/1.3（3.5 LTS）
+- [OpenSSL](https://www.openssl.org/) —— TLS 1.2/1.3（版本见 `third_party/openssl/VERSION.dat`）
 - [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) —— CMake 依赖管理
 
 ## 📄 License

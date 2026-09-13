@@ -1,12 +1,9 @@
 // bench_derived_list — FilteredList / SortedList / MappedList per-event cost.
 //
-// Each test runs an incremental scenario and records ns/op; results
-// should always be sub-microsecond per source mutation, otherwise the
-// derived view is failing the "incremental, not Reset" contract.
-//
-// As a sanity floor we also bench a "rebuild from scratch" baseline
-// against std::vector — the derived-list cost should be in the same
-// order of magnitude when the source is mostly static.
+// Each scenario measures source mutation plus derived-view maintenance.
+// Vector shifts, allocations and the current source size all affect timings;
+// event-contract tests independently verify that incremental updates emit
+// the required changes. Timing alone cannot establish absence of Reset.
 
 #include "aria/aria.hpp"
 #include "aria/abi/version.hpp"
@@ -72,7 +69,7 @@ int main() {
     // SortedList: ItemChanged crossing sort positions (uses Reactive
     // Property internally; we approximate with replace_at since Item
     // here is Plain — Replace with same-position triggers Replace, but
-    // a sufficiently random replacement triggers Remove+Insert).
+    // a replacement that changes position triggers Move+Replace).
     {
         auto src = std::make_shared<ObservableList<Item>>();
         for (int i = 0; i < kSeed; ++i) src->push_back(make(i, true));
@@ -109,9 +106,11 @@ int main() {
         std::vector<int> seed(kSeed);
         std::iota(seed.begin(), seed.end(), 0);
         const int N = 100;
+        aria_bench::Sink sink;
         double ns = measure_ns(N, [&](int) {
             std::vector<int> copy = seed;
             std::sort(copy.begin(), copy.end());
+            sink.feed(copy[static_cast<std::size_t>(N)]);
         });
         row("std::sort full rebuild (n=10k, baseline)", ns, N);
     }
@@ -121,7 +120,7 @@ int main() {
     //  Two derived-list incremental paths are pinned:
     //    1. FilteredList: source push_back  — predicate-only incremental.
     //    2. SortedList:   source push_back  — binary-search insert.
-    //  Tail spikes usually mean a derived list fell back to a Reset.
+    //  Tail timings include vector growth and index maintenance.
     // -------------------------------------------------------------------
     {
         auto src = std::make_shared<ObservableList<Item>>();
@@ -153,9 +152,8 @@ int main() {
     // -------------------------------------------------------------------
     //  >=10^5-element bench for the derived collections
     //  (DistinctList / PagedList / GroupedList). The contract being
-    //  pinned: per-source-mutation cost stays sub-millisecond at 100k
-    //  elements, i.e. derived collections never silently fall back to
-    //  full Reset on a single source push_back.
+    //  measured: how per-source-mutation cost scales at 100k elements.
+    //  Whether the event stream uses Reset is checked by conformance tests.
     // -------------------------------------------------------------------
     constexpr int kBig = 100'000;
 

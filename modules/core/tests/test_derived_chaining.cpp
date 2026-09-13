@@ -226,3 +226,176 @@ TEST_CASE("Chaining: existing single-level usage is unchanged") {
     CHECK(values_of(s) == std::vector<int>{1, 2, 3});
     CHECK(values_of(p) == std::vector<int>{3, 1});
 }
+
+TEST_CASE("Chaining: sorted Replace identifies the evicted item to distinct") {
+    auto src = make_source({1, 2});
+    auto asc = sorted(src, [](const Row& a, const Row& b) { return a.value < b.value; });
+    auto unique = distinct<int>(asc, [](const Row& r) { return r.value; });
+    auto old = src->at(0);
+    const Row* removed = nullptr;
+    auto sub = asc->observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::Remove) removed = ch.item.get();
+    });
+    src->replace_at(0, std::make_shared<Row>(3));
+    CHECK(removed == old.get());
+    CHECK(values_of(*unique) == std::vector<int>{2, 3});
+}
+
+TEST_CASE("Chaining: immutable remaps replace handles throughout the pipeline") {
+    struct LiveRow {
+        Property<int> value{1};
+        Subscription on_changed(std::function<void(const LiveRow&)> fn) {
+            return value.on_changed([this, fn = std::move(fn)](int) { fn(*this); });
+        }
+    };
+    auto src = std::make_shared<ObservableList<LiveRow>>();
+    auto live = std::make_shared<LiveRow>();
+    src->push_back(live);
+    auto snapshots = mapped<Row>(src, [](const LiveRow& r) {
+        return std::make_shared<Row>(r.value.peek());
+    }, true);
+    auto keep = filtered(snapshots, [](const Row&) { return true; });
+    auto page = paged(keep, 4);
+    live->value.set(9);
+    CHECK(values_of(*snapshots) == std::vector<int>{9});
+    CHECK(values_of(*keep) == std::vector<int>{9});
+    CHECK(values_of(*page) == std::vector<int>{9});
+    CHECK(keep->at(0) == snapshots->at(0));
+}
+
+static_assert(!aria::ListSource<int>);
+namespace { struct MissingListProtocol {}; }
+static_assert(!aria::ListSource<MissingListProtocol>);
+
+TEST_CASE("Chaining: nonempty Reset refreshes every derived cache") {
+    auto src = std::make_shared<ObservableList<int>>();
+    for (int n : {1, 2, 3}) src->emplace_back(n);
+    auto order = sorted(src, [](int a, int b) { return a < b; });
+    auto filter = filtered(order, [](int) { return true; });
+    auto page = paged(order, 2);
+    auto unique = distinct<int>(order, [](int n) { return n; });
+    auto groups = grouped<int>(order, [](int n) { return n % 2; });
+    auto chain = mapped<int>(filter, [](int n) { return std::make_shared<int>(n); });
+    order->set_comparator([](int a, int b) { return a > b; });
+    REQUIRE(filter->size() == 3);
+    CHECK(*filter->at(0) == 3);
+    REQUIRE(page->size() == 2);
+    CHECK(*page->at(0) == 3);
+    REQUIRE(unique->size() == 3);
+    CHECK(*unique->at(0) == 3);
+    REQUIRE(groups->find(1) != nullptr);
+    CHECK(*groups->find(1)->items->at(0) == 3);
+    CHECK(*chain->at(0) == 3);
+    src->emplace_back(4);
+    CHECK(*filter->at(0) == 4);
+    CHECK(*page->at(0) == 4);
+    CHECK(*unique->at(0) == 4);
+    CHECK(*groups->find(0)->items->at(0) == 4);
+    CHECK(*chain->at(0) == 4);
+}
+
+TEST_CASE("Chaining: key changes move every repeated handle occurrence") {
+    struct LiveKey {
+        Property<int> key{1};
+        Subscription on_changed(std::function<void(const LiveKey&)> fn) {
+            return key.on_changed([this, fn](int) { fn(*this); });
+        }
+    };
+    auto src = std::make_shared<ObservableList<LiveKey>>();
+    auto shared = src->emplace_back();
+    src->push_back(shared);
+    auto unique = distinct<int>(src, [](const LiveKey& row) { return row.key.peek(); });
+    auto groups = grouped<int>(src, [](const LiveKey& row) { return row.key.peek(); });
+    shared->key.set(4);
+    REQUIRE(unique->size() == 1);
+    REQUIRE(groups->size() == 1);
+    CHECK(groups->find(1) == nullptr);
+    REQUIRE(groups->find(4) != nullptr);
+    CHECK(groups->find(4)->items->size() == 2);
+    src->remove_at(1);
+    src->remove_at(0);
+    CHECK(unique->empty());
+    CHECK(groups->empty());
+}
+
+TEST_CASE("Chaining: changing a predicate or comparator during an upstream batch uses replayed rows") {
+    auto source = std::make_shared<ObservableList<int>>();
+    auto visible = filtered(source, [](int) { return true; });
+    auto ordered = sorted(source, [](int a, int b) { return a < b; });
+    bool filtered_once = false;
+    bool sorted_once = false;
+    auto fs = visible->observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::Insert && !filtered_once) {
+            filtered_once = true;
+            visible->set_predicate([](int n) { return n % 2 == 0; });
+        }
+    });
+    auto ss = ordered->observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::Insert && !sorted_once) {
+            sorted_once = true;
+            ordered->set_comparator([](int a, int b) { return a > b; });
+        }
+    });
+    std::vector<std::shared_ptr<int>> rows;
+    for (int n : {1, 2, 3}) rows.push_back(std::make_shared<int>(n));
+    source->insert_range(0, rows.begin(), rows.end());
+    CHECK(visible->snapshot() == std::vector<std::shared_ptr<int>>{rows[1]});
+    CHECK(ordered->snapshot() == std::vector<std::shared_ptr<int>>{rows[2], rows[1], rows[0]});
+}
+
+TEST_CASE("Chaining: a view created during a batch starts after its committed snapshot") {
+    auto source = std::make_shared<ObservableList<int>>();
+    std::shared_ptr<FilteredList<int>> late;
+    std::vector<std::shared_ptr<int>> replay;
+    Subscription replay_sub;
+    auto create = source->observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::Insert && !late) {
+            late = filtered(source, [](int) { return true; });
+            replay = late->snapshot();
+            replay_sub = late->observe([&](const auto& event) {
+                if (event.kind == ListChangeKind::Insert) {
+                    REQUIRE(event.index <= replay.size());
+                    replay.insert(replay.begin() + static_cast<std::ptrdiff_t>(event.index), event.item);
+                } else if (event.kind == ListChangeKind::Remove) {
+                    REQUIRE(event.index < replay.size());
+                    CHECK(replay[event.index] == event.item);
+                    replay.erase(replay.begin() + static_cast<std::ptrdiff_t>(event.index));
+                }
+            });
+            // Committed after subscribing: this event must still arrive.
+            source->remove_at(1);
+        }
+    });
+    std::vector<std::shared_ptr<int>> rows;
+    for (int n : {1, 2, 3}) rows.push_back(std::make_shared<int>(n));
+    source->insert_range(0, rows.begin(), rows.end());
+    REQUIRE(late != nullptr);
+    CHECK(late->snapshot() == source->snapshot());
+    CHECK(replay == source->snapshot());
+}
+
+TEST_CASE("Chaining: a sorted item change refreshes membership and immutable mapped values after its Move") {
+    struct LiveValue {
+        Property<int> value;
+        explicit LiveValue(int n) : value(n) {}
+        Subscription on_changed(std::function<void(const LiveValue&)> fn) {
+            return value.on_changed([this, fn](int) { fn(*this); });
+        }
+    };
+    auto source = std::make_shared<ObservableList<LiveValue>>();
+    auto first = source->emplace_back(1);
+    source->emplace_back(2);
+    auto ordered = sorted(source, [](const LiveValue& a, const LiveValue& b) {
+        return a.value.peek() < b.value.peek();
+    });
+    auto visible = filtered(ordered, [](const LiveValue& item) { return item.value.peek() < 3; });
+    auto values = mapped<int>(ordered, [](const LiveValue& item) {
+        return std::make_shared<int>(item.value.peek());
+    }, true);
+    first->value.set(9);
+    REQUIRE(visible->size() == 1);
+    CHECK(visible->at(0)->value.peek() == 2);
+    REQUIRE(values->size() == 2);
+    CHECK(*values->at(0) == 2);
+    CHECK(*values->at(1) == 9);
+}

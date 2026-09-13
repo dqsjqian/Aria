@@ -65,6 +65,7 @@
 #include "aria/detail/list_signal_mixin.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -96,7 +97,7 @@ public:
     using value_type = Group<T, Key>;
     /// Owning, heap-free key extractor (capacity 32 bytes).
     using KeyOf      = aria::inplace_function<Key(const T&), 32>;
-    using Signal     = detail::TypedSignal<ListChange<Group<T, Key>>>;
+    using Signal     = detail::ListSignal<Group<T, Key>>;
 
     GroupedList(std::shared_ptr<Source> source,
                 KeyOf key_of = default_key_of_())
@@ -155,237 +156,247 @@ public:
     }
 
 private:
+    struct SourceRow {
+        std::shared_ptr<T> item;
+        Key key;
+    };
+
+    struct InputChange {
+        ListChangeKind kind;
+        std::size_t index;
+        std::size_t from;
+        std::optional<SourceRow> row;
+        std::vector<SourceRow> reset;
+    };
+
     struct SharedState {
-        mutable std::shared_mutex                              m;
-        KeyOf                                                  key_of;
-        // Outer list, in first-appearance order.
-        std::vector<std::shared_ptr<Group<T, Key>>>            groups;
-        // Reverse: which outer slot owns this key.
-        std::unordered_map<Key, std::size_t>                   by_key;
-        // For PGR-6: track the key of each currently-tracked source item
-        // (by raw pointer identity). Lets us detect key changes on
-        // ItemChanged.
-        std::unordered_map<const T*, Key>                      item_key;
+        mutable std::shared_mutex m;
+        KeyOf key_of;
+        std::vector<std::shared_ptr<Group<T, Key>>> groups;
+        std::unordered_map<Key, std::size_t> by_key;
+        // Source slots, including repeated handles. Replace carries the NEW
+        // pointer, so its old group/position must come from this cache.
+        std::vector<SourceRow> rows;
     };
 
     std::shared_ptr<Source> source_;
-    std::shared_ptr<Signal>            signal_;
-    std::shared_ptr<SharedState>       state_;
-    Subscription                       source_sub_;
+    std::shared_ptr<Signal> signal_;
+    std::shared_ptr<SharedState> state_;
+    Subscription source_sub_;
 
     static KeyOf default_key_of_() {
         return [](const T& v) -> Key {
-            if constexpr (std::is_same_v<Key, T>) {
-                return v;
-            } else {
-                static_assert(std::is_same_v<Key, T>,
-                    "GroupedList<T, Key>: default key extractor needs Key == T. "
-                    "Provide a custom KeyOf for differing Key.");
-                return Key{};
-            }
+            static_assert(std::is_same_v<Key, T>,
+                "GroupedList: provide a key extractor when Key differs from T.");
+            return v;
         };
     }
 
-    void rebuild_initial_() {
-        auto snap = source_->snapshot();
-        std::unique_lock lk(state_->m);
-        for (const auto& sp_ : snap) {
-            const Key k = state_->key_of(*sp_);
-            state_->item_key[sp_.get()] = k;
-            auto it = state_->by_key.find(k);
-            if (it == state_->by_key.end()) {
-                auto g    = std::make_shared<Group<T, Key>>();
-                g->key    = k;
-                g->items  = std::make_shared<ObservableList<T>>();
-                g->items->push_back(sp_);
-                state_->by_key.emplace(k, state_->groups.size());
-                state_->groups.push_back(std::move(g));
-            } else {
-                state_->groups[it->second]->items->push_back(sp_);
-            }
+    static std::vector<SourceRow> source_rows_(SharedState& st, Source& src) {
+        std::vector<SourceRow> rows;
+        for (auto& item : src.snapshot()) {
+            rows.push_back(SourceRow{item, st.key_of(*item)});
         }
+        return rows;
+    }
+
+    static void rebuild_(SharedState& st, std::vector<SourceRow> rows) {
+        std::vector<std::shared_ptr<Group<T, Key>>> groups;
+        std::unordered_map<Key, std::size_t> by_key;
+        for (const auto& row : rows) {
+            auto [it, inserted] = by_key.emplace(row.key, groups.size());
+            if (inserted) {
+                groups.push_back(std::make_shared<Group<T, Key>>(
+                    Group<T, Key>{row.key, std::make_shared<ObservableList<T>>()}));
+            }
+            // These new inner lists have no observers yet.
+            groups[it->second]->items->push_back(row.item);
+        }
+        std::unique_lock lk(st.m);
+        st.rows = std::move(rows);
+        st.groups = std::move(groups);
+        st.by_key = std::move(by_key);
+    }
+
+    void rebuild_initial_() {
+        rebuild_(*state_, source_rows_(*state_, *source_));
     }
 
     static void handle_source_change_(SharedState& st, Signal& sig,
-                                      Source& src,
-                                      const ListChange<T>& ch) {
-        switch (ch.kind) {
-        case ListChangeKind::Insert:      handle_insert_(st, sig, src, ch);       return;
-        case ListChangeKind::Remove:      handle_remove_(st, sig, ch);            return;
-        case ListChangeKind::Replace:     handle_replace_(st, sig, src, ch);      return;
-        case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, src, ch); return;
-        case ListChangeKind::Reset:       handle_reset_(st, sig);                 return;
-        case ListChangeKind::Move:        /* outer order unchanged */             return;
+                                      Source& src, const ListChange<T>& ch) {
+        InputChange event{ch.kind, ch.index, ch.from_index, {}, {}};
+        if (ch.kind == ListChangeKind::Insert ||
+            ch.kind == ListChangeKind::Replace ||
+            ch.kind == ListChangeKind::ItemChanged) {
+            auto item = ch.item;
+            event.row.emplace(SourceRow{item, st.key_of(*item)});
+        } else if (ch.kind == ListChangeKind::Reset) {
+            for (const auto& item : *ch.snapshot) event.reset.push_back(SourceRow{item, st.key_of(*item)});
         }
+        apply_(st, sig, std::move(event));
     }
 
-    static void handle_insert_(SharedState& st, Signal& sig,
-                               Source& src, const ListChange<T>& ch) {
-        // Need the live shared_ptr<T>; pull from source by index.
-        auto sp_ = src.at(ch.index);
-        const Key k = st.key_of(*sp_);
+    // Caller holds st.m. Inner positions follow source slots, not pointer
+    // lookup, so two occurrences of the same shared_ptr remain distinct.
+    static std::size_t inner_position_(const SharedState& st,
+                                       const Key& key, std::size_t before) {
+        std::size_t count = 0;
+        for (std::size_t i = 0; i < before; ++i) {
+            if (st.rows[i].key == key) ++count;
+        }
+        return count;
+    }
 
-        std::optional<std::size_t> emit_outer_insert_at;
-        std::shared_ptr<Group<T, Key>> emit_group;
+    static void insert_(SharedState& st, Signal& sig,
+                        std::size_t index, SourceRow row) {
+        std::shared_ptr<Group<T, Key>> group;
+        std::size_t inner = 0;
+        std::size_t outer = 0;
+        bool created = false;
         {
             std::unique_lock lk(st.m);
-            st.item_key[sp_.get()] = k;
-            auto it = st.by_key.find(k);
-            if (it == st.by_key.end()) {
-                // PGR-4: place the new group at the outer position
-                // that mirrors the source position of its seed
-                // item. Fast path: if the source insert is at the
-                // tail, the new outer slot is at the outer tail.
-                std::size_t outer_pos;
-                if (ch.index >= src.size() - 1) {
-                    outer_pos = st.groups.size();
-                } else if (ch.index == 0) {
-                    outer_pos = 0;
-                } else {
-                    outer_pos = outer_pos_for_new_group_(st, src, ch.index);
+            const bool append = index == st.rows.size();
+            auto found = st.by_key.find(row.key);
+            if (found == st.by_key.end()) {
+                outer = st.groups.size();
+                if (!append) {
+                    std::unordered_map<Key, bool> preceding;
+                    for (std::size_t i = 0; i < index; ++i) {
+                        preceding.emplace(st.rows[i].key, true);
+                    }
+                    outer = preceding.size();
                 }
-                auto g    = std::make_shared<Group<T, Key>>();
-                g->key    = k;
-                g->items  = std::make_shared<ObservableList<T>>();
-                g->items->push_back(sp_);
-                // Adjust by_key indices for groups that shift right.
-                for (auto& [kk, pos] : st.by_key) {
-                    if (pos >= outer_pos) ++pos;
+                group = std::make_shared<Group<T, Key>>(
+                    Group<T, Key>{row.key, std::make_shared<ObservableList<T>>()});
+                if (!append) {
+                    for (auto& [key, position] : st.by_key) {
+                        if (position >= outer) ++position;
+                    }
                 }
-                st.by_key.emplace(k, outer_pos);
-                emit_outer_insert_at = outer_pos;
-                emit_group           = g;
-                st.groups.insert(
-                    st.groups.begin()
-                        + static_cast<std::ptrdiff_t>(outer_pos),
-                    std::move(g));
+                st.by_key.emplace(row.key, outer);
+                st.groups.insert(st.groups.begin() + static_cast<std::ptrdiff_t>(outer), group);
+                created = true;
             } else {
-                st.groups[it->second]->items->push_back(sp_);
+                group = st.groups[found->second];
+                // Source events are serialized through the complete inner
+                // notification. A tail insert therefore follows every member
+                // already in this group, including repeated handles.
+                inner = append ? group->items->size()
+                               : inner_position_(st, row.key, index);
             }
+            st.rows.insert(st.rows.begin() + static_cast<std::ptrdiff_t>(index), row);
         }
-        if (emit_outer_insert_at.has_value()) {
-            sig.emit(ListChange<Group<T, Key>>{
-                ListChangeKind::Insert, *emit_outer_insert_at,
-                emit_group.get(), 0});
+        group->items->insert(inner, std::move(row.item));
+        if (created) {
+            sig.emit(ListChange<Group<T, Key>>{ListChangeKind::Insert, outer, group, 0});
         }
     }
 
-    /// Count how many distinct groups currently have at least one
-    /// item at source positions strictly before `source_idx`. That
-    /// count IS the outer position where the new-group seed belongs.
-    /// O(N_source) walk; not on the hot path because Insert at the
-    /// tail (the common case) takes the fast path above.
-    static std::size_t outer_pos_for_new_group_(SharedState& st,
-                                                Source& src,
-                                                std::size_t source_idx) {
-        std::unordered_map<Key, bool> seen;
-        const std::size_t bound =
-            std::min<std::size_t>(source_idx, src.size());
-        for (std::size_t i = 0; i < bound; ++i) {
-            auto sp_ = src.at(i);
-            auto kit = st.item_key.find(sp_.get());
-            if (kit == st.item_key.end()) continue;
-            seen.emplace(kit->second, true);
-        }
-        return seen.size();
-    }
-
-    static void handle_remove_(SharedState& st, Signal& sig,
-                               const ListChange<T>& ch) {
-        if (ch.item == nullptr) return;
-        std::optional<std::size_t> emit_outer_remove_at;
-        std::shared_ptr<Group<T, Key>> emit_group;
+    static void remove_(SharedState& st, Signal& sig, std::size_t index) {
+        std::shared_ptr<Group<T, Key>> group;
+        std::size_t inner;
         {
             std::unique_lock lk(st.m);
-            auto k_it = st.item_key.find(ch.item);
-            if (k_it == st.item_key.end()) return;
-            const Key k = k_it->second;
-            st.item_key.erase(k_it);
-
-            auto by_it = st.by_key.find(k);
-            if (by_it == st.by_key.end()) return;
-            const std::size_t outer_pos = by_it->second;
-            auto& g = st.groups[outer_pos];
-
-            // Remove the item from the inner list (linear scan; the
-            // common case is small groups).
-            const std::size_t inner_size = g->items->size();
-            for (std::size_t i = 0; i < inner_size; ++i) {
-                if (g->items->at(i).get() == ch.item) {
-                    g->items->remove_at(i);
-                    break;
-                }
-            }
-            if (g->items->empty()) {
-                emit_outer_remove_at = outer_pos;
-                emit_group           = g;
-                st.groups.erase(st.groups.begin()
-                                    + static_cast<std::ptrdiff_t>(outer_pos));
-                st.by_key.erase(by_it);
-                for (auto& [_, pos] : st.by_key) {
-                    if (pos > outer_pos) --pos;
-                }
-            }
+            const auto& row = st.rows.at(index);
+            inner = inner_position_(st, row.key, index);
+            group = st.groups[st.by_key.at(row.key)];
+            st.rows.erase(st.rows.begin() + static_cast<std::ptrdiff_t>(index));
         }
-        if (emit_outer_remove_at.has_value()) {
-            sig.emit(ListChange<Group<T, Key>>{
-                ListChangeKind::Remove, *emit_outer_remove_at,
-                emit_group.get(), 0});
+        // ObservableList mutators synchronously notify their own observers.
+        // Never call them under st.m, even when the group will disappear.
+        group->items->remove_at(inner);
+        if (group->items->empty()) {
+            std::size_t outer;
+            {
+                std::unique_lock lk(st.m);
+                outer = st.by_key.at(group->key);
+                st.by_key.erase(group->key);
+                st.groups.erase(st.groups.begin() + static_cast<std::ptrdiff_t>(outer));
+                for (auto& [key, position] : st.by_key) {
+                    if (position > outer) --position;
+                }
+            }
+            sig.emit(ListChange<Group<T, Key>>{ListChangeKind::Remove, outer, group, 0});
         }
     }
 
-    static void handle_replace_(SharedState& st, Signal& sig,
-                                Source& src,
-                                const ListChange<T>& ch) {
-        // Treat as Remove(old) + Insert(new) on the affected
-        // groups. The outer list may emit 0, 1 or 2 events.
-        const T* old_raw = ch.item;
-        // Get the new live shared_ptr from source.
-        auto sp_new = src.at(ch.index);
-        // Synthesize the change events the inner handlers need.
-        ListChange<T> remove_ch{ListChangeKind::Remove, ch.index, old_raw, 0};
-        ListChange<T> insert_ch{ListChangeKind::Insert, ch.index, sp_new.get(), 0};
-        handle_remove_(st, sig, remove_ch);
-        handle_insert_(st, sig, src, insert_ch);
-    }
-
-    static void handle_item_changed_(SharedState& st, Signal& sig,
-                                     Source& src,
-                                     const ListChange<T>& ch) {
-        // PGR-6: detect key change.
-        if (ch.item == nullptr) return;
-        Key old_key{};
-        Key new_key{};
-        {
-            std::shared_lock lk(st.m);
-            auto it = st.item_key.find(ch.item);
-            if (it == st.item_key.end()) return;
-            old_key = it->second;
-            new_key = st.key_of(*ch.item);
-        }
-        if (old_key == new_key) {
-            // Inner-list ItemChanged is already emitted by
-            // ObservableList through the inner ObservableList. Outer
-            // observers see no event.
+    static void apply_(SharedState& st, Signal& sig, InputChange event) {
+        if (event.kind == ListChangeKind::ItemChanged) {
+            std::vector<std::size_t> occurrences;
+            {
+                std::shared_lock lk(st.m);
+                for (std::size_t i = 0; i < st.rows.size(); ++i) {
+                    if (st.rows[i].item == event.row->item && st.rows[i].key != event.row->key) {
+                        occurrences.push_back(i);
+                    }
+                }
+            }
+            for (const auto index : occurrences) {
+                remove_(st, sig, index);
+                insert_(st, sig, index, *event.row);
+            }
             return;
         }
-        // Re-route the item: remove from old group, insert into new.
-        ListChange<T> remove_ch{ListChangeKind::Remove, ch.index, ch.item, 0};
-        handle_remove_(st, sig, remove_ch);
-        ListChange<T> insert_ch{ListChangeKind::Insert, ch.index, ch.item, 0};
-        handle_insert_(st, sig, src, insert_ch);
+        switch (event.kind) {
+        case ListChangeKind::Insert:
+            insert_(st, sig, event.index, std::move(*event.row));
+            return;
+        case ListChangeKind::Remove:
+            remove_(st, sig, event.index);
+            return;
+        case ListChangeKind::Replace:
+        case ListChangeKind::ItemChanged: {
+            std::shared_ptr<Group<T, Key>> group;
+            std::size_t inner = 0;
+            {
+                std::unique_lock lk(st.m);
+                auto& old = st.rows.at(event.index);
+                if (old.key == event.row->key) {
+                    inner = inner_position_(st, old.key, event.index);
+                    group = st.groups[st.by_key.at(old.key)];
+                    old = *event.row;
+                }
+            }
+            if (group) {
+                if (event.kind == ListChangeKind::Replace) {
+                    group->items->replace_at(inner, std::move(event.row->item));
+                }
+                // Same-key ItemChanged is emitted by the inner list's own
+                // item subscription; forwarding here would double-notify.
+            } else {
+                remove_(st, sig, event.index);
+                insert_(st, sig, event.index, std::move(*event.row));
+            }
+            return;
+        }
+        case ListChangeKind::Move: {
+            std::shared_ptr<Group<T, Key>> group;
+            std::size_t from;
+            std::size_t to;
+            {
+                std::unique_lock lk(st.m);
+                auto row = st.rows.at(event.from);
+                group = st.groups[st.by_key.at(row.key)];
+                from = inner_position_(st, row.key, event.from);
+                st.rows.erase(st.rows.begin() + static_cast<std::ptrdiff_t>(event.from));
+                to = inner_position_(st, row.key, event.index);
+                st.rows.insert(st.rows.begin() + static_cast<std::ptrdiff_t>(event.index), std::move(row));
+            }
+            group->items->move(from, to);
+            return;
+        }
+        case ListChangeKind::Reset:
+            rebuild_(st, std::move(event.reset));
+            {
+                std::shared_lock lock(st.m);
+                auto snapshot = st.groups;
+                lock.unlock();
+                sig.emit(ListChange<Group<T, Key>>::reset(std::move(snapshot)));
+            }
+            return;
+        }
     }
 
-    static void handle_reset_(SharedState& st, Signal& sig) {
-        {
-            std::unique_lock lk(st.m);
-            st.groups.clear();
-            st.by_key.clear();
-            st.item_key.clear();
-        }
-        sig.emit(ListChange<Group<T, Key>>{
-            ListChangeKind::Reset, 0, nullptr, 0});
-    }
 };
 
 // ---------------------------------------------------------------------------

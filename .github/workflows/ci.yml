@@ -17,7 +17,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────
   macos:
     name: macOS (AppleClang)
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
 
@@ -54,14 +54,14 @@ jobs:
         run: ctest --test-dir build/flavors/asan --output-on-failure
 
       - name: Install Qt6
-        run: brew install qt
+        run: brew install qtbase
 
       - name: Configure (Qt6)
         run: |
           cmake -S . -B build/flavors/qt -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_QT6=ON \
-            -DCMAKE_PREFIX_PATH=$(brew --prefix qt)
+            -DCMAKE_PREFIX_PATH=$(brew --prefix qtbase)
 
       - name: Build (Qt6)
         run: cmake --build build/flavors/qt -j
@@ -131,10 +131,75 @@ jobs:
             "$PWD/build/platforms/uikit-test/bin/Debug/test_uikit_table_source.app/test_uikit_table_source"
 
   # ────────────────────────────────────────────────────────────────────
-  # Ubuntu — gcc + clang matrix, plus Qt6 dev packages
+  # Android — compile both 64-bit ABIs; run native tests on an x86_64
+  # emulator. JNI function-table/list tests run here; this is not an
+  # Android UI instrumentation suite. Native targets retain minSdk 23.
+  # ────────────────────────────────────────────────────────────────────
+  android:
+    name: Android (NDK 29, arm64 + x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      ARIA_NDK_VERSION: 29.0.14206865
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install native build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ARIA_NDK_VERSION"
+
+      - name: Configure and build both Android ABIs
+        run: |
+          for abi in arm64-v8a x86_64; do
+            cmake -S . -B "build/platforms/android-$abi" -G Ninja \
+              -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/$ARIA_NDK_VERSION/build/cmake/android.toolchain.cmake" \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DANDROID_ABI="$abi" \
+              -DANDROID_PLATFORM=android-23 \
+              -DANDROID_STL=c++_shared \
+              -DARIA_BUILD_SHARED=ON \
+              -DARIA_BUILD_TESTS=ON \
+              -DARIA_BUILD_BENCHMARK=OFF \
+              -DARIA_BUILD_JNI=ON \
+              -DARIA_BUILD_HTTP=ON \
+              -DARIA_HTTP_ENABLE_TLS=OFF
+            cmake --build "build/platforms/android-$abi" --parallel 2
+          done
+
+      - name: Test JavaScript SDK on host
+        run: node modules/adapters/http/web-sdk/test_aria_client.mjs
+
+      - name: Enable emulator hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run all native tests on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: python3 scripts/run-android-tests.py build/platforms/android-x86_64 --serial emulator-5554 --output build/android-test-results.json
+
+      - name: Upload Android test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-native-test-results
+          path: build/android-test-results.json
+          if-no-files-found: ignore
+
+  # ────────────────────────────────────────────────────────────────────
+  # Ubuntu — gcc + clang matrix, plus Qt6 dev packages. C++23 is an
+  # opt-in full build/test pass; C++20 remains the supported minimum.
   # ────────────────────────────────────────────────────────────────────
   ubuntu:
-    name: Ubuntu (${{ matrix.compiler }})
+    name: Ubuntu (${{ matrix.compiler }}, C++${{ matrix.standard }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -143,9 +208,15 @@ jobs:
           - compiler: gcc
             cc: gcc-13
             cxx: g++-13
+            standard: 20
           - compiler: clang
             cc: clang-18
             cxx: clang++-18
+            standard: 20
+          - compiler: clang
+            cc: clang-18
+            cxx: clang++-18
+            standard: 23
     steps:
       - uses: actions/checkout@v7
 
@@ -167,6 +238,7 @@ jobs:
         run: |
           cmake -S . -B build/flavors/release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=${{ matrix.standard }} \
             -DARIA_BUILD_QT6=ON \
             -DARIA_BUILD_HTTP=ON \
             -DARIA_HTTP_ENABLE_TLS=OFF
@@ -179,10 +251,19 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: ctest --test-dir build/flavors/release --output-on-failure
 
-      - name: Install (smoke test for find_package)
+      - name: Install and exercise standalone HTTP package consumer
         run: |
-          cmake --install build/flavors/release --prefix /tmp/aria-prefix
-          test -f /tmp/aria-prefix/lib/cmake/aria/ariaConfig.cmake
+          aria_prefix="$RUNNER_TEMP/aria-prefix"
+          cmake --install build/flavors/release --prefix "$aria_prefix"
+          aria_config=$(find "$aria_prefix" -name ariaConfig.cmake -type f -print -quit)
+          test -n "$aria_config"
+          cmake -S tests/package_http -B build/flavors/package-http -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -Daria_DIR="$(dirname "$aria_config")" \
+            -DARIA_PACKAGE_EXPECT_TLS=OFF
+          cmake --build build/flavors/package-http -j
+          ctest --test-dir build/flavors/package-http --no-tests=error --output-on-failure
 
       # Leak coverage lives here and nowhere else: the macOS ASan job
       # cannot detect leaks (LeakSanitizer is unavailable on Darwin and
@@ -234,18 +315,22 @@ jobs:
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-qt6-base
+            mingw-w64-ucrt-x86_64-nodejs
 
       - name: Show toolchain versions
         run: |
           g++ --version
           cmake --version
           ninja --version
+          node --version
 
       - name: Configure
         run: |
           cmake -S . -B build/flavors/release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DARIA_BUILD_QT6=ON
+            -DARIA_BUILD_QT6=ON \
+            -DARIA_BUILD_HTTP=ON \
+            -DARIA_HTTP_ENABLE_TLS=OFF
 
       - name: Build
         run: cmake --build build/flavors/release -j
@@ -255,10 +340,19 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: ctest --test-dir build/flavors/release --output-on-failure
 
-      - name: Install (smoke test)
+      - name: Install and exercise standalone HTTP package consumer
         run: |
-          cmake --install build/flavors/release --prefix /tmp/aria-prefix
-          test -f /tmp/aria-prefix/lib/cmake/aria/ariaConfig.cmake
+          aria_prefix="$(cygpath -u "$RUNNER_TEMP")/aria-prefix"
+          cmake --install build/flavors/release --prefix "$aria_prefix"
+          aria_config=$(find "$aria_prefix" -name ariaConfig.cmake -type f -print -quit)
+          test -n "$aria_config"
+          cmake -S tests/package_http -B build/flavors/package-http -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -Daria_DIR="$(dirname "$aria_config")" \
+            -DARIA_PACKAGE_EXPECT_TLS=OFF
+          cmake --build build/flavors/package-http -j
+          PATH="$aria_prefix/bin:$PATH" \
+            ctest --test-dir build/flavors/package-http --no-tests=error --output-on-failure
 
   # ────────────────────────────────────────────────────────────────────
   # Windows — native MSVC (Visual Studio 2022) + Qt6 binary install
@@ -286,10 +380,13 @@ jobs:
       - name: Configure (MSVC, Release)
         shell: pwsh
         run: |
+          Get-Command node -ErrorAction Stop
           cmake -S . -B build/flavors/release `
             -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
-            -DARIA_BUILD_QT6=ON
+            -DARIA_BUILD_QT6=ON `
+            -DARIA_BUILD_HTTP=ON `
+            -DARIA_HTTP_ENABLE_TLS=OFF
 
       - name: Build
         shell: pwsh
@@ -301,24 +398,79 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: ctest --test-dir build/flavors/release -C Release --output-on-failure
 
-      - name: Install (smoke test for find_package)
+      - name: Install and exercise standalone HTTP package consumer
         shell: pwsh
         run: |
-          cmake --install build/flavors/release --config Release --prefix "${env:TEMP}/aria-prefix"
-          if (-not (Test-Path "${env:TEMP}/aria-prefix/lib/cmake/aria/ariaConfig.cmake")) {
-            Write-Error "ariaConfig.cmake missing after install"
-            exit 1
+          $ariaPrefix = Join-Path $env:RUNNER_TEMP "aria-prefix"
+          cmake --install build/flavors/release --config Release --prefix "$ariaPrefix"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $ariaConfigs = @(Get-ChildItem -Path $ariaPrefix -Filter ariaConfig.cmake -File -Recurse)
+          if ($ariaConfigs.Count -ne 1) {
+            throw "Expected exactly one installed ariaConfig.cmake, found $($ariaConfigs.Count)"
           }
+          cmake -S tests/package_http -B build/flavors/package-http `
+            -G "Visual Studio 17 2022" -A x64 `
+            -Daria_DIR="$($ariaConfigs[0].DirectoryName)" `
+            -DARIA_PACKAGE_EXPECT_TLS=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build/flavors/package-http --config Release -j
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PATH = "$ariaPrefix/bin;$env:PATH"
+          ctest --test-dir build/flavors/package-http -C Release --no-tests=error --output-on-failure
+
+      - name: Configure (MSVC, Debug ASan)
+        shell: pwsh
+        run: |
+          cmake -S . -B build/flavors/asan `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DARIA_ENABLE_ASAN=ON `
+            -DARIA_ENABLE_UBSAN=OFF `
+            -DARIA_ENABLE_TSAN=OFF `
+            -DARIA_BUILD_TESTS=ON `
+            -DARIA_BUILD_BENCHMARK=OFF `
+            -DARIA_BUILD_QT6=OFF `
+            -DARIA_BUILD_HTTP=ON `
+            -DARIA_HTTP_ENABLE_TLS=OFF
+
+      - name: Build (MSVC, Debug ASan)
+        shell: pwsh
+        run: cmake --build build/flavors/asan --config Debug -j
+
+      - name: Test (MSVC, Debug ASan)
+        shell: pwsh
+        run: |
+          # Use the runtime next to the compiler CMake actually selected,
+          # so another Visual Studio/LLVM installation cannot supply its DLL.
+          $compilerFiles = @(Get-ChildItem build/flavors/asan/CMakeFiles -Filter CMakeCXXCompiler.cmake -File -Recurse)
+          if ($compilerFiles.Count -ne 1) { throw "Expected one configured C++ compiler" }
+          $compilerText = Get-Content $compilerFiles[0].FullName -Raw
+          if ($compilerText -notmatch '(?m)^set\(CMAKE_CXX_COMPILER "([^"]+)"\)') {
+            throw "Cannot read the configured C++ compiler"
+          }
+          $compilerBin = Split-Path -Parent $Matches[1]
+          $asanRuntime = Join-Path $compilerBin "clang_rt.asan_dynamic-x86_64.dll"
+          if (-not (Test-Path $asanRuntime -PathType Leaf)) {
+            throw "MSVC x64 ASan runtime not installed: $asanRuntime"
+          }
+          # Debug /MDd also needs the selected VS installation's Debug CRT.
+          $vcRoot = [IO.Path]::GetFullPath((Join-Path $compilerBin "../../../../../.."))
+          $debugCrtDirs = @(Get-ChildItem (Join-Path $vcRoot "Redist/MSVC") -Filter msvcp140d.dll -File -Recurse |
+            Where-Object { $_.DirectoryName -match '[/\\]x64[/\\]' } |
+            Select-Object -ExpandProperty DirectoryName -Unique |
+            Sort-Object -Descending)
+          if ($debugCrtDirs.Count -eq 0) { throw "MSVC x64 Debug CRT not installed" }
+          $env:PATH = (@($compilerBin) + $debugCrtDirs + @($env:PATH)) -join ';'
+          ctest --test-dir build/flavors/asan -C Debug --no-tests=error --output-on-failure
 
   # ────────────────────────────────────────────────────────────────────
   # API reference (Doxygen) — builds the `aria_docs` target so a broken
   # Doxyfile or a malformed doc comment fails CI rather than surfacing
   # only when someone tries to publish the reference (ROADMAP P1-F).
-  # Non-blocking to the build/flavors/release matrix; runs on the cheap macOS runner.
+  # Kept separate from the compiled test matrix.
   # ────────────────────────────────────────────────────────────────────
   docs:
     name: API docs (Doxygen)
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
 
@@ -330,14 +482,18 @@ jobs:
       - name: Verify documented API symbols exist
         run: ./scripts/check-docs-api.sh
 
-      - name: Install ninja + doxygen + graphviz
-        run: brew install ninja doxygen graphviz
+      - name: Install ninja + graphviz
+        run: brew install ninja graphviz
+
+      - name: Install official Doxygen
+        run: ./scripts/install-doxygen.sh "$RUNNER_TEMP/aria-doxygen"
 
       - name: Configure (docs)
         run: |
           cmake -S . -B build/flavors/docs -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_DOCS=ON \
+            -DDOXYGEN_EXECUTABLE="$RUNNER_TEMP/aria-doxygen/bin/doxygen" \
             -DARIA_BUILD_TESTS=OFF \
             -DARIA_BUILD_BENCHMARK=OFF
 
@@ -354,7 +510,8 @@ jobs:
           path: build/flavors/docs/docs/html
 
   # ────────────────────────────────────────────────────────────────────
-  # Cross-DSO IProperty ABI acceptance gate. This remains a separate job
+  # Cross-DSO IProperty and shared reactive graph acceptance gates.
+  # This remains a separate job
   # because an ABI regression deserves a precise failure rather than being
   # buried in the full test matrix.
   # ────────────────────────────────────────────────────────────────────
@@ -384,11 +541,11 @@ jobs:
         run: cmake --build build/flavors/abi-smoke -j
 
       - name: Run cross-DSO ABI gate
-        run: ctest --test-dir build/flavors/abi-smoke -R "cross_dylib_abi_smoke" --output-on-failure
+        run: ctest --test-dir build/flavors/abi-smoke -R "^cross_dylib_(abi_smoke|reactive)$" --no-tests=error --output-on-failure
 
   # ────────────────────────────────────────────────────────────────────
-  # clang-tidy gate — runs on macOS (cheapest runner with clang-tidy
-  # shipped via Homebrew LLVM). Lints every TU in compile_commands.json
+  # clang-tidy gate — runs on macOS with Homebrew LLVM and a matching
+  # findings baseline. Lints every TU in compile_commands.json
   # (headers covered via HeaderFilterRegex in .clang-tidy) and compares
   # the normalized findings against scripts/clang-tidy-baseline.txt:
   # the gate fails only on NEW debt. Until the gate was fixed to actually
@@ -401,23 +558,32 @@ jobs:
   # ────────────────────────────────────────────────────────────────────
   clang-tidy:
     name: clang-tidy gate
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
 
       - name: Install ninja + clang-tidy
         run: |
           brew install ninja
-          # macOS ships clang-tidy via Xcode but it's old; use LLVM toolchain.
-          # Pin the major version. The baseline records per-check counts, so a
-          # major LLVM bump (new checks, changed heuristics) reads as NEW debt
-          # and reds the gate for reasons unrelated to the commit. Bump this
-          # deliberately, together with a regenerated baseline.
-          brew install llvm@22
-          echo "$(brew --prefix llvm@22)/bin" >> "$GITHUB_PATH"
+          # The gate requires the LLVM major recorded by its baseline. Update
+          # the tool and reviewed baseline together; a future formula upgrade
+          # must fail the version check rather than silently change findings.
+          brew install llvm
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
-      - name: Show clang-tidy version
-        run: clang-tidy --version
+      - name: Verify clang-tidy matches the reviewed baseline
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+          version = subprocess.check_output(['clang-tidy', '--version'], text=True)
+          print(version, end='')
+          actual = re.search(r'\bversion\s+(\d+)\.', version)
+          expected = re.search(r'^# clang-tidy (\d+)\.', Path('scripts/clang-tidy-baseline.txt').read_text())
+          if not actual or not expected or actual[1] != expected[1]:
+              raise SystemExit('clang-tidy major must match the reviewed baseline before building')
+          PY
 
       - name: Configure (compile_commands.json)
         run: |

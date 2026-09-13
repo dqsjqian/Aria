@@ -1,5 +1,7 @@
 #pragma once
 
+#include "aria/callback_boundary.hpp"
+
 // ============================================================================
 //  subscription.hpp
 // ----------------------------------------------------------------------------
@@ -28,6 +30,8 @@
 // ============================================================================
 
 #include <cstddef>
+#include <concepts>
+#include <type_traits>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -48,19 +52,25 @@ public:
     explicit Subscription(std::shared_ptr<T> owner) noexcept
         : owner_(std::move(owner)) {}
 
-    /// Construct from a "disconnect" callback. Invoked exactly once, on
-    /// the last Subscription's destruction. Used by `detail::TypedSignal`
-    /// and other abi-signal-backed event producers.
-    ///
-    /// Implementation: a single `make_shared<CallbackDeleter>(...)` —
-    /// one heap allocation that fuses the control block AND the
-    /// callable storage. Earlier revisions did `static_pointer_cast`
-    /// from a typed shared_ptr to `shared_ptr<void>`, which compiled
-    /// to the same single allocation but obscured intent. We keep the
-    /// deleter type alive directly via `shared_ptr<CallbackDeleter>`,
-    /// erased through `shared_ptr<void>` only at the storage layer.
-    explicit Subscription(std::function<void()> on_disconnect)
-        : owner_(make_callback_(std::move(on_disconnect))) {}
+    /// Invoke a disconnect callback exactly once when this handle is released.
+    /// Captures are stored directly in the shared allocation, including
+    /// move-only captures; there is no intermediate std::function allocation.
+    template<class Fn>
+        requires std::invocable<std::decay_t<Fn>&>
+    explicit Subscription(Fn&& on_disconnect) {
+        if constexpr (std::is_pointer_v<std::decay_t<Fn>>) {
+            if (!on_disconnect) return;
+        }
+        owner_ = std::make_shared<CallbackDeleter<std::decay_t<Fn>>>(
+            std::forward<Fn>(on_disconnect));
+    }
+
+    explicit Subscription(std::function<void()> on_disconnect) {
+        if (on_disconnect) {
+            owner_ = std::make_shared<CallbackDeleter<std::function<void()>>>(
+                std::move(on_disconnect));
+        }
+    }
 
     Subscription(const Subscription&)            = delete;
     Subscription& operator=(const Subscription&) = delete;
@@ -69,10 +79,6 @@ public:
 
     ~Subscription() noexcept = default;
 
-    /// Transfer-away: the destructor will NOT disconnect.
-    /// Equivalent to `release()` at the call-site level.
-    void detach() noexcept { owner_.reset(); }
-
     /// Explicitly disconnect now (instead of at destruction).
     void release() noexcept { owner_.reset(); }
 
@@ -80,39 +86,26 @@ public:
     explicit operator bool() const noexcept { return active(); }
 
 private:
-    // Tiny helper that runs a std::function on destruction. We hide it
-    // behind shared_ptr<void> so that Subscription stays a lean,
-    // backend-agnostic handle.
-    //
-    // Construction contract: CallbackDeleter is built exactly once, in
-    // place inside shared_ptr's control block (see `make_callback_`), and
-    // is destroyed exactly once when the last Subscription dies. No move
-    // or copy is ever performed on it -- hence the deleted special
-    // members -- so the destructor can invoke `fn` unconditionally
-    // without any "was this moved-from?" guard.
+    template<class Fn>
     struct CallbackDeleter {
-        std::function<void()> fn;
+        Fn fn;
 
-        explicit CallbackDeleter(std::function<void()> f) noexcept
-            : fn(std::move(f)) {}
+        template<class F>
+        explicit CallbackDeleter(F&& callback) : fn(std::forward<F>(callback)) {}
 
-        CallbackDeleter(CallbackDeleter&&)                 = delete;
-        CallbackDeleter& operator=(CallbackDeleter&&)      = delete;
-        CallbackDeleter(const CallbackDeleter&)            = delete;
+        CallbackDeleter(CallbackDeleter&&) = delete;
+        CallbackDeleter& operator=(CallbackDeleter&&) = delete;
+        CallbackDeleter(const CallbackDeleter&) = delete;
         CallbackDeleter& operator=(const CallbackDeleter&) = delete;
 
-        ~CallbackDeleter() { if (fn) fn(); }
+        ~CallbackDeleter() noexcept {
+            try {
+                std::invoke(fn);
+            } catch (...) {
+                report_callback_failure("subscription.disconnect", std::current_exception());
+            }
+        }
     };
-
-    static std::shared_ptr<void> make_callback_(std::function<void()> fn) {
-        if (!fn) return {};
-        // Allocate the CallbackDeleter in-place inside the shared control
-        // block. Perfect-forwarding `std::move(fn)` means no temporary
-        // CallbackDeleter is ever constructed, so there is no chance of
-        // a moved-from std::function firing on destruction.
-        return std::static_pointer_cast<void>(
-            std::make_shared<CallbackDeleter>(std::move(fn)));
-    }
 
     std::shared_ptr<void> owner_;
 };
@@ -126,23 +119,52 @@ public:
 
     SubscriptionBag(const SubscriptionBag&)            = delete;
     SubscriptionBag& operator=(const SubscriptionBag&) = delete;
-    SubscriptionBag(SubscriptionBag&&) noexcept                 = default;
-    SubscriptionBag& operator=(SubscriptionBag&&) noexcept      = default;
+    SubscriptionBag(SubscriptionBag&& other) noexcept : subs_(std::move(other.subs_)) {}
+    SubscriptionBag& operator=(SubscriptionBag&& other) noexcept {
+        if (this != &other) {
+            auto previous = std::move(subs_);
+            subs_ = std::move(other.subs_);
+            release_reverse_(previous);
+        }
+        return *this;
+    }
 
-    void add(Subscription s) { subs_.push_back(std::move(s)); }
+    ~SubscriptionBag() noexcept {
+        destroying_ = true;
+        clear();
+    }
+
+    void add(Subscription s) {
+        if (!destroying_) subs_.push_back(std::move(s));
+    }
 
     SubscriptionBag& operator+=(Subscription s) {
         add(std::move(s));
         return *this;
     }
 
-    void clear() noexcept { subs_.clear(); }
+    /// Disconnect the current contents in reverse insertion order.
+    /// Reentrant additions belong to the new bag and survive this clear.
+    void clear() noexcept {
+        std::vector<Subscription> previous;
+        previous.swap(subs_);
+        release_reverse_(previous);
+    }
 
     [[nodiscard]] std::size_t size() const noexcept { return subs_.size(); }
     [[nodiscard]] bool        empty() const noexcept { return subs_.empty(); }
 
 private:
+    static void release_reverse_(std::vector<Subscription>& subscriptions) noexcept {
+        while (!subscriptions.empty()) {
+            auto last = std::move(subscriptions.back());
+            subscriptions.pop_back();
+            last.release();
+        }
+    }
+
     std::vector<Subscription> subs_;
+    bool destroying_ = false;
 };
 
 }  // namespace aria

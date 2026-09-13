@@ -4,8 +4,8 @@
 //  Built as a SHARED library (libaria_property_plugin). It includes ONLY
 //  `aria/i_property.hpp` (+ standard headers) — crucially NOT
 //  `aria/reactive/property.hpp`. So this translation unit instantiates no
-//  `Property<T>`, owns no reactive Graph, and depends on no Aria template
-//  symbol. Everything it does goes through the stable `aria::IProperty`
+//  `Property<T>` and does not access the reactive graph directly. Property
+//  operations go through the `aria::IProperty`
 //  vtable, which is the framework's advertised ABI surface.
 //
 //  Each numbered return code marks the first failing ABI invariant so the

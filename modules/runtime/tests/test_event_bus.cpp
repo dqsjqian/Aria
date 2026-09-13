@@ -58,3 +58,38 @@ TEST_CASE("EventBus: global() returns same instance") {
     auto& b = EventBus::global();
     CHECK(&a == &b);
 }
+
+TEST_CASE("EventBus: clear destroys handler captures outside its registry lock") {
+    EventBus bus;
+    bool released = false;
+    auto token = std::shared_ptr<int>(new int, [&](int* value) {
+        delete value;
+        bus.publish(PingEvent{1});
+        released = true;
+    });
+    auto subscription = bus.subscribe<PingEvent>([token = std::move(token)](const auto&) {});
+    bus.clear();
+    CHECK(released);
+}
+
+TEST_CASE("EventBus: released dispatched subscription suppresses queued events") {
+    EventBus bus;
+    SimpleDispatcher dispatcher;
+    int calls = 0;
+    auto subscription = bus.subscribe_on<PingEvent>(dispatcher, [&](const auto&) { ++calls; });
+    bus.publish(PingEvent{1});
+    subscription.release();
+    dispatcher.pump();
+    CHECK(calls == 0);
+}
+
+TEST_CASE("EventBus: clear suppresses queued dispatched events") {
+    EventBus bus;
+    SimpleDispatcher dispatcher;
+    int calls = 0;
+    auto subscription = bus.subscribe_on<PingEvent>(dispatcher, [&](const auto&) { ++calls; });
+    bus.publish(PingEvent{1});
+    bus.clear();
+    dispatcher.pump();
+    CHECK(calls == 0);
+}

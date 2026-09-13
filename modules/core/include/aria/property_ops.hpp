@@ -28,14 +28,18 @@
 //
 //   - SimpleDispatcher      (real wall-clock, runtime module)
 //   - VirtualTimeExecutor   (deterministic, async module)
-//   - any custom timer
+//   - any custom timer that delivers callbacks on the graph owner thread
+//
+// All operators, their source/output properties, and timer delivery use the
+// graph owner thread. A worker timer must marshal its callback to that thread.
+// Keep the scheduler alive until the returned chain is released; pending timer
+// callbacks hold only weak references and safely expire with the chain.
 
 #include "aria/abi/export.hpp"
 #include "aria/property.hpp"
 #include "aria/scheduler.hpp"
 #include "aria/subscription.hpp"
 
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -55,7 +59,7 @@ namespace aria {
 /// through `post_after(0ms, fn)`, and `caps()` advertises `Delay | Post`
 /// by default. Concrete implementations that also offer main-thread
 /// affinity, pumping, etc. should override `caps()` to widen the bitmask.
-class ARIA_CORE_API IDelayedScheduler : public virtual IScheduler {
+class ARIA_ABI_API IDelayedScheduler : public virtual IScheduler {
 public:
     ~IDelayedScheduler() override;
 
@@ -163,7 +167,7 @@ debounce(Property<T>& source,
          std::chrono::milliseconds quiet,
          IDelayedScheduler& timer) {
     struct State {
-        std::atomic<std::uint64_t> gen{0};
+        std::uint64_t gen = 0;
         T pending;
 
         explicit State(T initial) : pending(std::move(initial)) {}
@@ -178,10 +182,11 @@ debounce(Property<T>& source,
             auto n = weak.lock();
             if (!n) return;
             n->state.pending = v;
-            auto my_gen = n->state.gen.fetch_add(1, std::memory_order_acq_rel) + 1;
+            const auto my_gen = ++n->state.gen;
             timer.post_after(quiet, [weak, my_gen]() {
+                reactive::Node::graph().assert_on_graph_thread();
                 if (auto nn = weak.lock()) {
-                    if (nn->state.gen.load(std::memory_order_acquire) != my_gen) return;
+                    if (nn->state.gen != my_gen) return;
                     nn->property.set(nn->state.pending);
                 }
             });
@@ -199,7 +204,7 @@ throttle(Property<T>& source,
          std::chrono::milliseconds cooldown,
          IDelayedScheduler& timer) {
     struct State {
-        std::atomic<bool> blocked{false};
+        bool blocked = false;
     };
 
     auto node = std::make_shared<detail::ChainedNode<T, State>>(
@@ -210,17 +215,20 @@ throttle(Property<T>& source,
         [weak, &timer, cooldown](const T& v) {
             auto n = weak.lock();
             if (!n) return;
-            bool expected = false;
-            if (!n->state.blocked.compare_exchange_strong(
-                    expected, true, std::memory_order_acq_rel)) {
-                return;  // currently in cooldown — drop
+            if (n->state.blocked) return;
+            n->state.blocked = true;
+            try {
+                n->property.set(v);
+                timer.post_after(cooldown, [weak]() {
+                    reactive::Node::graph().assert_on_graph_thread();
+                    if (auto nn = weak.lock()) nn->state.blocked = false;
+                });
+            } catch (...) {
+                // A failed output update or rejected timer must not leave
+                // the operator in a cooldown that can never expire.
+                n->state.blocked = false;
+                throw;
             }
-            n->property.set(v);
-            timer.post_after(cooldown, [weak]() {
-                if (auto nn = weak.lock()) {
-                    nn->state.blocked.store(false, std::memory_order_release);
-                }
-            });
         });
 
     return detail::expose_property(std::move(node));
@@ -234,21 +242,17 @@ template<PropertyValue T, PropertyValue Acc, typename Reducer>
 scan(Property<T>& source, Acc seed, Reducer reduce) {
     struct State {
         Acc                                  acc;
-        std::function<Acc(const Acc&, const T&)> reducer;
+        Reducer                              reducer;
     };
 
+    Acc initial = seed;
     auto node = std::make_shared<detail::ChainedNode<Acc, State>>(
-        std::in_place,
-        seed,                                       // Property<Acc> initial
-        seed,                                       // State::acc
-        [r = std::move(reduce)](const Acc& a, const T& v) {  // State::reducer
-            return r(a, v);
-        });
+        std::in_place, std::move(initial), std::move(seed), std::move(reduce));
 
     std::weak_ptr<detail::ChainedNode<Acc, State>> weak = node;
     node->upstream = source.on_changed([weak](const T& v) {
         if (auto n = weak.lock()) {
-            n->state.acc = n->state.reducer(n->state.acc, v);
+            n->state.acc = std::invoke(n->state.reducer, n->state.acc, v);
             n->property.set(n->state.acc);
         }
     });
@@ -277,12 +281,12 @@ scan(Property<T>& source, Acc seed, Reducer reduce) {
 template<PropertyValue A, PropertyValue B, typename Combiner>
 [[nodiscard]] auto
 combine_latest(Property<A>& a, Property<B>& b, Combiner combine)
-    -> std::shared_ptr<Property<std::invoke_result_t<Combiner, const A&, const B&>>> {
-    using R = std::invoke_result_t<Combiner, const A&, const B&>;
+    -> std::shared_ptr<Property<std::invoke_result_t<Combiner&, const A&, const B&>>> {
+    using R = std::invoke_result_t<Combiner&, const A&, const B&>;
     struct State {
         A    last_a;
         B    last_b;
-        std::function<R(const A&, const B&)> fn;
+        Combiner fn;
         // Second upstream subscription (source `b`). The node's own
         // `upstream` member holds source `a`; this one holds `b`. Both are
         // torn down when the node dies (State is destroyed after `upstream`,
@@ -290,25 +294,26 @@ combine_latest(Property<A>& a, Property<B>& b, Combiner combine)
         Subscription b_sub;
     };
 
+    auto last_a = a.get();
+    auto last_b = b.get();
+    // Invoke before moving the callable: function-argument evaluation order
+    // must not decide whether the initial call sees a moved-from object.
+    R initial = std::invoke(combine, last_a, last_b);
     auto node = std::make_shared<detail::ChainedNode<R, State>>(
-        std::in_place,
-        combine(a.get(), b.get()),                 // Property<R> initial
-        a.get(),                                   // State::last_a
-        b.get(),                                   // State::last_b
-        [c = std::move(combine)](const A& x, const B& y) { return c(x, y); },
-        Subscription{});                           // State::b_sub (wired below)
+        std::in_place, std::move(initial), std::move(last_a), std::move(last_b),
+        std::move(combine), Subscription{});
 
     std::weak_ptr<detail::ChainedNode<R, State>> weak = node;
     node->upstream = a.on_changed([weak](const A& v) {
         if (auto n = weak.lock()) {
             n->state.last_a = v;
-            n->property.set(n->state.fn(n->state.last_a, n->state.last_b));
+            n->property.set(std::invoke(n->state.fn, n->state.last_a, n->state.last_b));
         }
     });
     node->state.b_sub = b.on_changed([weak](const B& v) {
         if (auto n = weak.lock()) {
             n->state.last_b = v;
-            n->property.set(n->state.fn(n->state.last_a, n->state.last_b));
+            n->property.set(std::invoke(n->state.fn, n->state.last_a, n->state.last_b));
         }
     });
 

@@ -56,11 +56,12 @@ LLDB_PATH="$(command -v lldb 2>/dev/null || true)"
 
 QT_DIR_FINAL=""
 if [[ "${ARIA_NO_QT6:-}" != "1" ]]; then
-    if [[ -n "${QT_DIR:-}" && -d "$QT_DIR" ]]; then
+    if [[ -n "${QT_DIR:-}" ]]; then
+        [[ -f "$QT_DIR/lib/cmake/Qt6/Qt6Config.cmake" ]] || { err "QT_DIR has no Qt6 package configuration: $QT_DIR"; exit 1; }
         QT_DIR_FINAL="$QT_DIR"
     else
-        for candidate in /opt/homebrew/opt/qt /opt/homebrew/opt/qt@6 /usr/local/opt/qt /usr/local/opt/qt@6; do
-            if [[ -d "$candidate" ]]; then QT_DIR_FINAL="$candidate"; break; fi
+        for candidate in /opt/homebrew/opt/qt /opt/homebrew/opt/qt@6 /opt/homebrew/opt/qtbase /usr/local/opt/qt /usr/local/opt/qt@6 /usr/local/opt/qtbase; do
+            if [[ -f "$candidate/lib/cmake/Qt6/Qt6Config.cmake" ]]; then QT_DIR_FINAL="$candidate"; break; fi
         done
     fi
 fi
@@ -91,14 +92,35 @@ write_file() {
     fi
 }
 
+# Paths are JSON strings, including when they contain quotes or backslashes.
+json_escape() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\t'/\\t}"
+    value="${value//$'\b'/\\b}"
+    value="${value//$'\f'/\\f}"
+    printf '%s' "$value"
+}
+QT_DIR_JSON="$(json_escape "$QT_DIR_FINAL")"
+CLANGXX_PATH_JSON="$(json_escape "$CLANGXX_PATH")"
+
 if [[ -n "$QT_DIR_FINAL" ]]; then
-    QT_SETTINGS_ARGS="        \"-DCMAKE_PREFIX_PATH=$QT_DIR_FINAL\",
+    QT_SETTINGS_ARGS="        \"-UQt6*_DIR\",
+        \"-DCMAKE_PREFIX_PATH=$QT_DIR_JSON\",
+        \"-DQt6_DIR=$QT_DIR_JSON/lib/cmake/Qt6\",
         \"-DARIA_BUILD_QT6=ON\","
-    QT_TASK_ARGS="                \"-DCMAKE_PREFIX_PATH=$QT_DIR_FINAL\",
+    QT_TASK_ARGS="                \"-UQt6*_DIR\",
+                \"-DCMAKE_PREFIX_PATH=$QT_DIR_JSON\",
+                \"-DQt6_DIR=$QT_DIR_JSON/lib/cmake/Qt6\",
                 \"-DARIA_BUILD_QT6=ON\","
 else
-    QT_SETTINGS_ARGS='        "-DARIA_BUILD_QT6=OFF",'
-    QT_TASK_ARGS='                "-DARIA_BUILD_QT6=OFF",'
+    QT_SETTINGS_ARGS='        "-UQt6*_DIR",
+        "-DARIA_BUILD_QT6=OFF",'
+    QT_TASK_ARGS='                "-UQt6*_DIR",
+                "-DARIA_BUILD_QT6=OFF",'
 fi
 
 SETTINGS_JSON=$(cat <<JSON
@@ -225,10 +247,12 @@ $QT_TASK_ARGS
             "problemMatcher": []
         },
         {
-            "label": "aria: clang-tidy (all headers)",
-            "type": "shell",
+            "label": "aria: clang-tidy (configured targets)",
+            "type": "process",
             "command": "bash",
-            "args": ["-c", "shopt -s globstar nullglob; cmake -S . -B build/ide -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null && cmake --build build/ide -j >/dev/null && files=(modules/*/include/aria/**/*.hpp); clang-tidy -p build/ide --warnings-as-errors='*' \"\${files[@]}\""],
+            "args": ["scripts/tidy-gate.sh", "build/ide"],
+            "options": { "cwd": "\${workspaceFolder}" },
+            "dependsOn": ["aria: build all"],
             "problemMatcher": []
         }
     ]
@@ -275,7 +299,7 @@ C_CPP_PROPERTIES_JSON=$(cat <<JSON
         {
             "name": "Aria framework",
             "compileCommands": "\${workspaceFolder}/build/ide/compile_commands.json",
-            "compilerPath": "$CLANGXX_PATH",
+            "compilerPath": "$CLANGXX_PATH_JSON",
             "cStandard": "c17",
             "cppStandard": "c++20",
             "intelliSenseMode": "$INTELLISENSE_MODE",

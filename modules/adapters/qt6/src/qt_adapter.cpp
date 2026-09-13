@@ -4,6 +4,7 @@
 #include "aria/runtime/logger.hpp"
 
 #include <QAbstractButton>
+#include <QAbstractSlider>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -13,7 +14,6 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
-#include <QSlider>
 #include <QSpinBox>
 #include <QTextEdit>
 #include <QWidget>
@@ -72,11 +72,18 @@ struct Bridge {
     abi::SignalErased sig;
     QMetaObject::Connection qt_conn;
     QMetaObject::Connection destroyed_conn;
+
+    void close() noexcept {
+        QObject::disconnect(qt_conn);
+        QObject::disconnect(destroyed_conn);
+        sig.clear();
+    }
+    ~Bridge() { close(); }
 };
 
 }  // namespace
 
-struct QtAdapter::Impl {
+struct QtAdapter::Impl : std::enable_shared_from_this<QtAdapter::Impl> {
     // Map key = (object, kind). kind = 't' text, 'b' bool, 'i' int,
     // 'd' double, 'c' click.
     struct Key {
@@ -96,13 +103,14 @@ struct QtAdapter::Impl {
             // unordered_map's truncation modulo prime then samples.
             size_t h = std::hash<QObject*>{}(key.o);
             h ^= static_cast<size_t>(static_cast<unsigned char>(key.k))
-                 + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+                 + static_cast<size_t>(0x9e3779b97f4a7c15ULL) + (h << 6) + (h >> 2);
             return h;
         }
     };
 
     std::mutex m;
-    std::unordered_map<Key, std::unique_ptr<Bridge>, KeyHash> bridges;
+    bool active = true;
+    std::unordered_map<Key, std::shared_ptr<Bridge>, KeyHash> bridges;
 
     // Handle → IView cache backing `view_for`. One QtView per QObject, so
     // repeated `view_for(widget)` calls share a single per-view
@@ -112,62 +120,67 @@ struct QtAdapter::Impl {
     std::unordered_map<QObject*, std::unique_ptr<QtView>>      views;
     std::unordered_map<QObject*, QMetaObject::Connection>      views_conns;
 
-    ~Impl() {
-        // Drop our QObject::destroyed listeners so a widget that outlives
-        // *this can't try to call our `bridges.erase(...)` lambda after the
-        // mutex is gone.
-        //
-        // The cached QtViews are moved out and destroyed AFTER the lock is
-        // released: their teardown fires IView::on_destroy, which reaches
-        // BindingEngine and then arbitrary user callbacks — none of which
-        // should run under our mutex.
+    ~Impl() { close(); }
+
+    void close() noexcept {
         decltype(views) doomed_views;
+        decltype(views_conns) doomed_connections;
+        decltype(bridges) doomed_bridges;
         {
             std::lock_guard lk{m};
-            for (auto& [_, conn] : views_conns) {
-                QObject::disconnect(conn);
-            }
-            views_conns.clear();
+            active = false;
             doomed_views.swap(views);
-            for (auto& [_, br] : bridges) {
-                QObject::disconnect(br->destroyed_conn);
-                QObject::disconnect(br->qt_conn);
-            }
-            bridges.clear();
+            doomed_connections.swap(views_conns);
+            doomed_bridges.swap(bridges);
         }
+        for (auto& [_, conn] : doomed_connections) QObject::disconnect(conn);
+        // Both signal slots and IView teardown may run arbitrary capture
+        // destructors. No registry lock is held, and reentrant subscriptions
+        // see the closed state before attempting to add a new bridge.
+        for (auto& [_, br] : doomed_bridges) br->close();
     }
 
-    Bridge& bridge_for(QObject* obj, char kind, auto&& wire_qt_signal) {
-        std::lock_guard lk{m};
+    std::shared_ptr<Bridge> bridge_for(QObject* obj, char kind, auto&& wire_qt_signal) {
+        std::unique_lock lk{m};
+        if (!active) return {};
         auto it = bridges.find(Key{obj, kind});
-        if (it != bridges.end()) return *it->second;
+        if (it != bridges.end()) return it->second;
 
-        auto br = std::make_unique<Bridge>();
-        Bridge* raw = br.get();
-        // wire the Qt signal once
-        wire_qt_signal(*raw);
-        // also drop the bridge if the QObject dies
-        raw->destroyed_conn = QObject::connect(obj, &QObject::destroyed,
-            [this, k = Key{obj, kind}]() {
-                std::lock_guard lk2{m};
-                bridges.erase(k);
+        auto br = std::make_shared<Bridge>();
+        wire_qt_signal(br);
+        br->destroyed_conn = QObject::connect(obj, &QObject::destroyed,
+            [weak = weak_from_this(), k = Key{obj, kind}]() {
+                auto state = weak.lock();
+                if (!state) return;
+                std::shared_ptr<Bridge> retired;
+                {
+                    std::lock_guard lk2{state->m};
+                    if (auto found = state->bridges.find(k); found != state->bridges.end()) {
+                        retired = std::move(found->second);
+                        state->bridges.erase(found);
+                    }
+                }
+                if (retired) retired->close();
             });
-        bridges.emplace(Key{obj, kind}, std::move(br));
-        return *raw;
+        bridges.emplace(Key{obj, kind}, br);
+        return br;
     }
+
 };
 
-QtAdapter::QtAdapter() : p_(std::make_unique<Impl>()) {}
-QtAdapter::~QtAdapter() = default;
+QtAdapter::QtAdapter() : p_(std::make_shared<Impl>()) {}
+QtAdapter::~QtAdapter() { p_->close(); }
 
 // ── view_for ─────────────────────────────────────────────────────────────────
 QtView& QtAdapter::view_for(QObject* obj) {
     if (!obj)
         throw std::invalid_argument("QtAdapter::view_for: obj must not be null");
 
-    std::lock_guard lk{p_->m};
-    auto it = p_->views.find(obj);
-    if (it != p_->views.end()) return *it->second;
+    auto state = p_;
+    std::lock_guard lk{state->m};
+    if (!state->active) throw std::logic_error("QtAdapter::view_for: adapter is closing");
+    auto it = state->views.find(obj);
+    if (it != state->views.end()) return *it->second;
 
     auto v = std::make_unique<QtView>(obj);
     QtView* raw = v.get();
@@ -180,19 +193,21 @@ QtView& QtAdapter::view_for(QObject* obj) {
     // BindingEngine's on_destroy handler, and we must not hold `m` while
     // arbitrary user callbacks run.
     auto conn = QObject::connect(obj, &QObject::destroyed,
-        [this, obj]() {
+        [weak = std::weak_ptr<Impl>(state), obj]() {
+            auto owner = weak.lock();
+            if (!owner) return;
             std::unique_ptr<QtView> doomed;
             {
-                std::lock_guard lk2{p_->m};
-                if (auto vit = p_->views.find(obj); vit != p_->views.end()) {
+                std::lock_guard lk2{owner->m};
+                if (auto vit = owner->views.find(obj); vit != owner->views.end()) {
                     doomed = std::move(vit->second);
-                    p_->views.erase(vit);
+                    owner->views.erase(vit);
                 }
-                p_->views_conns.erase(obj);
+                owner->views_conns.erase(obj);
             }
         });
-    p_->views.emplace(obj, std::move(v));
-    p_->views_conns.emplace(obj, conn);
+    state->views.emplace(obj, std::move(v));
+    state->views_conns.emplace(obj, conn);
     return *raw;
 }
 
@@ -230,35 +245,36 @@ std::string QtAdapter::get_text(binding::IView& v) {
         warn_unsupported("on_text_changed", o);
         return {};
     }
-    auto& br = p_->bridge_for(o, 't', [o](Bridge& bridge) {
-        auto fwd = [b = &bridge](const QString& s) {
+    auto br = p_->bridge_for(o, 't', [o](const std::shared_ptr<Bridge>& bridge) {
+        auto fwd = [weak = std::weak_ptr<Bridge>(bridge)](const QString& s) {
             auto utf8 = s.toUtf8();
             StringArgs a{std::string_view(utf8.constData(), size_t(utf8.size()))};
-            b->sig.emit(&a);
+            if (auto live = weak.lock()) live->sig.emit(&a);
         };
         if (auto* le = qobject_cast<QLineEdit*>(o))
-            bridge.qt_conn = QObject::connect(le, &QLineEdit::textChanged, fwd);
+            bridge->qt_conn = QObject::connect(le, &QLineEdit::textChanged, fwd);
         else if (auto* combo = qobject_cast<QComboBox*>(o))
-            bridge.qt_conn = QObject::connect(combo, &QComboBox::currentTextChanged, fwd);
+            bridge->qt_conn = QObject::connect(combo, &QComboBox::currentTextChanged, fwd);
         else if (auto* pe = qobject_cast<QPlainTextEdit*>(o))
-            bridge.qt_conn = QObject::connect(pe, &QPlainTextEdit::textChanged,
-                [pe, b = &bridge]{
+            bridge->qt_conn = QObject::connect(pe, &QPlainTextEdit::textChanged,
+                [pe, weak = std::weak_ptr<Bridge>(bridge)]{
                     auto utf8 = pe->toPlainText().toUtf8();
                     StringArgs a{std::string_view(utf8.constData(), size_t(utf8.size()))};
-                    b->sig.emit(&a);
+                    if (auto live = weak.lock()) live->sig.emit(&a);
                 });
         else if (auto* te = qobject_cast<QTextEdit*>(o))
-            bridge.qt_conn = QObject::connect(te, &QTextEdit::textChanged,
-                [te, b = &bridge]{
+            bridge->qt_conn = QObject::connect(te, &QTextEdit::textChanged,
+                [te, weak = std::weak_ptr<Bridge>(bridge)]{
                     auto utf8 = te->toPlainText().toUtf8();
                     StringArgs a{std::string_view(utf8.constData(), size_t(utf8.size()))};
-                    b->sig.emit(&a);
+                    if (auto live = weak.lock()) live->sig.emit(&a);
                 });
     });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* args) {
+    if (!br) return {};
+    auto id = br->sig.connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<StringArgs*>(args)->sv);
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br->sig.weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -282,15 +298,16 @@ bool QtAdapter::get_bool(binding::IView& v) {
                                             std::function<void(bool)> cb) {
     auto* o = obj_of(v); if (!o) return {};
     if (!qobject_cast<QAbstractButton*>(o)) { warn_unsupported("on_bool_changed", o); return {}; }
-    auto& br = p_->bridge_for(o, 'b', [o](Bridge& bridge) {
+    auto br = p_->bridge_for(o, 'b', [o](const std::shared_ptr<Bridge>& bridge) {
         if (auto* b = qobject_cast<QAbstractButton*>(o))
-            bridge.qt_conn = QObject::connect(b, &QAbstractButton::toggled,
-                [bp = &bridge](bool x) { BoolArgs a{x}; bp->sig.emit(&a); });
+            bridge->qt_conn = QObject::connect(b, &QAbstractButton::toggled,
+                [weak = std::weak_ptr<Bridge>(bridge)](bool x) { BoolArgs a{x}; if (auto live = weak.lock()) live->sig.emit(&a); });
     });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* args) {
+    if (!br) return {};
+    auto id = br->sig.connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<BoolArgs*>(args)->v);
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br->sig.weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -300,16 +317,18 @@ bool QtAdapter::get_bool(binding::IView& v) {
 void QtAdapter::set_int(binding::IView& v, int value) {
     auto* o = obj_of(v); if (!o) return;
     if (auto* sp = qobject_cast<QSpinBox*>(o))          sp->setValue(value);
-    else if (auto* sl = qobject_cast<QSlider*>(o))      sl->setValue(value);
+    else if (auto* sl = qobject_cast<QAbstractSlider*>(o))      sl->setValue(value);
     else if (auto* pb = qobject_cast<QProgressBar*>(o)) pb->setValue(value);
+    else if (auto* cb = qobject_cast<QComboBox*>(o))    cb->setCurrentIndex(value);
     else                                                warn_unsupported("set_int", o);
 }
 
 int QtAdapter::get_int(binding::IView& v) {
     auto* o = obj_of(v); if (!o) return 0;
     if (auto* sp = qobject_cast<QSpinBox*>(o))          return sp->value();
-    if (auto* sl = qobject_cast<QSlider*>(o))           return sl->value();
+    if (auto* sl = qobject_cast<QAbstractSlider*>(o))           return sl->value();
     if (auto* pb = qobject_cast<QProgressBar*>(o))      return pb->value();
+    if (auto* cb = qobject_cast<QComboBox*>(o))         return cb->currentIndex();
     warn_unsupported("get_int", o);
     return 0;
 }
@@ -317,21 +336,27 @@ int QtAdapter::get_int(binding::IView& v) {
 ::aria::Subscription QtAdapter::on_int_changed(binding::IView& v,
                                            std::function<void(int)> cb) {
     auto* o = obj_of(v); if (!o) return {};
-    if (!qobject_cast<QSpinBox*>(o) && !qobject_cast<QSlider*>(o)) {
+    if (!qobject_cast<QSpinBox*>(o) && !qobject_cast<QAbstractSlider*>(o) &&
+        !qobject_cast<QComboBox*>(o) && !qobject_cast<QProgressBar*>(o)) {
         warn_unsupported("on_int_changed", o);
         return {};
     }
-    auto& br = p_->bridge_for(o, 'i', [o](Bridge& bridge) {
-        auto fwd = [b = &bridge](int x) { IntArgs a{x}; b->sig.emit(&a); };
+    auto br = p_->bridge_for(o, 'i', [o](const std::shared_ptr<Bridge>& bridge) {
+        auto fwd = [weak = std::weak_ptr<Bridge>(bridge)](int x) { IntArgs a{x}; if (auto live = weak.lock()) live->sig.emit(&a); };
         if (auto* sp = qobject_cast<QSpinBox*>(o))
-            bridge.qt_conn = QObject::connect(sp, &QSpinBox::valueChanged, fwd);
-        else if (auto* sl = qobject_cast<QSlider*>(o))
-            bridge.qt_conn = QObject::connect(sl, &QSlider::valueChanged, fwd);
+            bridge->qt_conn = QObject::connect(sp, &QSpinBox::valueChanged, fwd);
+        else if (auto* sl = qobject_cast<QAbstractSlider*>(o))
+            bridge->qt_conn = QObject::connect(sl, &QAbstractSlider::valueChanged, fwd);
+        else if (auto* combo = qobject_cast<QComboBox*>(o))
+            bridge->qt_conn = QObject::connect(combo, &QComboBox::currentIndexChanged, fwd);
+        else if (auto* progress = qobject_cast<QProgressBar*>(o))
+            bridge->qt_conn = QObject::connect(progress, &QProgressBar::valueChanged, fwd);
     });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* args) {
+    if (!br) return {};
+    auto id = br->sig.connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<IntArgs*>(args)->v);
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br->sig.weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -355,15 +380,16 @@ double QtAdapter::get_double(binding::IView& v) {
                                               std::function<void(double)> cb) {
     auto* o = obj_of(v); if (!o) return {};
     if (!qobject_cast<QDoubleSpinBox*>(o)) { warn_unsupported("on_double_changed", o); return {}; }
-    auto& br = p_->bridge_for(o, 'd', [o](Bridge& bridge) {
+    auto br = p_->bridge_for(o, 'd', [o](const std::shared_ptr<Bridge>& bridge) {
         if (auto* s = qobject_cast<QDoubleSpinBox*>(o))
-            bridge.qt_conn = QObject::connect(s, &QDoubleSpinBox::valueChanged,
-                [b = &bridge](double x) { DoubleArgs a{x}; b->sig.emit(&a); });
+            bridge->qt_conn = QObject::connect(s, &QDoubleSpinBox::valueChanged,
+                [weak = std::weak_ptr<Bridge>(bridge)](double x) { DoubleArgs a{x}; if (auto live = weak.lock()) live->sig.emit(&a); });
     });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* args) {
+    if (!br) return {};
+    auto id = br->sig.connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<DoubleArgs*>(args)->v);
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br->sig.weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -435,15 +461,16 @@ void QtAdapter::set_enabled(binding::IView& v, bool enabled) {
         warn_unsupported("on_click", o);
         return {};
     }
-    auto& br = p_->bridge_for(o, 'c', [o](Bridge& bridge) {
+    auto br = p_->bridge_for(o, 'c', [o](const std::shared_ptr<Bridge>& bridge) {
         if (auto* b = qobject_cast<QAbstractButton*>(o))
-            bridge.qt_conn = QObject::connect(b, &QAbstractButton::clicked,
-                [bp = &bridge](bool /*checked*/){ VoidArgs a{}; bp->sig.emit(&a); });
+            bridge->qt_conn = QObject::connect(b, &QAbstractButton::clicked,
+                [weak = std::weak_ptr<Bridge>(bridge)](bool /*checked*/){ VoidArgs a{}; if (auto live = weak.lock()) live->sig.emit(&a); });
     });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* /*args*/) {
+    if (!br) return {};
+    auto id = br->sig.connect(make_slot([cb = std::move(cb)](void* /*args*/) {
         cb();
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br->sig.weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         abi::SignalErased::disconnect_via_weak(weak, id);
     }};

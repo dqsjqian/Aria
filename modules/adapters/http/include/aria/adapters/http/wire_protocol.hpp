@@ -35,6 +35,7 @@
 ///
 /// **Server → Client (SSE)** — `data:` lines carry JSON of these shapes:
 ///
+/// ```text
 ///   {"type":"hello","platform":"http","protocol":2}
 ///   {"type":"state","view":"<id>","field":"text|bool|int|int64|uint64|float|double","value":<v>}
 ///   {"type":"event","view":"<id>","field":"click"}
@@ -45,12 +46,15 @@
 ///   {"type":"enabled","view":"<id>","value":true|false}
 ///   {"type":"error","message":"<text>"}
 ///   {"type":"ping"}                       // every 25s for keep-alive
+/// ```
 ///
 /// **Client → Server (REST body)**:
 ///
+/// ```text
 ///   POST /aria/state    {"view":"<id>","field":"text","value":"hello"}
 ///   POST /aria/click    {"view":"<id>"}
 ///   POST /aria/command  {"view":"<id>","command":"<name>","args":<json>}
+/// ```
 ///
 /// Servers MUST tolerate unknown fields (forward-compat). Clients MUST
 /// tolerate unknown `type` values (forward-compat).

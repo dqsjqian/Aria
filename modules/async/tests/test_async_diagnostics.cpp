@@ -11,6 +11,7 @@
 // ============================================================================
 
 #include <doctest/doctest.h>
+#include "aria/async/scope.hpp"
 
 #include "aria/aria.hpp"
 #include "aria/async/async_command.hpp"
@@ -454,4 +455,59 @@ TEST_CASE("Async/diag: race arbitration publishes nothing without a sink") {
 
     ScopedTraceSink guard{[&log](const TraceEvent& ev) { log.push_back(ev); }};
     CHECK(log.empty());
+}
+
+namespace {
+Task<int> diagnostics_immediate_failure() {
+    throw std::runtime_error("diagnostic failure");
+    co_return 0;
+}
+Task<void> diagnostics_until_cancelled(CancellationToken token) {
+    co_await token;
+    token.throw_if_cancelled();
+}
+}
+
+TEST_CASE("Async/diag: timeout failures close exactly once and disarm late deadline events") {
+    for (auto mode : {OnTimeout::Cancel, OnTimeout::Fail}) {
+        VirtualTimeExecutor timer;
+        std::vector<TraceEvent> log;
+        ScopedTraceSink guard{[&](const TraceEvent& event) { log.push_back(event); }};
+        auto task = with_timeout(timer, 10ms, diagnostics_immediate_failure, mode);
+        CHECK_THROWS_AS(task.blocking_get(), std::runtime_error);
+        timer.advance_by(10ms);
+        const auto ops = race_ops(log, "with_timeout");
+        REQUIRE_FALSE(ops.empty());
+        CHECK(ops.front() == "race_start");
+        CHECK(ops.back() == "race_end");
+        CHECK(std::count(ops.begin(), ops.end(), "race_end") == 1);
+        CHECK_FALSE(contains(ops, "race_timeout"));
+    }
+}
+
+TEST_CASE("Async/diag: cooperative timeout publishes its outcome before resuming the inner task") {
+    VirtualTimeExecutor timer;
+    std::vector<TraceEvent> log;
+    ScopedTraceSink guard{[&](const TraceEvent& event) { log.push_back(event); }};
+    auto task = with_timeout(timer, 10ms, diagnostics_until_cancelled);
+    task.start();
+    timer.advance_by(10ms);
+    CHECK_THROWS_AS(task.blocking_get(), TimeoutError);
+    const auto ops = race_ops(log, "with_timeout");
+    CHECK(ops == std::vector<std::string>{"race_start", "race_timeout", "race_end"});
+}
+
+TEST_CASE("Async/diag: pre-cancelled timeout parents still produce ordered complete traces") {
+    for (auto mode : {OnTimeout::Cancel, OnTimeout::Fail}) {
+        VirtualTimeExecutor timer;
+        CancellationSource source;
+        source.cancel();
+        std::vector<TraceEvent> log;
+        ScopedTraceSink guard{[&](const TraceEvent& event) { log.push_back(event); }};
+        auto task = with_timeout(source.token(), timer, 10ms, diagnostics_until_cancelled, mode);
+        CHECK_THROWS_AS(task.blocking_get(), OperationCancelled);
+        timer.advance_by(10ms);
+        const auto ops = race_ops(log, "with_timeout");
+        CHECK(ops == std::vector<std::string>{"race_start", "race_parent_cancel", "race_end"});
+    }
 }

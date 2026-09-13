@@ -217,10 +217,10 @@ does not try to replace them.
 
 ## ✨ Core features
 
-- 📦 **Header-only core** — `Property<T>` / `Computed<T>` / `Effect` / `Command<>` / `ObservableList<T>` / `Validator<T>` share one reactive dependency-graph engine. `Computed` auto-tracks deps; `reactive::batch` / `reactive::untracked` for fine control.
-- 🔌 **Type-erased ABI layer** — `aria-abi` / `aria-runtime` / `aria-binding` are ABI-stable within a major version; template layers are source-compatible only.
+- 📦 **Template-based reactive core** — `Property<T>` / `Computed<T>` / `Effect` / `Command<>` / `ObservableList<T>` / `Validator<T>` share one reactive dependency-graph engine. `Computed` auto-tracks deps; `reactive::batch` / `reactive::untracked` for fine control.
+- 🔌 **Shared foundation and ABI layer** — `aria::core` automatically links `aria::abi` for shared graph, diagnostics and signal storage. Binary compatibility requires matching compiler, standard library, build options and major version. Rebuild template code and its containing types after updates.
 - ⚡ **C++20 coroutines** — `Task<T>`, executors, `co_await schedule_on(pool)`. Async code reads like sync code.
-- 🖥 **Adapter abstraction** (`IViewAdapter`) — Qt6 / AppKit / UIKit / JNI / HTTP / WASM. Any UI toolkit, same business logic.
+- 🖥 **Adapter abstraction** (`IViewAdapter`) — Qt6 / AppKit / UIKit / JNI / HTTP. Any UI toolkit, same business logic.
 
 ## 🏗 Architecture (10 modules)
 
@@ -233,7 +233,7 @@ does not try to replace them.
    ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
    │ Qt6 adapter  │    │ JNI adapter  │    │ HTTP adapter │     (optional
    │ (Win/Mac/Lin)│    │  (Android)   │    │ REST/SSE Web │      modules;
-   │ AppKit/UIKit │    │              │    │ WASM planned │      opt-in)
+   │ AppKit/UIKit │    │              │    │ Web browser   │      opt-in)
    └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
           └───────────────────┴───────────────────┘
                               ▼
@@ -262,7 +262,7 @@ does not try to replace them.
               └──────────────┬──────────────┘
                              ▼
               ┌─────────────────────────────┐
-              │  aria-abi  (STATIC .a)      │
+              │  aria-abi  (SHARED)      │
               │ Type-erased Signal/Slot     │
               │ ABI-stable, no templates    │
               └─────────────────────────────┘
@@ -270,12 +270,12 @@ does not try to replace them.
 
 | Module | Type | Depends on | Notes |
 |--------|------|-----------|-------|
-| `aria-abi` | `STATIC` | none | Type-erased signal/slot. No templates. **ABI-stable.** |
+| `aria-abi` | `SHARED` by default | Threads | Compiled foundation: signals, shared reactive graph, diagnostics storage, scheduler base, and version metadata. Static builds are supported. |
 | `aria-core` | header-only | abi | All the templates: `Property`, `Computed`, `Command`, `ObservableList`, `Validator`. Source-compatible only (not ABI-stable). |
 | `aria-async` | header-only | core | C++20 `Task<T>`, executors. Source-compatible only. |
 | `aria-runtime` | `SHARED` | core, abi | EventBus / Container / Dispatcher / Logger — singletons live in **one** dylib. **ABI-stable** (non-template exports). |
 | `aria-binding` | `SHARED` | core, runtime | `BindingEngine`, `IViewAdapter`. **ABI-stable** (non-template exports). |
-| Adapters | `SHARED`/`STATIC` | binding | Qt6 / AppKit / UIKit / JNI / HTTP (each opt-in); WASM is planned. |
+| Adapters | `SHARED`/`STATIC` | binding | Qt6 / AppKit / UIKit / JNI / HTTP (each opt-in). WASM is conditional roadmap work. |
 
 ## 📋 Requirements
 
@@ -284,6 +284,7 @@ does not try to replace them.
   - GCC >= 12 (the MSYS2 UCRT64 toolchain on Windows)
   - Clang >= 15 (AppleClang 15+ on macOS/iOS)
   - **MSVC v143 / Visual Studio 2022** (Windows, see below)
+- **C++23** is opt-in with `-DCMAKE_CXX_STANDARD=23`; C++20 remains the minimum. See the [evaluation](docs/cpp23-evaluation.md).
 - *(optional)* **Qt6** >= 6.4 (for the Qt6 adapter)
 
 > **Windows is supported on two toolchains: MSYS2 UCRT64 (GCC) and
@@ -307,8 +308,8 @@ ctest --test-dir build/flavors/release --output-on-failure
 > per-flavor script `scripts/build.sh [release|debug|asan|tsan]` picks the
 > right directory for you.
 
-> First configure pulls [doctest](https://github.com/doctest/doctest) via the
-> bundled `CPM.cmake`. After that everything is offline.
+> Normal builds use the bundled doctest header. CMake fetches the fallback
+> test dependency only if that vendored header is absent.
 
 ### One-liner build scripts
 
@@ -418,7 +419,6 @@ target_link_libraries(my_app PRIVATE aria::core aria::async)
 | `ARIA_BUILD_APPKIT` | OFF | **(production-grade)** Build the macOS AppKit adapter as a first-class `STATIC` CMake module using Objective-C++; ships `aria::adapters::appkit` and passes the shared `adapter_conformance` battery. Requires `APPLE`. |
 | `ARIA_BUILD_UIKIT` | OFF | **(production-grade)** Build the iOS UIKit adapter as a first-class `STATIC` CMake module using Objective-C++; ships `aria::adapters::uikit` and passes the shared conformance battery. Requires `APPLE`. |
 | `ARIA_BUILD_JNI` | OFF | Build Android JNI adapter as a first-class CMake module — built as `STATIC`, ships `aria::adapters::jni`, implementing the same `IViewAdapter` contract as Qt/AppKit/UIKit via reflective JNI dispatch (text / bool / int / double / visibility / click). Requires an Android NDK toolchain (**NDK r26+** — the C++20-concepts core does not build under NDK r25's libc++). |
-| `ARIA_BUILD_WASM` | OFF | *(planned)* Build WebAssembly adapter. |
 | `ARIA_ENABLE_ASAN` | OFF | AddressSanitizer. |
 | `ARIA_ENABLE_UBSAN` | OFF | UndefinedBehaviorSanitizer. |
 | `ARIA_ENABLE_TSAN` | OFF | ThreadSanitizer. |
@@ -484,13 +484,13 @@ Task<std::string> fetch_user(int id) {
 
 | Platform   | UI host        | Adapter                            |
 |------------|----------------|------------------------------------|
-| Windows    | Qt6 / WinUI    | `aria-qt6` ✅ ready (MSYS2 UCRT64 + MSVC 2022) |
+| Windows    | Qt6            | `aria-qt6` ✅ ready (MSYS2 UCRT64 + MSVC 2022) |
 | macOS      | AppKit / Qt6   | `aria-qt6` ✅ ready; AppKit ✅ ready |
-| Linux      | Qt6 / GTK      | `aria-qt6` ✅ ready             |
-| iOS        | UIKit / SwiftUI bridge | UIKit ✅ ready; `aria-uikit` module planned |
+| Linux      | Qt6            | `aria-qt6` ✅ ready             |
+| iOS        | UIKit          | `aria-uikit` ✅ ready |
 | Android    | Compose / View | `aria-jni` ✅ ready (NDK r26+)   |
 | **Web (server-driven)** | **HTML/JS in browser** | **`aria-http` ✅ ready (REST + SSE)** |
-| Web (in-browser C++) | DOM via WASM     | `aria-wasm` planned             |
+| Web (in-browser C++) | DOM via WASM     | Not implemented; conditional roadmap work             |
 
 The HTTP adapter ships a small server (`HttpAdapter`) that exposes any
 ViewModel over a JSON REST + Server-Sent-Events protocol, plus a
@@ -503,13 +503,13 @@ and SSE fan-out. It is the right shape for
 desktop apps that want a web UI on the side, headless services, and
 local debug dashboards. The WASM adapter — which compiles C++ business
 logic into the browser sandbox — solves a different, more constrained
-problem and remains on the roadmap. See
+problem and remains conditional on a concrete consumer. See
 [RFC 0001](docs/rfc/0001-http-adapter.md) for the design.
 
 The **current release** ships the platform-agnostic core, runtime, async, and
 binding layers — fully unit-tested. Qt6, AppKit, UIKit, JNI, and HTTP are
 first-class opt-in adapters in the CMake tree (subject to their platform
-requirements). WASM remains planned; the `IViewAdapter` interface is stable.
+requirements). WASM and SwiftUI remain conditional roadmap work.
 
 ## 🖼 Real-world showcase
 
@@ -559,48 +559,40 @@ two web shapes: a REST+SSE thin client and an SSR variant.
 | Source manager (Web, REST + SSE) | ![OpenRead-Web](docs/marketing/images/OpenRead-Web.png) |
 | Source manager (Web, SSR) | ![OpenRead-SSR](docs/marketing/images/OpenRead-SSR.png) |
 
-> **Why no Windows / Linux screenshots?** The macOS shell is built on **Aria (the
-> framework base) + the Qt6 adapter (the View layer)**; the programs built for Windows and
-> Linux look identical to the macOS one (same Qt widgets + the same C++ ViewModel), so
-> duplicate screenshots would add nothing. Windows additionally has two independently
-> validated toolchains — MSVC + Qt6 and MSYS2 UCRT64.
+> These screenshots show the macOS example applications. Other platforms reuse
+> the ViewModel; native appearance depends on the platform, Qt style, and host
+> application. Consult CI for framework build and test results on Windows/Linux.
 
 ## 🧪 Test status
 
-```
-$ ctest --test-dir build/flavors/release --output-on-failure
-Test project /…/aria/build/flavors/release
-    Start 1: abi_tests           ✅ Passed
-    Start 2: core_tests          ✅ Passed
-    Start 3: fuzz_tests          ✅ Passed
-    Start 4: async_tests         ✅ Passed
-    Start 5: runtime_tests       ✅ Passed
-    Start 6: binding_tests       ✅ Passed
-    Start 7: qt6_tests           ✅ Passed   (when ARIA_BUILD_QT6=ON)
-    Start 8: appkit_conformance  ✅ Passed   (Apple-only)
-    Start 9: appkit_table_source ✅ Passed   (Apple-only)
-
-100% tests passed, 0 tests failed (up to 9 suites, depending on options)
+```bash
+ctest --test-dir build/flavors/release --no-tests=error --output-on-failure
 ```
 
-75+ individual test cases across the suites, including dedicated
-regression tests for the lifecycle / re-entrancy / exception-safety
-invariants pinned in `docs/reference/lifecycle.md` and `docs/reference/error-model.md`.
+Tests exercise reactive state, collection events, async cancellation, binding
+lifetimes, ABI, and adapter contracts. Enabled suites depend on platform and
+build options. See [CI results](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml),
+[lifecycle contracts](docs/reference/lifecycle.md), and the
+[error model](docs/reference/error-model.md).
 
-## 📊 Benchmark (Apple M-series, -O3 -DNDEBUG)
+## 📊 Benchmarks
 
-| Operation | ns/op |
-|-----------|-------|
-| `Property<int>::get()`                          | 10.4 |
-| `Property<int>::set()` no observers              | 28.5 |
-| `Property<int>::set()` 1 observer                | 29.3 |
-| `Property<int>::set()` 10 observers              | 45.9 |
-| Subscribe + auto-unsubscribe cycle               | 54.9 |
-| Computed chain x5 (set + recompute + get)        | 289.1 |
-| `EventBus::publish` (1 subscriber)               | 13.4 |
-| `Container::resolve<Singleton>`                  | 7.6  |
-| 10 sets wrapped in `reactive::batch` (notify once)     | 156.1 |
-| Batch update speedup vs individual                      | **1.91×** |
+Measured on 2026-09-13: Apple M3 Pro / Apple Clang 21 / C++20 Release
+(`-O3 -DNDEBUG`). Each entry is the median of five paired runs' mean operation
+times, comparing original revision `eeb613f` with this 2.0 refactor.
+
+| Operation | Original | Current |
+|---|---:|---:|
+| Property set, no observers | 20.5 ns | 13.2 ns |
+| Property set, one observer | 98.9 ns | 35.0 ns |
+| Computed chain ×5 | 570.8 ns | 229.0 ns |
+| Ten sets in one batch | 250.6 ns | 102.5 ns |
+| FilteredList tail append, 10k initial rows | 11.18 μs | 0.23 μs |
+| SortedList random-key append, 10k initial rows | 8.38 μs | 17.28 μs |
+
+Performance is mixed: owning event data and maintaining correct ordering after
+batched changes also have costs. See the [performance reference](docs/reference/performance.md)
+for all scenarios, complexity, remaining regressions, and reproduction details.
 
 ## 📋 Framework contracts
 
@@ -637,11 +629,13 @@ set `ARIA_FUZZ_ITERS=1000000`).
 | Data fetching | `AsyncResource<T>` (SWR + dedupe) / `Loadable<T>` (5-state) | `aria/async/async_resource.hpp`, `aria/loadable.hpp` |
 | Navigation | `Navigator` (`push`/`pop`/`push_for_result<R>`, route patterns) | `aria/binding/navigation.hpp` |
 | Binding | `BindingEngine` / `IViewAdapter` / `IView` / `Converter` / `bind_view_lifetime` | `aria/binding/*` |
-| Diagnostics | `TraceEvent` / `TraceSink` / `GraphInspector` (zero-overhead off) | `aria/diagnostics.hpp` |
+| Diagnostics | `TraceEvent` / `TraceSink` / `GraphInspector` (atomic check when disabled) | `aria/diagnostics.hpp` |
 
 **Learn it:** the [documentation index](docs/index.md) links the guides,
 the [Cookbook](docs/cookbook/README.md) (task-oriented recipes), and the
-contract references. Build the symbol-level **API reference** with
+contract references. The public [API reference](https://dqsjqian.github.io/Aria/)
+is generated from main. See the [2.0 migration guide](docs/migration-2.0.md)
+when upgrading from 1.2.x. Build the reference locally with
 `cmake -B build/flavors/docs -DARIA_BUILD_DOCS=ON && cmake --build build/flavors/docs --target aria_docs`.
 
 ## 🗺 Roadmap
@@ -664,7 +658,7 @@ Contributions are welcome! Please open an issue first to discuss design changes.
 - [doctest](https://github.com/doctest/doctest) — lightweight test framework
 - [nlohmann_json](https://github.com/nlohmann/json) — JSON for Modern C++
 - [cpp-httplib](https://github.com/yhirose/cpp-httplib) — HTTP/HTTPS server
-- [OpenSSL](https://www.openssl.org/) — TLS 1.2/1.3 (3.5 LTS)
+- [OpenSSL](https://www.openssl.org/) — TLS 1.2/1.3 (version in `third_party/openssl/VERSION.dat`)
 - [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) — CMake dependency management
 
 ## 📄 License

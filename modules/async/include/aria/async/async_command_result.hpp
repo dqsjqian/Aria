@@ -80,7 +80,7 @@ namespace detail {
 /// optional structured error. Pulled into a base so the predicates
 /// don't get re-typed twice.
 struct AsyncCommandResultBase {
-    AsyncCommandStatus           status{AsyncCommandStatus::Completed};
+    AsyncCommandStatus           status{AsyncCommandStatus::Dropped};
     std::optional<::aria::Error> error{};
 
     [[nodiscard]] bool completed() const noexcept { return status == AsyncCommandStatus::Completed; }

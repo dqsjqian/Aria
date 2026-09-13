@@ -11,37 +11,15 @@
 //         resumed;
 //       * nothing is resumed twice, and no coroutine frame leaks."
 //
-//  Why this file exists
-//  --------------------
-//  docs/reference/lifecycle.md L-36 has listed this fuzzer in its coverage
-//  table for a long time, but the file did not exist — L-36 was the one
-//  entry in that table with no implementation behind it, and `test_scope.cpp`
-//  covers only sequential single-task scenarios (seven cases, zero
-//  concurrent launch/cancel/join interleavings).
-//
-//  Honest scope note: the `await_suspend`-resumes-on-the-current-stack
-//  defect that prompted writing this file is NOT detected by these cases,
-//  and was verified not to be — the suite passes under ASan+UBSan against
-//  the buggy version too. That defect is latent rather than active: nothing
-//  touches the coroutine frame after the in-stack resume today (the
-//  awaiter's `await_resume()` is empty), so the standard violation does not
-//  currently manifest. It was fixed because it is a contract violation one
-//  edit away from becoming real, not because a sanitizer caught it. What
-//  these cases DO pin down is the accounting and wakeup half of L-36, which
-//  previously had no coverage at all.
-//
 //  Strategy
 //  --------
 //  Three complementary shapes, all driven off `fuzz::iters()`:
 //
-//    1. Random launch counts drained through `cancel_and_join()`, checking
-//       exact accounting every iteration.
-//    2. `co_await scope.join()` from a driver coroutine, with the number of
-//       in-flight tasks varied so the awaiter hits BOTH paths: the
-//       already-drained fast path (`await_ready` true / `await_suspend`
-//       declining to suspend) and the genuinely-parked path.
-//    3. Scope destruction racing pending work, to prove the dtor's
-//       cancel-and-drain leaves nothing behind.
+//    1. Preserve the synchronous launch/accounting baseline.
+//    2. Park children on virtual deadlines, register two joiners before the
+//       last child exits, and verify neither resumes before that last exit.
+//    3. Destroy a scope whose children are waiting for cancellation, then
+//       check every child observed cancellation and released its frame.
 //
 //  Everything runs on ManualExecutor-style deterministic pumping via
 //  VirtualTimeExecutor, so a failure reproduces from the seed alone.
@@ -96,6 +74,30 @@ Task<void> join_existing_driver(CoroutineScope& scope,
     resumed->store(true, std::memory_order_release);
 }
 
+struct PendingCounts {
+    std::size_t entries = 0;
+    std::size_t exits = 0;
+    std::size_t cancelled = 0;
+};
+
+Task<void> delayed_counted_body(VirtualTimeExecutor& timer,
+                              std::chrono::milliseconds delay,
+                              std::shared_ptr<PendingCounts> counts,
+                              CancellationToken token) {
+    ++counts->entries;
+    co_await schedule_after(timer, delay);
+    if (token.is_cancelled()) ++counts->cancelled;
+    ++counts->exits;
+}
+
+Task<void> counted_until_cancelled(std::shared_ptr<PendingCounts> counts,
+                                 CancellationToken token) {
+    ++counts->entries;
+    co_await token;
+    if (token.is_cancelled()) ++counts->cancelled;
+    ++counts->exits;
+}
+
 }  // namespace
 
 TEST_CASE("L-36 fuzz: launch/cancel_and_join accounting converges to zero") {
@@ -105,7 +107,8 @@ TEST_CASE("L-36 fuzz: launch/cancel_and_join accounting converges to zero") {
     auto exits   = std::make_shared<std::atomic<std::uint64_t>>(0);
 
     for (std::size_t step = 0; step < fuzz::iters(); ++step) {
-        const std::uint32_t n = rng.u32(0, 4);
+        // Guarantee nonempty accounting even for ARIA_FUZZ_ITERS=1.
+        const std::uint32_t n = step == 0 ? 1 : rng.u32(0, 4);
         {
             CoroutineScope scope;
             for (std::uint32_t i = 0; i < n; ++i) {
@@ -132,68 +135,84 @@ TEST_CASE("L-36 fuzz: launch/cancel_and_join accounting converges to zero") {
 TEST_CASE("L-36 fuzz: co_await join() resumes on both drained and parked paths") {
     fuzz::Rng rng{fuzz::seed(0x5C09EA11)};
 
-    auto entries = std::make_shared<std::atomic<std::uint64_t>>(0);
-    auto exits   = std::make_shared<std::atomic<std::uint64_t>>(0);
-
     // Cap: each iteration spins up a fresh executor + scope + driver
     // coroutine, which is heavier than the tight loop above.
     const std::size_t capped = std::min(fuzz::iters(), std::size_t{20'000});
 
     for (std::size_t step = 0; step < capped; ++step) {
         VirtualTimeExecutor vt;
-        auto resumed = std::make_shared<std::atomic<bool>>(false);
-
+        auto counts = std::make_shared<PendingCounts>();
         {
             CoroutineScope scope;
-
-            // n == 0 exercises the already-drained path, where
-            // `await_ready()` is true or `await_suspend` must decline to
-            // suspend by returning false. That is precisely the path that
-            // used to resume on the wrong stack.
             const std::uint32_t n = rng.u32(0, 3);
             for (std::uint32_t i = 0; i < n; ++i) {
-                scope.launch([entries, exits](CancellationToken tok) {
-                    return counted_body(entries, exits, std::move(tok));
+                scope.launch([&vt, counts, i](CancellationToken tok) {
+                    return delayed_counted_body(vt, std::chrono::milliseconds{i + 1},
+                                                counts, std::move(tok));
                 });
             }
+            REQUIRE(counts->entries == n);
+            REQUIRE(counts->exits == 0);
+            REQUIRE(scope.inflight_count() == n);
 
-            auto driver = rng.coin(0.5) ? join_driver(scope, resumed)
-                : join_existing_driver(scope, resumed);
+            const bool cancel_on_join = rng.coin(0.5);
+            auto resumed = std::make_shared<std::atomic<bool>>(false);
+            auto second_resumed = std::make_shared<std::atomic<bool>>(false);
+            auto driver = cancel_on_join ? join_driver(scope, resumed)
+                                         : join_existing_driver(scope, resumed);
+            auto second = join_existing_driver(scope, second_resumed);
             driver.start();
-            vt.run_until_idle();
+            second.start();
+            CHECK(driver.done() == (n == 0));
+            CHECK(second.done() == (n == 0));
+            CHECK(resumed->load() == (n == 0));
+            CHECK(second_resumed->load() == (n == 0));
 
-            // Whether or not the bodies had finished, the joiner must have
-            // been handed back control: either inline (already drained) or
-            // by the last task out.
-            CHECK(resumed->load(std::memory_order_acquire));
+            for (std::uint32_t finished = 1; finished <= n; ++finished) {
+                vt.advance_by(std::chrono::milliseconds{1});
+                CHECK(counts->exits == finished);
+                CHECK(scope.inflight_count() == n - finished);
+                CHECK(resumed->load() == (finished == n));
+                CHECK(second_resumed->load() == (finished == n));
+            }
+            REQUIRE(driver.done());
+            REQUIRE(second.done());
+            driver.blocking_get();
+            second.blocking_get();
             CHECK(scope.inflight_count() == 0);
+            CHECK(counts->cancelled == (cancel_on_join ? n : 0));
+            CHECK(vt.pending() == 0);
         }
+        CHECK(counts.use_count() == 1);  // no child/owner frame retained its state
     }
-
-    CHECK(entries->load() == exits->load());
 }
 
 TEST_CASE("L-36 fuzz: scope destruction drains pending work") {
     fuzz::Rng rng{fuzz::seed(0x5C09ED7012)};
 
-    auto entries = std::make_shared<std::atomic<std::uint64_t>>(0);
-    auto exits   = std::make_shared<std::atomic<std::uint64_t>>(0);
-
     const std::size_t capped = std::min(fuzz::iters(), std::size_t{20'000});
 
     for (std::size_t step = 0; step < capped; ++step) {
-        // No explicit join: the dtor must cancel and drain. Leaking here
-        // would trip the scope's own leak diagnostic.
-        CoroutineScope scope;
-        const std::uint32_t n = rng.u32(0, 4);
-        for (std::uint32_t i = 0; i < n; ++i) {
-            scope.launch([entries, exits](CancellationToken tok) {
-                return counted_body(entries, exits, std::move(tok));
-            });
+        auto counts = std::make_shared<PendingCounts>();
+        CancellationToken token;
+        const std::uint32_t n = rng.u32(1, 4);
+        {
+            CoroutineScope scope;
+            token = scope.token();
+            for (std::uint32_t i = 0; i < n; ++i) {
+                scope.launch([counts](CancellationToken tok) {
+                    return counted_until_cancelled(counts, std::move(tok));
+                });
+            }
+            REQUIRE(counts->entries == n);
+            REQUIRE(counts->exits == 0);
+            REQUIRE(scope.inflight_count() == n);
+            CHECK_FALSE(token.is_cancelled());
+            // No explicit cancel/join: every child is still parked at dtor.
         }
-        if (rng.coin(0.3)) scope.cancel();
-        // dtor runs here.
+        CHECK(token.is_cancelled());
+        CHECK(counts->exits == n);
+        CHECK(counts->cancelled == n);
+        CHECK(counts.use_count() == 1);
     }
-
-    CHECK(entries->load() == exits->load());
 }

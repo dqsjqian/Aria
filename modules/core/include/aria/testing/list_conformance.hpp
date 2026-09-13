@@ -189,7 +189,7 @@ template<typename L, typename Factory>
 void check_reentrancy(Factory factory) {
     using T = list_source_value_t<L>;
 
-    SUBCASE("D-20: unsubscribe inside emit is safe and snapshot-applies") {
+    SUBCASE("D-20: unsubscribe inside emit skips a pending observer") {
         auto list = factory();
         Subscription a, b;
         int hits_a = 0, hits_b = 0;
@@ -201,14 +201,13 @@ void check_reentrancy(Factory factory) {
         b = list->observe([&](const ListChange<T>&) { ++hits_b; });
 
         list->push_back(std::make_shared<T>());
-        // Snapshot semantics (L-13): b was in the snapshot, so it
-        // still fires for THIS emit.
+        // Cancellation invalidates b before its turn in the current fan-out.
         CHECK(hits_a == 1);
-        CHECK(hits_b == 1);
+        CHECK(hits_b == 0);
 
         list->push_back(std::make_shared<T>());
         CHECK(hits_a == 2);
-        CHECK(hits_b == 1);   // b was disconnected before this emit
+        CHECK(hits_b == 0);   // b was disconnected before this emit
     }
 
     SUBCASE("D-21: throwing handler does not break siblings") {

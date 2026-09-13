@@ -2,9 +2,9 @@
 # ${CMAKE_BINARY_DIR}/Doxyfile. Generates the public API reference for
 # Aria (ROADMAP P1-F). Run via the `aria_docs` target:
 #
-#     cmake -B build -DARIA_BUILD_DOCS=ON
-#     cmake --build build --target aria_docs
-#     open build/docs/html/index.html
+#     cmake -B build/flavors/docs -DARIA_BUILD_DOCS=ON
+#     cmake --build build/flavors/docs --target aria_docs
+#     open build/flavors/docs/docs/html/index.html
 #
 # Doxygen is invoked with WORKING_DIRECTORY = the project source root, so
 # all INPUT / EXCLUDE paths below are relative to that root.
@@ -20,11 +20,14 @@ OUTPUT_DIRECTORY       = @ARIA_DOCS_OUTPUT_DIR@
 # the reference is the *public surface only*.
 INPUT                  = modules \
                          docs \
-                         README.md
+                         README.md \
+                         README.en.md \
+                         CHANGELOG.md
 USE_MDFILE_AS_MAINPAGE = README.md
 RECURSIVE              = YES
 FILE_PATTERNS          = *.hpp *.inl *.md
 EXTENSION_MAPPING      = inl=C++
+INPUT_FILTER           = "\"@Python3_EXECUTABLE@\" \"@CMAKE_CURRENT_SOURCE_DIR@/scripts/filter-docs.py\" --revision \"@ARIA_DOCS_SOURCE_REVISION@\" --repository \"@ARIA_DOCS_REPOSITORY_URL@\""
 
 EXCLUDE_PATTERNS       = */detail/* \
                          */tests/* \
@@ -35,14 +38,20 @@ EXCLUDE_PATTERNS       = */detail/* \
 # Hide internal implementation namespaces from the reference even when a
 # public header pulls them in transitively.
 EXCLUDE_SYMBOLS        = aria::detail aria::detail::* \
+                         aria::abi::detail aria::abi::detail::* \
                          aria::reactive::detail aria::reactive::detail::* \
                          aria::async::detail aria::async::detail::* \
-                         aria::binding::detail aria::binding::detail::*
+                         aria::binding::detail aria::binding::detail::* \
+                         aria::adapters::qt6::detail aria::adapters::qt6::detail::* \
+                         AriaClickTarget AriaToggleTarget AriaStepperTarget \
+                         AriaSliderTarget AriaTextDelegate AriaTableDataSource \
+                         AriaUIClickTarget AriaUIToggleTarget AriaUIStepperTarget \
+                         AriaUISliderTarget AriaUITextTarget AriaUITableDataSource
 
 # ── Extraction policy: public, documented surface ─────────────────────────
-# Most Aria headers document with `//` blocks; turn those into Doxygen docs
-# so the reference is populated, but keep internals out via the excludes
-# above and by hiding private/static members.
+# Index public declarations even when they have no Doxygen comment. Ordinary
+# `//` blocks remain source comments; only Doxygen comment syntax contributes
+# prose to the generated symbol descriptions.
 EXTRACT_ALL            = YES
 EXTRACT_PRIVATE        = NO
 EXTRACT_STATIC         = NO
@@ -64,6 +73,9 @@ PREDEFINED             = ARIA_CORE_API= \
                          ARIA_ABI_API= \
                          ARIA_RUNTIME_API= \
                          ARIA_BINDING_API= \
+                         ARIA_QT6_API= \
+                         ARIA_JNI_API= \
+                         ARIA_HTTP_API= \
                          ARIA_PLUGIN_EXPORT= \
                          "ARIA_NODISCARD=[[nodiscard]]" \
                          __cplusplus=202002L

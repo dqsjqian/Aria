@@ -1,44 +1,44 @@
 #include "aria/runtime/dispatcher.hpp"
-#include <memory>
 #include "aria/callback_boundary.hpp"
-#include "aria/property_ops.hpp"
-#include <chrono>
+
 #include <condition_variable>
 #include <mutex>
 #include <queue>
 #include <stdexcept>
-
-namespace aria {
-IDelayedScheduler::~IDelayedScheduler() = default;
-}  // namespace aria
+#include <thread>
+#include <utility>
 
 namespace aria::runtime {
-
 namespace {
+using Clock = std::chrono::steady_clock;
+
+Clock::time_point deadline_after(std::chrono::milliseconds delay) noexcept {
+    const auto now = Clock::now();
+    if (delay <= std::chrono::milliseconds::zero()) return now;
+    if (delay >= std::chrono::duration_cast<std::chrono::milliseconds>(Clock::duration::max()))
+        return Clock::time_point::max();
+    const auto span = std::chrono::duration_cast<Clock::duration>(delay);
+    return now > Clock::time_point::max() - span ? Clock::time_point::max() : now + span;
+}
 
 struct DelayedItem {
-    std::chrono::steady_clock::time_point ready_at;
-    // `mutable` so we can move-out the callable from `priority_queue::top()`,
-    // whose API only hands out const references. The heap ordering depends
-    // solely on `ready_at`, so mutating `fn` does not invalidate the heap.
+    Clock::time_point ready_at;
+    // Moving out the callable does not change the heap ordering.
     mutable std::function<void()> fn;
-    bool operator<(const DelayedItem& other) const {
-        return ready_at > other.ready_at;  // min-heap
+    bool operator<(const DelayedItem& other) const noexcept {
+        return ready_at > other.ready_at;
     }
 };
 
-std::shared_ptr<IDispatcher>& global_dispatcher_slot() {
-    static std::shared_ptr<IDispatcher> slot;
-    return slot;
-}
+struct GlobalDispatcher {
+    std::mutex mutex;
+    std::shared_ptr<IDispatcher> dispatcher;
+};
 
-/// Guards access to global_dispatcher_slot().  A plain mutex is fine — this
-/// is hit at most a handful of times per process (startup + occasional reads).
-std::mutex& global_dispatcher_mutex() {
-    static std::mutex m;
-    return m;
+GlobalDispatcher& global_dispatcher() {
+    static GlobalDispatcher state;
+    return state;
 }
-
 }  // namespace
 
 struct SimpleDispatcher::Impl {
@@ -46,32 +46,84 @@ struct SimpleDispatcher::Impl {
     std::condition_variable cv;
     std::queue<std::function<void()>> queue;
     std::priority_queue<DelayedItem> delayed;
-    std::thread::id owner;
+    const std::thread::id owner = std::this_thread::get_id();
+    bool closed = false;
+
+    // Called under mutex. No allocation or user-code invocation.
+    std::function<void()> take_ready() {
+        if (!queue.empty()) {
+            auto fn = std::move(queue.front());
+            queue.pop();
+            return fn;
+        }
+        if (!delayed.empty() && delayed.top().ready_at <= Clock::now()) {
+            auto fn = std::move(delayed.top().fn);
+            delayed.pop();
+            return fn;
+        }
+        return {};
+    }
+
+    void require_owner() const {
+        if (std::this_thread::get_id() != owner)
+            throw std::logic_error("SimpleDispatcher must be pumped on its creating thread");
+    }
 };
 
-SimpleDispatcher::SimpleDispatcher()
-    : impl_(std::make_unique<Impl>()) {
-    impl_->owner = std::this_thread::get_id();
+SimpleDispatcher::SimpleDispatcher() : impl_(std::make_shared<Impl>()) {}
+
+SimpleDispatcher::~SimpleDispatcher() {
+    const auto state = impl_;
+    {
+        std::lock_guard lock(state->mutex);
+        state->closed = true;
+    }
+    state->cv.notify_all();
+    // Destroy captures outside the lock while the closed state remains valid.
+    // A capture destructor may post again; closed dispatchers discard that work.
+    for (;;) {
+        std::function<void()> discarded;
+        {
+            std::lock_guard lock(state->mutex);
+            if (!state->queue.empty()) {
+                discarded = std::move(state->queue.front());
+                state->queue.pop();
+            } else if (!state->delayed.empty()) {
+                discarded = std::move(state->delayed.top().fn);
+                state->delayed.pop();
+            } else {
+                break;
+            }
+        }
+    }
 }
 
-SimpleDispatcher::~SimpleDispatcher() = default;
-
 void SimpleDispatcher::post(std::function<void()> fn) {
+    if (!fn) return;
+    const auto state = impl_;
     {
-        std::lock_guard lk(impl_->mutex);
-        impl_->queue.push(std::move(fn));
+        std::lock_guard lock(state->mutex);
+        if (state->closed) return;
+        state->queue.push(std::move(fn));
     }
-    impl_->cv.notify_one();
+    state->cv.notify_one();
 }
 
 void SimpleDispatcher::post_delayed(std::chrono::milliseconds delay,
                                     std::function<void()> fn) {
-    auto deadline = std::chrono::steady_clock::now() + delay;
-    {
-        std::lock_guard lk(impl_->mutex);
-        impl_->delayed.push(DelayedItem{deadline, std::move(fn)});
+    if (!fn) return;
+    if (delay <= std::chrono::milliseconds::zero()) {
+        post(std::move(fn));
+        return;
     }
-    impl_->cv.notify_one();
+    const auto state = impl_;
+    const auto deadline = deadline_after(delay);
+    {
+        std::lock_guard lock(state->mutex);
+        if (state->closed) return;
+        state->delayed.push(DelayedItem{deadline, std::move(fn)});
+    }
+    state->cv.notify_one();
 }
 
 bool SimpleDispatcher::is_main_thread() const noexcept {
@@ -79,71 +131,46 @@ bool SimpleDispatcher::is_main_thread() const noexcept {
 }
 
 std::size_t SimpleDispatcher::pump(std::chrono::milliseconds budget) {
-    auto deadline = std::chrono::steady_clock::now() + budget;
+    const auto state = impl_;
+    state->require_owner();
+    const auto deadline = deadline_after(budget);
     std::size_t count = 0;
-
-    while (true) {
+    for (;;) {
         std::function<void()> fn;
         {
-            std::lock_guard lk(impl_->mutex);
-            // Move ready delayed items into main queue
-            auto now = std::chrono::steady_clock::now();
-            while (!impl_->delayed.empty() && impl_->delayed.top().ready_at <= now) {
-                impl_->queue.push(std::move(impl_->delayed.top().fn));
-                impl_->delayed.pop();
-            }
-
-            if (impl_->queue.empty()) break;
-            fn = std::move(impl_->queue.front());
-            impl_->queue.pop();
+            std::lock_guard lock(state->mutex);
+            if (state->closed) break;
+            fn = state->take_ready();
         }
+        if (!fn) break;
         try {
             fn();
         } catch (...) {
-            aria::report_callback_failure(
-                std::string_view{"runtime.simple_dispatcher.pump"},
-                std::current_exception());
+            aria::report_callback_failure("runtime.simple_dispatcher.pump",
+                                          std::current_exception());
         }
         ++count;
-        if (std::chrono::steady_clock::now() >= deadline) break;
+        if (Clock::now() >= deadline) break;
     }
     return count;
 }
 
 void SimpleDispatcher::run_one() {
+    const auto state = impl_;
+    state->require_owner();
     std::function<void()> fn;
     {
-        std::unique_lock lk(impl_->mutex);
-        // Loop until something is actually actionable. Two ways to be
-        // ready: (a) an item is sitting in `queue`, (b) a delayed item
-        // whose deadline has now passed.
-        //
-        // The earlier implementation had a race: it took the soonest
-        // delayed deadline and `cv.wait_until(deadline)`. If a `post()`
-        // raced that wait and added a queue task, we'd be notified,
-        // re-check `delayed` (still in the future), and return WITHOUT
-        // ever looking at `queue`. The just-posted task was silently
-        // skipped until the next `run_one` call. Fix: drain ready
-        // delayed items first, prefer `queue`, and re-loop after every
-        // wake until one path actually has something for us.
-        while (true) {
-            const auto now = std::chrono::steady_clock::now();
-            while (!impl_->delayed.empty() &&
-                   impl_->delayed.top().ready_at <= now) {
-                impl_->queue.push(std::move(impl_->delayed.top().fn));
-                impl_->delayed.pop();
-            }
-            if (!impl_->queue.empty()) {
-                fn = std::move(impl_->queue.front());
-                impl_->queue.pop();
-                break;
-            }
-            if (!impl_->delayed.empty()) {
-                // Sleep until the soonest deadline OR a post wakes us.
-                impl_->cv.wait_until(lk, impl_->delayed.top().ready_at);
+        std::unique_lock lock(state->mutex);
+        while (!state->closed) {
+            fn = state->take_ready();
+            if (fn) break;
+            if (!state->delayed.empty()) {
+                // Copy before releasing the lock: another producer may grow
+                // the heap while wait_until still refers to its argument.
+                const auto deadline = state->delayed.top().ready_at;
+                state->cv.wait_until(lock, deadline);
             } else {
-                // No delayed work either — block until a post arrives.
-                impl_->cv.wait(lk);
+                state->cv.wait(lock);
             }
         }
     }
@@ -151,29 +178,25 @@ void SimpleDispatcher::run_one() {
         try {
             fn();
         } catch (...) {
-            aria::report_callback_failure(
-                std::string_view{"runtime.simple_dispatcher.run_one"},
-                std::current_exception());
+            aria::report_callback_failure("runtime.simple_dispatcher.run_one",
+                                          std::current_exception());
         }
     }
 }
 
-void set_main_dispatcher(std::shared_ptr<IDispatcher> d) {
-    std::lock_guard lk(global_dispatcher_mutex());
-    global_dispatcher_slot() = std::move(d);
+void set_main_dispatcher(std::shared_ptr<IDispatcher> dispatcher) {
+    auto& state = global_dispatcher();
+    {
+        std::lock_guard lock(state.mutex);
+        state.dispatcher.swap(dispatcher);
+    }
 }
 
-IDispatcher& main_dispatcher() {
-    std::lock_guard lk(global_dispatcher_mutex());
-    auto& slot = global_dispatcher_slot();
-    if (!slot) {
-        // Auto-install a SimpleDispatcher if none was installed.
-        // IMPORTANT: call this once from the thread you consider "main"
-        // (typically very early during startup) so SimpleDispatcher captures
-        // the correct owner thread id.
-        slot = std::make_shared<SimpleDispatcher>();
-    }
-    return *slot;
+std::shared_ptr<IDispatcher> main_dispatcher() {
+    auto& state = global_dispatcher();
+    std::lock_guard lock(state.mutex);
+    if (!state.dispatcher) state.dispatcher = std::make_shared<SimpleDispatcher>();
+    return state.dispatcher;
 }
 
 }  // namespace aria::runtime

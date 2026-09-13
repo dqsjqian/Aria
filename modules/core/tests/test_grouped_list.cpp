@@ -9,12 +9,35 @@
 
 #include "aria/derived/grouped_list.hpp"
 #include "aria/observable_list.hpp"
+#include "aria/property.hpp"
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
 using namespace aria;
+
+namespace grouped_test {
+
+struct CountingKey {
+    int value;
+    std::size_t* comparisons;
+
+    bool operator==(const CountingKey& other) const noexcept {
+        ++*comparisons;
+        return value == other.value;
+    }
+};
+
+}  // namespace grouped_test
+
+template<>
+struct std::hash<grouped_test::CountingKey> {
+    std::size_t operator()(const grouped_test::CountingKey& key) const noexcept {
+        return std::hash<int>{}(key.value);
+    }
+};
 
 namespace {
 
@@ -248,4 +271,149 @@ TEST_CASE("PGR-4: once created, a group's outer position is frozen"
     REQUIRE(snap.size() == 2);
     CHECK(snap[0]->key == "a");
     CHECK(snap[1]->key == "b");
+}
+
+TEST_CASE("GroupedList: inner observers can read and reenter the source") {
+    auto src = std::make_shared<ObservableList<int>>();
+    src->emplace_back(1);
+    auto groups = grouped<int>(src, [](int v) { return v % 2; });
+    auto odd = groups->find(1)->items;
+    auto mirror = odd->snapshot();
+    bool nested = false;
+    auto sub = odd->observe([&](const auto& ch) {
+        CHECK(groups->size() == 1);
+        if (ch.kind == ListChangeKind::Insert) {
+            REQUIRE(ch.index <= mirror.size());
+            mirror.insert(mirror.begin() + static_cast<std::ptrdiff_t>(ch.index),
+                          ch.item);
+        } else if (ch.kind == ListChangeKind::Remove) {
+            REQUIRE(ch.index < mirror.size());
+            CHECK(mirror[ch.index] == ch.item);
+            mirror.erase(mirror.begin() + static_cast<std::ptrdiff_t>(ch.index));
+        }
+        if (!nested) {
+            nested = true;
+            src->insert(0, std::make_shared<int>(5));
+            src->remove_at(2);
+        }
+    });
+    src->emplace_back(3);
+    REQUIRE(mirror == odd->snapshot());
+    REQUIRE(odd->size() == 2);
+    CHECK(*odd->at(0) == 5);
+    CHECK(*odd->at(1) == 1);
+}
+
+TEST_CASE("GroupedList: inner order and identity survive insertion Move and Replace") {
+    auto src = std::make_shared<ObservableList<int>>();
+    for (int n : {1, 2, 3}) src->emplace_back(n);
+    auto groups = grouped<int>(src, [](int v) { return v % 2; });
+    auto odd = groups->find(1);
+    src->insert(0, std::make_shared<int>(5));
+    CHECK(odd->items->snapshot() == std::vector<std::shared_ptr<int>>{
+        src->at(0), src->at(1), src->at(3)});
+    src->move(3, 0);
+    CHECK(odd->items->snapshot() == std::vector<std::shared_ptr<int>>{
+        src->at(0), src->at(1), src->at(2)});
+    src->replace_at(0, std::make_shared<int>(7));
+    CHECK(groups->find(1) == odd);
+    REQUIRE(odd->items->size() == 3);
+    CHECK(*odd->items->at(0) == 7);
+    src->replace_at(0, std::make_shared<int>(8));
+    REQUIRE(odd->items->size() == 2);
+    CHECK(*odd->items->at(0) == 5);
+    REQUIRE(groups->find(0)->items->size() == 2);
+    CHECK(*groups->find(0)->items->at(0) == 8);
+}
+
+TEST_CASE("GroupedList: repeated handles retain each source occurrence") {
+    auto src = std::make_shared<ObservableList<int>>();
+    auto shared = std::make_shared<int>(1);
+    src->push_back(shared);
+    src->emplace_back(3);
+    src->push_back(shared);
+    auto groups = grouped<int>(src, [](int n) { return n % 2; });
+    src->remove_at(2);
+    src->remove_at(0);
+    REQUIRE(groups->find(1)->items->size() == 1);
+    CHECK(*groups->find(1)->items->at(0) == 3);
+}
+
+TEST_CASE("GroupedList: tail insertion does not scan the source keys") {
+    auto source = std::make_shared<ObservableList<int>>();
+    for (int i = 0; i < 4096; ++i) source->emplace_back(i % 16);
+    std::size_t comparisons = 0;
+    auto groups = grouped<grouped_test::CountingKey>(source, [&](int value) {
+        return grouped_test::CountingKey{value, &comparisons};
+    });
+
+    comparisons = 0;
+    for (int i = 0; i < 64; ++i) source->emplace_back(i % 16);
+    // Allow hash-table implementation differences, while rejecting a scan
+    // proportional to the 4096 existing source slots on every append.
+    CHECK(comparisons < 256);
+    CHECK(groups->size() == 16);
+    CHECK(groups->at(0)->items->size() == 260);
+
+    comparisons = 0;
+    source->emplace_back(16);
+    CHECK(comparisons < 256);
+    REQUIRE(groups->size() == 17);
+    CHECK(groups->at(16)->key.value == 16);
+    CHECK(groups->at(16)->items->snapshot() ==
+          std::vector<std::shared_ptr<int>>{source->at(source->size() - 1)});
+}
+
+TEST_CASE("GroupedList: nested tail inserts and repeated key changes replay in order") {
+    struct LiveKey {
+        Property<int> key;
+        explicit LiveKey(int value) : key(value) {}
+        Subscription on_changed(std::function<void(const LiveKey&)> fn) {
+            return key.on_changed([this, fn = std::move(fn)](int) { fn(*this); });
+        }
+    };
+    auto source = std::make_shared<ObservableList<LiveKey>>();
+    auto shared = source->emplace_back(1);
+    auto even = source->emplace_back(0);
+    auto groups = grouped<int>(source, [](const LiveKey& item) { return item.key.get(); });
+    auto odd_group = groups->find(1);
+    auto even_group = groups->find(0);
+    auto odd_mirror = odd_group->items->snapshot();
+    auto even_mirror = even_group->items->snapshot();
+    auto replay = [](auto& mirror, const ListChange<LiveKey>& change) {
+        if (change.kind == ListChangeKind::Insert) {
+            REQUIRE(change.index <= mirror.size());
+            mirror.insert(mirror.begin() + static_cast<std::ptrdiff_t>(change.index), change.item);
+        } else if (change.kind == ListChangeKind::Remove) {
+            REQUIRE(change.index < mirror.size());
+            CHECK(mirror[change.index] == change.item);
+            mirror.erase(mirror.begin() + static_cast<std::ptrdiff_t>(change.index));
+        } else {
+            CHECK(change.kind == ListChangeKind::ItemChanged);
+        }
+    };
+    bool nested = false;
+    std::shared_ptr<LiveKey> other;
+    auto odd_sub = odd_group->items->observe([&](const auto& change) {
+        replay(odd_mirror, change);
+        if (!nested && change.kind == ListChangeKind::Insert) {
+            nested = true;
+            other = source->emplace_back(1);
+            source->push_back(shared);
+        }
+    });
+    auto even_sub = even_group->items->observe([&](const auto& change) {
+        replay(even_mirror, change);
+    });
+    source->push_back(shared);
+    CHECK(odd_mirror == std::vector<std::shared_ptr<LiveKey>>{shared, shared, other, shared});
+    CHECK(odd_mirror == odd_group->items->snapshot());
+
+    shared->key.set(0);
+    CHECK(groups->find(1) == odd_group);
+    CHECK(groups->find(0) == even_group);
+    CHECK(odd_mirror == std::vector<std::shared_ptr<LiveKey>>{other});
+    CHECK(even_mirror == std::vector<std::shared_ptr<LiveKey>>{shared, even, shared, shared});
+    CHECK(odd_mirror == odd_group->items->snapshot());
+    CHECK(even_mirror == even_group->items->snapshot());
 }

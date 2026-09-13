@@ -14,7 +14,7 @@ concurrency:
 jobs:
   bench:
     name: Bench + P99 ceiling check
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
 
@@ -44,6 +44,7 @@ jobs:
               aria_bench_trace_sink
 
       - name: Run benches and check P99 ceilings
+        shell: bash
         # check-bench.sh does the whole job:
         #   1. runs every aria_bench_* binary,
         #   2. parses each "P …" row_pct line,
@@ -54,6 +55,7 @@ jobs:
         # The script's own stdout is also tee'd to a log so the raw
         # numbers ride along as a build/flavors/bench artifact.
         run: |
+          set -o pipefail
           ./scripts/check-bench.sh build/flavors/bench 2>&1 | tee bench-output.txt
 
       - name: Upload bench output
@@ -73,7 +75,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────
   tsan:
     name: TSan (macOS)
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
 
@@ -85,6 +87,9 @@ jobs:
           cmake -S . -B build/flavors/tsan -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DARIA_ENABLE_TSAN=ON \
+            -DARIA_BUILD_HTTP=ON \
+            -DARIA_HTTP_ENABLE_TLS=OFF \
+            -DARIA_BUILD_BENCHMARK=OFF \
             -DARIA_BUILD_TESTS=ON
 
       - name: Build
@@ -111,7 +116,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────
   fuzz:
     name: Fuzz 1M iters (ASan + UBSan)
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
 

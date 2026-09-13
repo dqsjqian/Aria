@@ -14,6 +14,8 @@
 #include <atomic>
 #include <chrono>
 #include <stdexcept>
+#include <limits>
+#include <thread>
 
 using namespace aria::async;
 using namespace std::chrono_literals;
@@ -167,4 +169,98 @@ TEST_CASE("action_with_timeout + action_with_retry compose: each attempt has own
 
     CHECK(attempts.load() == 1);
     CHECK(*cmd.last_result.get() == 105);
+}
+
+namespace {
+Task<int> retry_counted_failure(std::atomic<int>& calls, CancellationToken) {
+    ++calls;
+    throw std::runtime_error("retry failure");
+    co_return 0;
+}
+struct RetryRecordingTimer : aria::IDelayedScheduler {
+    std::function<void()> next;
+    std::vector<std::chrono::milliseconds> delays;
+    void post_after(std::chrono::milliseconds delay, std::function<void()> fn) override {
+        delays.push_back(delay);
+        next = std::move(fn);
+    }
+    void drain() {
+        while (next) {
+            auto fn = std::exchange(next, {});
+            fn();
+        }
+    }
+};
+}
+
+TEST_CASE("action_with_retry: cancellation interrupts backoff and prevents another attempt") {
+    VirtualTimeExecutor timer;
+    CancellationSource source;
+    std::atomic<int> calls{0};
+    auto action = action_with_retry<int>(3, 100ms, timer,
+        [&](CancellationToken token) { return retry_counted_failure(calls, token); });
+    auto task = action(source.token());
+    task.start();
+    REQUIRE(calls == 1);
+    CHECK_FALSE(task.done());
+    source.cancel();
+    REQUIRE(task.done());
+    CHECK_THROWS_AS(task.blocking_get(), OperationCancelled);
+    timer.run_until_idle();
+    CHECK(calls == 1);
+}
+
+TEST_CASE("action_with_retry: an already cancelled token does not invoke the action") {
+    VirtualTimeExecutor timer;
+    CancellationSource source;
+    source.cancel();
+    std::atomic<int> calls{0};
+    auto action = action_with_retry<int>(3, 1ms, timer,
+        [&](CancellationToken token) { return retry_counted_failure(calls, token); });
+    CHECK_THROWS_AS(action(source.token()).blocking_get(), OperationCancelled);
+    CHECK(calls == 0);
+    CHECK(timer.pending() == 0);
+}
+
+TEST_CASE("action_with_retry: many attempts and large backoffs stay within duration limits") {
+    for (auto initial : {0ms, 1ms, std::chrono::milliseconds::max() / 2}) {
+        RetryRecordingTimer timer;
+        std::atomic<int> calls{0};
+        auto action = action_with_retry<int>(70, initial, timer,
+            [&](CancellationToken token) { return retry_counted_failure(calls, token); });
+        auto task = action(CancellationToken::none());
+        task.start();
+        timer.drain();
+        REQUIRE(task.done());
+        CHECK_THROWS_WITH_AS(task.blocking_get(), "retry failure", std::runtime_error);
+        CHECK(calls == 70);
+        if (initial == 0ms) {
+            CHECK(timer.delays.empty());
+        } else {
+            REQUIRE(timer.delays.size() == 69);
+            CHECK(timer.delays.front() == initial);
+            CHECK(timer.delays.back() ==
+                (initial == 1ms ? 1048576ms : std::chrono::milliseconds::max()));
+        }
+    }
+}
+
+TEST_CASE("action_with_retry: timer and cancellation race resumes a backoff only once") {
+    for (int round = 0; round < 64; ++round) {
+        VirtualTimeExecutor timer;
+        CancellationSource source;
+        std::atomic<int> calls{0};
+        auto action = action_with_retry<int>(2, 1ms, timer,
+            [&](CancellationToken token) { return retry_counted_failure(calls, token); });
+        auto task = action(source.token());
+        task.start();
+        std::thread expiry([&] { timer.advance_by(1ms); });
+        std::thread cancellation([&] { source.cancel(); });
+        expiry.join();
+        cancellation.join();
+        REQUIRE(task.done());
+        CHECK_THROWS(task.blocking_get());
+        CHECK(calls >= 1);
+        CHECK(calls <= 2);
+    }
 }

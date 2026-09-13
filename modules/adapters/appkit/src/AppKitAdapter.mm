@@ -11,6 +11,7 @@
 #import "aria/adapters/appkit/AppKitTableSource.hpp"
 
 #include "aria/abi/signal.hpp"
+#include "aria/callback_boundary.hpp"
 #include "aria/abi/slot_factory.hpp"
 #include "aria/binding/detail/numeric_saturate.hpp"
 #include "aria/runtime/logger.hpp"
@@ -23,6 +24,28 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
+
+namespace {
+template<class Fn, class... Args>
+void native_callback_(const Fn& callback, Args&&... args) noexcept {
+    try {
+        auto snapshot = callback; // Keep captures alive if the native target is destroyed.
+        if (snapshot) snapshot(std::forward<Args>(args)...);
+    } catch (...) {
+        ::aria::report_callback_failure("appkit.callback", std::current_exception());
+    }
+}
+template<class Result, class Fn, class... Args>
+Result native_result_(const Fn& callback, Result fallback, Args&&... args) noexcept {
+    try {
+        auto snapshot = callback;
+        return snapshot ? snapshot(std::forward<Args>(args)...) : fallback;
+    } catch (...) {
+        ::aria::report_callback_failure("appkit.datasource", std::current_exception());
+        return fallback;
+    }
+}
+} // namespace
 
 // ═══════════════════════════════════════════════════════════════════════
 //  ObjC bridging targets / delegates
@@ -37,11 +60,11 @@
 }
 - (void)fire:(id)sender {
     (void)sender;
-    if (_cb) _cb();
+    native_callback_(_cb);
 }
 // Backwards compatibility for clients that wired the no-argument selector.
 - (void)fire {
-    if (_cb) _cb();
+    native_callback_(_cb);
 }
 @end
 
@@ -54,7 +77,7 @@
 }
 - (void)fire:(id)sender {
     NSButton* b = (NSButton*)sender;
-    if (_cb) _cb(b.state == NSControlStateValueOn);
+    native_callback_(_cb, b.state == NSControlStateValueOn);
 }
 @end
 
@@ -67,7 +90,7 @@
 }
 - (void)fire:(id)sender {
     NSStepper* s = (NSStepper*)sender;
-    if (_cb) _cb((int)s.intValue);
+    native_callback_(_cb, (int)s.intValue);
 }
 @end
 
@@ -80,7 +103,7 @@
 }
 - (void)fire:(id)sender {
     NSSlider* s = (NSSlider*)sender;
-    if (_cb) _cb(s.doubleValue);
+    native_callback_(_cb, s.doubleValue);
 }
 @end
 
@@ -95,8 +118,8 @@
     NSTextField* tf = (NSTextField*)note.object;
     NSString* ns = tf.stringValue;
     const char* utf8 = ns.UTF8String;
-    std::string_view sv(utf8, std::strlen(utf8));
-    if (_cb) _cb(sv);
+    std::string_view sv = utf8 ? std::string_view{utf8, [ns lengthOfBytesUsingEncoding:NSUTF8StringEncoding]} : std::string_view{};
+    native_callback_(_cb, sv);
 }
 @end
 
@@ -137,14 +160,13 @@
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView*)tableView {
     (void)tableView;
-    return _rowCountFn ? _rowCountFn() : 0;
+    return native_result_<NSInteger>(_rowCountFn, 0);
 }
 
 - (NSView*)tableView:(NSTableView*)tableView
   viewForTableColumn:(NSTableColumn*)tableColumn
                  row:(NSInteger)row {
-    if (!_viewForFn) return nil;
-    return _viewForFn(tableView, tableColumn, row);
+    return native_result_<NSView*>(_viewForFn, nil, tableView, tableColumn, row);
 }
 
 @end
@@ -159,10 +181,7 @@ namespace {
 
 // Slot args bag — what we pass through SignalErased::emit.
 struct StringArgs { std::string_view sv; };
-struct BoolArgs   { bool v; };
-struct IntArgs    { int v; };
-struct DoubleArgs { double v; };
-struct VoidArgs   {};
+struct ControlArgs { bool flag; int integer; double number; };
 
 // Build a SlotErased that owns the callable on the heap. Thin alias
 // over the canonical factory in <aria/abi/slot_factory.hpp> so the
@@ -175,7 +194,8 @@ template<typename Fn>
 // Per-(view, kind) bridge. Owns the SignalErased and the ObjC target/
 // delegate that fans the native event into the signal.
 struct Bridge {
-    ::aria::abi::SignalErased sig;
+    std::shared_ptr<::aria::abi::SignalErased> sig = std::make_shared<::aria::abi::SignalErased>();
+    ~Bridge() { sig->clear(); } // Retire slots even while an in-flight action keeps the signal alive.
     id __strong target = nil;     // AriaXxxTarget / AriaTextDelegate
 };
 
@@ -241,9 +261,13 @@ struct AppKitAdapter::Impl {
             doomed.swap(views);
         }
         doomed.clear();
-        std::lock_guard lk{mu};
-        bridges.clear();
-        destroy_subs.clear();
+        decltype(bridges) retired_bridges;
+        decltype(destroy_subs) retired_subs;
+        {
+            std::lock_guard lk{mu};
+            retired_bridges.swap(bridges);
+            retired_subs.swap(destroy_subs);
+        }
     }
 
     // Destroy a cached view outside the lock, for the same reason as ~Impl.
@@ -273,11 +297,34 @@ struct AppKitAdapter::Impl {
 
         auto& subs = destroy_subs[key_ptr];
         subs.push_back(view.on_destroy([this, k = Key{key_ptr, kind}]() {
-            std::lock_guard lk2{mu};
-            bridges.erase(k);
+            decltype(bridges)::node_type retired;
+            {
+                std::lock_guard lk2{mu};
+                retired = bridges.extract(k);
+            }
         }));
         return *raw;
     }
+    Bridge& action_bridge_for(::aria::binding::IView& view, NSControl* control) {
+        return bridge_for(view, control, 'a', [control](Bridge& bridge) {
+            NSControl* __weak weak_control = control;
+            AriaClickTarget* target = [[AriaClickTarget alloc]
+                initWithCallback:[weak = std::weak_ptr{bridge.sig}, weak_control] {
+                    auto signal = weak.lock();
+                    NSControl* native = weak_control;
+                    if (!signal || !native) return;
+                    ControlArgs args{
+                        [native isKindOfClass:NSButton.class] &&
+                            ((NSButton*)native).state == NSControlStateValueOn,
+                        native.intValue, native.doubleValue};
+                    signal->emit(&args);
+                }];
+            bridge.target = target;
+            control.target = target;
+            control.action = @selector(fire:);
+        });
+    }
+
 };
 
 AppKitAdapter::AppKitAdapter() : p_(std::make_unique<Impl>()) {}
@@ -341,7 +388,7 @@ std::string AppKitAdapter::get_text(::aria::binding::IView& v) {
         return {};
     }
     const char* utf8 = ns.UTF8String;
-    return utf8 ? std::string(utf8) : std::string{};
+    return utf8 ? std::string{utf8, [ns lengthOfBytesUsingEncoding:NSUTF8StringEncoding]} : std::string{};
 }
 
 ::aria::Subscription AppKitAdapter::on_text_changed(::aria::binding::IView& v,
@@ -352,17 +399,17 @@ std::string AppKitAdapter::get_text(::aria::binding::IView& v) {
 
     auto& br = p_->bridge_for(v, o, 't', [tf](Bridge& bridge) {
         AriaTextDelegate* d = [[AriaTextDelegate alloc]
-            initWithCallback:[bp = &bridge](std::string_view sv) {
+            initWithCallback:[weak = std::weak_ptr{bridge.sig}](std::string_view sv) {
                 StringArgs a{sv};
-                bp->sig.emit(&a);
+                if (auto signal = weak.lock()) signal->emit(&a);
             }];
         bridge.target = d;
         tf.delegate   = d;
     });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* args) {
+    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<StringArgs*>(args)->sv);
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br.sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -394,20 +441,11 @@ bool AppKitAdapter::get_bool(::aria::binding::IView& v) {
     if (![o isKindOfClass:[NSButton class]]) { warn_unsupported_("on_bool_changed", o); return {}; }
     NSButton* btn = (NSButton*)o;
 
-    auto& br = p_->bridge_for(v, o, 'b', [btn](Bridge& bridge) {
-        AriaToggleTarget* t = [[AriaToggleTarget alloc]
-            initWithCallback:[bp = &bridge](bool x) {
-                BoolArgs a{x};
-                bp->sig.emit(&a);
-            }];
-        bridge.target = t;
-        btn.target    = t;
-        btn.action    = @selector(fire:);
-    });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* args) {
-        cb(static_cast<BoolArgs*>(args)->v);
+    auto& br = p_->action_bridge_for(v, btn);
+    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
+        cb(static_cast<ControlArgs*>(args)->flag);
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br.sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -443,20 +481,11 @@ int AppKitAdapter::get_int(::aria::binding::IView& v) {
     if (![o isKindOfClass:[NSControl class]]) { warn_unsupported_("on_int_changed", o); return {}; }
     NSControl* ctl = (NSControl*)o;
 
-    auto& br = p_->bridge_for(v, o, 'i', [ctl](Bridge& bridge) {
-        AriaStepperTarget* t = [[AriaStepperTarget alloc]
-            initWithCallback:[bp = &bridge](int x) {
-                IntArgs a{x};
-                bp->sig.emit(&a);
-            }];
-        bridge.target = t;
-        ctl.target    = t;
-        ctl.action    = @selector(fire:);
-    });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* args) {
-        cb(static_cast<IntArgs*>(args)->v);
+    auto& br = p_->action_bridge_for(v, ctl);
+    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
+        cb(static_cast<ControlArgs*>(args)->integer);
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br.sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -529,20 +558,11 @@ double AppKitAdapter::get_double(::aria::binding::IView& v) {
     if (![o isKindOfClass:[NSControl class]]) { warn_unsupported_("on_double_changed", o); return {}; }
     NSControl* ctl = (NSControl*)o;
 
-    auto& br = p_->bridge_for(v, o, 'd', [ctl](Bridge& bridge) {
-        AriaSliderTarget* t = [[AriaSliderTarget alloc]
-            initWithCallback:[bp = &bridge](double x) {
-                DoubleArgs a{x};
-                bp->sig.emit(&a);
-            }];
-        bridge.target = t;
-        ctl.target    = t;
-        ctl.action    = @selector(fire:);
-    });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* args) {
-        cb(static_cast<DoubleArgs*>(args)->v);
+    auto& br = p_->action_bridge_for(v, ctl);
+    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
+        cb(static_cast<ControlArgs*>(args)->number);
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br.sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -572,20 +592,11 @@ void AppKitAdapter::set_enabled(::aria::binding::IView& v, bool enabled) {
     if (![o isKindOfClass:[NSButton class]]) { warn_unsupported_("on_click", o); return {}; }
     NSButton* btn = (NSButton*)o;
 
-    auto& br = p_->bridge_for(v, o, 'c', [btn](Bridge& bridge) {
-        AriaClickTarget* t = [[AriaClickTarget alloc]
-            initWithCallback:[bp = &bridge]() {
-                VoidArgs a{};
-                bp->sig.emit(&a);
-            }];
-        bridge.target = t;
-        btn.target    = t;
-        btn.action    = @selector(fire:);
-    });
-    auto id = br.sig.connect(make_slot([cb = std::move(cb)](void* /*args*/) {
+    auto& br = p_->action_bridge_for(v, btn);
+    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* /*args*/) {
         cb();
     }));
-    auto weak = br.sig.weak_handle();
+    auto weak = br.sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};

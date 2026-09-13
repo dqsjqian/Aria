@@ -5,16 +5,19 @@
 ```bash
 cmake -B build/flavors/release -DCMAKE_BUILD_TYPE=Release
 cmake --build build/flavors/release -j
-ctest --test-dir build
+ctest --test-dir build/flavors/release --output-on-failure
 ```
 
-The first configure pulls [doctest](https://github.com/doctest/doctest) via
-the bundled `cmake/CPM.cmake`. After that everything is offline.
+The repository includes doctest, so the normal test build uses the bundled
+header. If that vendored header is absent, CMake fetches the fallback test
+dependency through `cmake/CPM.cmake`.
 
 ## Hello, Property
 
 ```cpp
 #include "aria/aria.hpp"
+#include <iostream>
+#include <string>
 using namespace aria;
 
 int main() {

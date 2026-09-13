@@ -3,4 +3,5 @@
 
 if(ARIA_BUILD_SHARED)
     add_subdirectory(cross_dylib_iproperty)
+    add_subdirectory(cross_dylib_reactive)
 endif()

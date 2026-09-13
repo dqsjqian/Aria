@@ -38,6 +38,19 @@
 
 #include <memory>
 #include <string>
+#include <thread>
+
+@interface AriaReloadProbeTable : UITableView
+@property(nonatomic, copy) void (^onReload)(void);
+@end
+@implementation AriaReloadProbeTable
+- (void)reloadData {
+    [super reloadData];
+    auto callback = self.onReload;
+    self.onReload = nil;
+    if (callback) callback();
+}
+@end
 
 namespace {
 
@@ -64,6 +77,76 @@ std::shared_ptr<Item> item(std::string t) {
 }
 
 }  // namespace
+
+TEST_CASE("UIKit table bridge: source change during initial reload is observed") {
+    aria::ObservableList<Item> list;
+    AriaReloadProbeTable* table = [[AriaReloadProbeTable alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    auto* source = &list;
+    table.onReload = ^{ source->push_back(item("added during reload")); };
+    aria::adapters::uikit::ObservableTableSource<Item> bridge{table, list, cell_fn()};
+    REQUIRE(bridge.row_count() == 1);
+    CHECK(bridge.at(0)->title == "added during reload");
+}
+
+TEST_CASE("UIKit table bridge: queued worker change precedes main-thread replacement") {
+    aria::ObservableList<Item> list;
+    UITableView* table = make_table();
+    aria::adapters::uikit::ObservableTableSource<Item> bridge{table, list, cell_fn()};
+    std::thread worker([&] { list.push_back(item("old")); });
+    worker.join();
+    list.replace_at(0, item("new"));
+    NSDate* limit = [NSDate dateWithTimeIntervalSinceNow:1];
+    while (bridge.row_count() == 0 && [limit timeIntervalSinceNow] > 0) {
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+    }
+    REQUIRE(bridge.row_count() == 1);
+    CHECK(bridge.at(0)->title == "new");
+}
+
+TEST_CASE("UIKit table bridge: Reset consumes its complete owned snapshot") {
+    struct Source {
+        std::vector<std::shared_ptr<Item>> rows;
+        aria::detail::ListSignal<Item> signal;
+        auto snapshot() const { return rows; }
+        std::size_t size() const { return rows.size(); }
+        auto at(std::size_t index) const { return rows.at(index); }
+        aria::Subscription observe(std::function<void(const aria::ListChange<Item>&)> fn) { return signal.connect(std::move(fn)); }
+    } source;
+    UITableView* table = make_table();
+    aria::adapters::uikit::ObservableTableSource<Item> bridge{table, source, cell_fn()};
+    source.rows = {item("reset row")};
+    source.signal.emit(aria::ListChange<Item>::reset(source.rows));
+    REQUIRE(bridge.row_count() == 1);
+    CHECK(bridge.at(0) == source.rows[0]);
+}
+
+TEST_CASE("UIKit table bridge: worker teardown releases native state and captures on main") {
+    aria::ObservableList<Item> list;
+    UITableView* table = make_table();
+    bool released_on_main = false;
+    auto capture = std::shared_ptr<int>(new int(0), [&](int* value) {
+        released_on_main = [NSThread isMainThread];
+        delete value;
+    });
+    std::weak_ptr<int> weak = capture;
+    using Bridge = aria::adapters::uikit::ObservableTableSource<Item>;
+    auto bridge = std::make_unique<Bridge>(table, list,
+        [capture = std::move(capture)](UITableView*, std::shared_ptr<Item>, NSIndexPath*) -> UITableViewCell* { return nil; });
+    std::thread worker([&list, owned = std::move(bridge)]() mutable {
+        list.push_back(item("queued"));
+        owned.reset();
+    });
+    worker.join();
+    CHECK_FALSE(weak.expired());
+    NSDate* limit = [NSDate dateWithTimeIntervalSinceNow:1];
+    while (!weak.expired() && [limit timeIntervalSinceNow] > 0) {
+        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
+    }
+    CHECK(weak.expired());
+    CHECK(released_on_main);
+    CHECK((table.dataSource == nil));
+    CHECK((table.delegate == nil));
+}
 
 TEST_CASE("UIKit table bridge: ObservableList Insert/Remove/Replace/Move/Reset") {
     aria::ObservableList<Item> list;

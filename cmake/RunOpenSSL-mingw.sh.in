@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Run the upstream MinGW recipe entirely in MSYS2. Only the compiler output
+# targets Windows; shell, make and Perl must agree on filesystem paths.
+set -euo pipefail
+step="$1"
+configuration="$2"
+shift 2
+source_dir="$(cygpath -u '@OPENSSL_SOURCE_DIR@')"
+root_dir="$(cygpath -u '@_OPENSSL_ROOT@')"
+compiler_dir="$(cygpath -u '@_OPENSSL_COMPILER_DIR@')"
+perl="$(cygpath -u '@ARIA_OPENSSL_PERL@')"
+make="$(cygpath -u '@ARIA_OPENSSL_MAKE@')"
+export PATH="$compiler_dir:$(dirname "$perl"):$PATH"
+mkdir -p "$root_dir/build/$configuration"
+cd "$root_dir/build/$configuration"
+case "$step" in
+  configure) exec "$perl" "$source_dir/Configure" "$@" "--prefix=$root_dir/install/$configuration" --libdir=lib ;;
+  build) exec "$make" -j@ARIA_OPENSSL_JOBS@ build_libs ;;
+  install) exec "$make" -j@ARIA_OPENSSL_JOBS@ install_dev ;;
+  *) exit 2 ;;
+esac

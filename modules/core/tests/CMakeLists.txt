@@ -4,7 +4,7 @@ add_executable(test_core
     test_computed.cpp
     test_command.cpp
     test_observable_list.cpp
-        test_filtered_list.cpp
+    test_filtered_list.cpp
     test_derived_chaining.cpp
     test_sorted_list.cpp
     test_mapped_list.cpp
@@ -16,6 +16,8 @@ add_executable(test_core
     test_inspector.cpp
     test_i_property.cpp
     test_lifecycle_invariants.cpp
+    test_graph_lifetime.cpp
+    test_subscription.cpp
     test_error_model.cpp
     test_list_conformance.cpp
     test_list_signal_mixin.cpp
@@ -52,10 +54,10 @@ add_test(NAME core_tests COMMAND test_core)
 # alone — linking aria::adapters::jni would drag in <jni.h> and defeat
 # the split.
 add_executable(test_jni_list_source
-    ${CMAKE_SOURCE_DIR}/modules/adapters/jni/tests/test_jni_list_source.cpp
+    ${PROJECT_SOURCE_DIR}/modules/adapters/jni/tests/test_jni_list_source.cpp
 )
 target_include_directories(test_jni_list_source PRIVATE
-    ${CMAKE_SOURCE_DIR}/modules/adapters/jni/include
+    ${PROJECT_SOURCE_DIR}/modules/adapters/jni/include
 )
 target_link_libraries(test_jni_list_source PRIVATE
     aria::core

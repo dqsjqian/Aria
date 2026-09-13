@@ -1,5 +1,6 @@
 add_executable(aria_fuzz
     fuzz_main.cpp
+    test_fuzz_support.cpp
     fuzz_signal_unsubscribe_during_emit.cpp
     fuzz_computed_dynamic_dep.cpp
     fuzz_reactive_reentrant_set.cpp
@@ -28,9 +29,7 @@ target_link_libraries(aria_fuzz PRIVATE
     aria::core
     aria::async
     aria::binding
-    # The global trace-sink slot lives in aria_runtime
-    # (runtime/src/diagnostics_sink.cpp), which the trace-sink fuzzers
-    # drive directly.
+    # Runtime services are exercised by binding and dispatcher fuzzers.
     aria::runtime
     doctest::doctest
     aria::warnings

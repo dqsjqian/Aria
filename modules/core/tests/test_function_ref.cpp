@@ -57,6 +57,8 @@ TEST_CASE("function_ref: stateful lambda — sees the captured object live") {
 // ----------------------------------------------------------------------------
 namespace fr_free {
     int square(int n) { return n * n; }
+    double overloaded(double n) { return n / 2; }
+    int overloaded(int n) { return n + 1; }
 }
 
 TEST_CASE("function_ref: free function pointer binding") {
@@ -181,4 +183,66 @@ TEST_CASE("function_ref: void return — no R() shenanigans") {
     function_ref<void(int)> fr = sink;
     fr(42);
     CHECK(seen == 42);
+}
+
+namespace {
+int function_ref_increment(int value) noexcept { return value + 1; }
+auto function_ref_pointer_value() { return &fr_free::square; }
+}
+
+TEST_CASE("function_ref: function pointer assignment stores its value beyond the full expression") {
+    function_ref<int(int)> view;
+    view = function_ref_pointer_value();
+    CHECK(view(7) == 49);
+    auto pointer = &fr_free::square;
+    view = pointer;
+    pointer = nullptr;
+    CHECK(view(8) == 64);
+    view = fr_free::square;
+    CHECK(view(9) == 81);
+    view = function_ref_increment;
+    CHECK(view(9) == 10);
+    function_ref<int(int)> copied = view;
+    CHECK(copied(10) == 11);
+}
+
+TEST_CASE("function_ref: typed null function pointers are disengaged") {
+    int (*pointer)(int) = nullptr;
+    function_ref<int(int)> view = pointer;
+    CHECK_FALSE(static_cast<bool>(view));
+    CHECK(view == nullptr);
+    view = fr_free::square;
+    view = pointer;
+    CHECK_FALSE(static_cast<bool>(view));
+    CHECK(view == nullptr);
+}
+
+TEST_CASE("function_ref: supports const targets and mutable calls through const views") {
+    const auto constant = [](int value) { return value + 3; };
+    function_ref<int(int)> constant_view = constant;
+    CHECK(constant_view(2) == 5);
+    auto mutable_target = [value = 0]() mutable { return ++value; };
+    const function_ref<int()> mutable_view = mutable_target;
+    CHECK(mutable_view() == 1);
+    CHECK(mutable_view() == 2);
+    CHECK(mutable_target() == 3);
+}
+
+TEST_CASE("function_ref: void signatures discard results and pointers adapt compatible signatures") {
+    int calls = 0;
+    auto returns_value = [&] { return ++calls; };
+    function_ref<void()> view = returns_value;
+    view();
+    CHECK(calls == 1);
+    function_ref<void(int)> pointer_view = &fr_free::square;
+    pointer_view(2);
+    function_ref<long(short)> converted = &function_ref_increment;
+    CHECK(converted(2) == 3);
+}
+
+TEST_CASE("function_ref: exact signatures resolve overloaded free functions") {
+    function_ref<int(int)> view = fr_free::overloaded;
+    CHECK(view(3) == 4);
+    view = fr_free::overloaded;
+    CHECK(view(4) == 5);
 }

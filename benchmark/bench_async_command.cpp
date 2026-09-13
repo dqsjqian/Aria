@@ -14,6 +14,8 @@
 
 #include "bench_common.hpp"
 
+#include <stdexcept>
+
 using namespace aria;
 using namespace aria::async;
 using namespace aria_bench;
@@ -34,8 +36,9 @@ int main() {
         const int N = 5'000;
         double ns = measure_ns(N, [&](int i) {
             cmd.execute(i);
-            ui.pump_until([&]{ return !cmd.is_executing.get(); },
-                          std::chrono::milliseconds{500});
+            if (!ui.pump_until([&]{ return !cmd.is_executing.get(); },
+                              std::chrono::milliseconds{500}))
+                throw std::runtime_error("AsyncCommand benchmark timed out");
         });
         row("AsyncCommand<int,int>::execute round-trip", ns, N);
     }
@@ -51,8 +54,9 @@ int main() {
         const int N = 5'000;
         double ns = measure_ns(N, [&](int i) {
             cmd.execute(i);
-            ui.pump_until([&]{ return !cmd.is_executing.get(); },
-                          std::chrono::milliseconds{500});
+            if (!ui.pump_until([&]{ return !cmd.is_executing.get(); },
+                              std::chrono::milliseconds{500}))
+                throw std::runtime_error("AsyncCommand benchmark timed out");
         });
         row("AsyncCommand<int,int> + CancellationToken", ns, N);
     }
@@ -87,8 +91,9 @@ int main() {
         auto stats = measure_percentiles(kSamples, kOpsPerSample,
             [&](int i) {
                 cmd.execute(i);
-                ui.pump_until([&]{ return !cmd.is_executing.get(); },
-                              std::chrono::milliseconds{500});
+                if (!ui.pump_until([&]{ return !cmd.is_executing.get(); },
+                                  std::chrono::milliseconds{500}))
+                    throw std::runtime_error("AsyncCommand benchmark timed out");
             });
         row_pct("AsyncCommand<int,int>::execute round-trip", stats);
     }

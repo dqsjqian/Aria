@@ -37,6 +37,70 @@ void ensure_nsapp() {
 
 }  // namespace
 
+TEST_CASE("appkit adapter: a retained native target is inert after adapter destruction") {
+    ensure_nsapp();
+    @autoreleasepool {
+        NSButton* button = [[NSButton alloc] initWithFrame:NSZeroRect];
+        id retained_target = nil;
+        int calls = 0;
+        aria::Subscription subscription;
+        {
+            AppKitAdapter adapter;
+            auto& view = adapter.view_for(button);
+            subscription = adapter.on_click(view, [&] { ++calls; });
+            retained_target = button.target;
+        }
+        [(AriaClickTarget*)retained_target fire:button];
+        CHECK(calls == 0);
+    }
+}
+
+TEST_CASE("appkit adapter: bool and click observers share the native action") {
+    ensure_nsapp();
+    @autoreleasepool {
+        NSButton* button = [[NSButton alloc] initWithFrame:NSZeroRect];
+        [button setButtonType:NSButtonTypeSwitch];
+        AppKitAdapter adapter;
+        auto& view = adapter.view_for(button);
+        int bool_calls = 0, click_calls = 0;
+        auto bool_sub = adapter.on_bool_changed(view, [&](bool value) {
+            CHECK(value);
+            ++bool_calls;
+        });
+        auto click_sub = adapter.on_click(view, [&] { ++click_calls; });
+        button.state = NSControlStateValueOn;
+        [(AriaClickTarget*)button.target fire:button];
+        CHECK(bool_calls == 1);
+        CHECK(click_calls == 1);
+    }
+}
+
+TEST_CASE("appkit adapter: releasing a view during an action cancels later observers") {
+    ensure_nsapp();
+    NSButton* button = [[NSButton alloc] initWithFrame:NSZeroRect];
+    AppKitAdapter adapter;
+    auto& view = adapter.view_for(button);
+    int later_calls = 0;
+    auto first = adapter.on_click(view, [&] { adapter.release_view(button); });
+    auto later = adapter.on_click(view, [&] { ++later_calls; });
+    [(AriaClickTarget*)button.target fire:button];
+    CHECK(later_calls == 0);
+}
+
+TEST_CASE("appkit adapter: text preserves embedded NUL bytes") {
+    ensure_nsapp();
+    NSTextField* field = [[NSTextField alloc] initWithFrame:NSZeroRect];
+    AppKitAdapter adapter;
+    auto& view = adapter.view_for(field);
+    const std::string value{"a\0b", 3};
+    std::string observed;
+    auto sub = adapter.on_text_changed(view, [&](std::string_view text) { observed = text; });
+    adapter.set_text(view, value);
+    CHECK(adapter.get_text(view) == value);
+    [field.delegate controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:field]];
+    CHECK(observed == value);
+}
+
 TEST_CASE("appkit view_for: returns the same AppKitView for the same NSView") {
     ensure_nsapp();
     @autoreleasepool {

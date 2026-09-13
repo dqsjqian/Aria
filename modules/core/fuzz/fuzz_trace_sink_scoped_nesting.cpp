@@ -4,8 +4,8 @@
 //  Invariant under stress:
 //    "ScopedTraceSink installs on construction and RESTORES the
 //     previous state on destruction (which may be no sink or an outer
-//     scoped sink). This lets tests nest in parallel without bleeding
-//     into one another."
+//     scoped sink). Scopes nest in one serialized ownership context;
+//     they do not isolate concurrent users of the process-global sink."
 //
 //  Restated as something checkable: at any depth of nesting, exactly
 //  the INNERMOST live sink receives an event, and unwinding must

@@ -62,9 +62,14 @@ public:
         // block so that disconnecting after the signal is gone is a safe
         // no-op (the whole reason abi::SignalErased keeps a control block).
         auto weak = sig_.weak_handle();
-        return ::aria::Subscription{[weak, id]() noexcept {
+        try {
+            return ::aria::Subscription{[weak, id]() noexcept {
+                abi::SignalErased::disconnect_via_weak(weak, id);
+            }};
+        } catch (...) {
             abi::SignalErased::disconnect_via_weak(weak, id);
-        }};
+            throw;
+        }
     }
 
     void emit(const Args&... args) const {

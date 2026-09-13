@@ -16,7 +16,8 @@ namespace aria::adapters::qt6 {
 /// Supports out of the box:
 ///   - QLabel / QLineEdit / QPlainTextEdit / QTextEdit  (text)
 ///   - QCheckBox / QRadioButton / QAbstractButton (bool)
-///   - QSpinBox / QSlider / QDial / QProgressBar (int)
+///   - QSpinBox / QAbstractSlider (QSlider, QDial, QScrollBar) / QProgressBar (int)
+///   - QComboBox (text or int currentIndex; -1 means no selection)
 ///   - QDoubleSpinBox (double)
 ///   - QPushButton / QToolButton (click)
 ///   - QWidget   (visible / enabled)
@@ -24,6 +25,8 @@ namespace aria::adapters::qt6 {
 /// Internally we own a small per-adapter signal registry so the Subscription
 /// objects returned to user code are the unified ::aria::Subscription
 /// used everywhere else — RAII-safe even if the QWidget gets destroyed first.
+/// Invoke adapter operations and destroy the adapter on the widgets' Qt owner
+/// thread. Returned subscriptions may be released after either owner is gone.
 class ARIA_QT6_API QtAdapter final : public binding::IViewAdapter {
 public:
     QtAdapter();
@@ -54,6 +57,8 @@ public:
     ///
     /// Passing `nullptr` is a programming error and throws
     /// `std::invalid_argument`.
+    /// During adapter teardown, reentrant view creation throws `std::logic_error`
+    /// and reentrant event subscriptions return an empty Subscription.
     [[nodiscard]] QtView& view_for(QObject* obj);
 
     // ── Text ───────────────────────────────────────────────────────────────
@@ -69,6 +74,9 @@ public:
                                      std::function<void(bool)> cb) override;
 
     // ── Int ────────────────────────────────────────────────────────────────
+    /// QComboBox uses its current index, suitable for fixed option lists.
+    /// set_int forwards to setCurrentIndex, including -1 for an empty selection.
+    /// Changing option lists should use a stable item-key selection binding.
     void set_int(binding::IView& v, int value) override;
     [[nodiscard]] int get_int(binding::IView& v) override;
     ::aria::Subscription on_int_changed(binding::IView& v,
@@ -76,7 +84,7 @@ public:
 
     // ── Int64 ──────────────────────────────────────────────────────────────
     // Qt widgets don't speak int64 natively; these forward to set_int/get_int
-    // with a narrowing cast guarded by assert-in-debug. Hosts that need the
+    // with saturating conversion and a diagnostic on overflow. Hosts that need the
     // full 64-bit range (timestamps, big IDs) should use a QLineEdit bound
     // via bind_text_converted with a user-supplied string<->int64 converter.
     void set_int64(binding::IView& v, std::int64_t value) override;
@@ -114,7 +122,7 @@ public:
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> p_;
+    std::shared_ptr<Impl> p_;
 };
 
 }  // namespace aria::adapters::qt6

@@ -1,12 +1,106 @@
 #include <doctest/doctest.h>
 
+#include <limits>
+
 #include "aria/binding/binding_engine.hpp"
 #include "aria/binding/converter.hpp"
 #include "fake_adapter.hpp"
 
 using namespace aria;
 using namespace aria::binding;
+
+TEST_CASE("Converters: large finite doubles are formatted without truncation") {
+    auto converter = converters::double_to_string(2);
+    const double value = 1e100;
+    const auto text = converter.to_view(value);
+    CHECK(text.size() > 100);
+    REQUIRE(converter.try_to_model(text).has_value());
+    CHECK(*converter.try_to_model(text) == doctest::Approx(value));
+    CHECK_THROWS_AS(converters::bool_to_yes_no().to_model("invalid"), ConversionError);
+}
 using namespace aria::binding::testing;
+
+TEST_CASE("BindingEngine: enum integer conversion maps values in both directions") {
+    enum class Category { Temperature = 10, Length = 30, Weight = 80 };
+    Converter<Category, int> conv{
+        [](Category category) {
+            switch (category) {
+                case Category::Temperature: return 0;
+                case Category::Length: return 1;
+                case Category::Weight: return 2;
+            }
+            return -1;
+        },
+        [](int) -> Category { throw ConversionError("preferred channel must win"); },
+        [](int index) -> std::optional<Category> {
+            switch (index) {
+                case 0: return Category::Temperature;
+                case 1: return Category::Length;
+                case 2: return Category::Weight;
+                default: return std::nullopt;
+            }
+        }};
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+    Property<Category> category(Category::Length);
+    FakeView view;
+    engine.bind_int_converted(category, view, std::move(conv));
+    CHECK(view.integer == 1);
+    category.set(Category::Weight);
+    CHECK(view.integer == 2);
+    adapter->set_int(view, 0);
+    CHECK(category.get() == Category::Temperature);
+}
+
+TEST_CASE("BindingEngine: rejected integer conversion preserves model and reports failure") {
+    static int failures;
+    static bool has_exception;
+    failures = 0;
+    has_exception = false;
+    auto previous = set_callback_failure_sink([](const CallbackFailure& failure) {
+        CHECK(failure.category == "binding.converter");
+        ++failures;
+        has_exception = static_cast<bool>(failure.exception);
+    });
+    Subscription restore_sink([previous] { set_callback_failure_sink(previous); });
+
+    Converter<int, int> conv{[](int value) { return value; }, {}, {}};
+    bool expect_exception = false;
+    SUBCASE("invalid index rejected without exception") {
+        conv.try_to_model = [](int) -> std::optional<int> { return std::nullopt; };
+    }
+    SUBCASE("preferred converter throws") {
+        conv.try_to_model = [](int) -> std::optional<int> { throw ConversionError("invalid index"); };
+        expect_exception = true;
+    }
+    SUBCASE("legacy converter throws") {
+        conv.to_model = [](int) -> int { throw ConversionError("invalid index"); };
+        expect_exception = true;
+    }
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+    Property<int> selected(1);
+    FakeView view;
+    engine.bind_int_converted(selected, view, std::move(conv));
+    adapter->set_int(view, -1);
+    CHECK(selected.get() == 1);
+    CHECK(view.integer == -1);
+    CHECK(failures == 1);
+    CHECK(has_exception == expect_exception);
+}
+
+TEST_CASE("BindingEngine: legacy integer conversion writes valid model values") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+    Property<int> selected(10);
+    FakeView view;
+    engine.bind_int_converted(selected, view, Converter<int, int>{
+        [](int value) { return value / 10; },
+        [](int value) { return value * 10; }, {}});
+    CHECK(view.integer == 1);
+    adapter->set_int(view, 3);
+    CHECK(selected.get() == 30);
+}
 
 TEST_CASE("BindingEngine: text two-way") {
     auto adapter = std::make_shared<FakeAdapter>();
@@ -600,14 +694,15 @@ TEST_CASE("BindingEngine::bind_view_lifetime fires on engine clear") {
     BindingEngine engine(adapter);
 
     int cancelled = 0;
-    FakeView view;  // outlives the engine clear()
-    engine.bind_view_lifetime(view, [&cancelled] { ++cancelled; });
-    CHECK(cancelled == 0);
+    {
+        FakeView view;  // outlives the engine clear()
+        engine.bind_view_lifetime(view, [&cancelled] { ++cancelled; });
+        CHECK(cancelled == 0);
 
-    engine.clear();          // engine teardown must also fire the hook
+        engine.clear();      // engine teardown must also fire the hook
+        CHECK(cancelled == 1);
+    }                        // later view destruction must not double-fire
     CHECK(cancelled == 1);
-
-    // View still alive; destroying it now must NOT double-fire.
 }
 
 TEST_CASE("BindingEngine::bind_view_lifetime fires once, not per binding") {
@@ -726,4 +821,67 @@ TEST_CASE("BindingEngine: projected bindings survive view destroy without UB") {
     n   = 123;
     opt = std::optional<int>{456};
     CHECK(true);
+}
+
+TEST_CASE("BindingEngine: converter state survives successive renders and inputs") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+    Property<int> source{0};
+    FakeView view;
+    engine.bind_int_converted(source, view, Converter<int, int>{
+        [calls = 0](int) mutable { return ++calls; },
+        [calls = 100](int) mutable { return ++calls; }, {}});
+    CHECK(view.integer == 1);
+    source.set(1);
+    CHECK(view.integer == 2);
+    source.set(2);
+    CHECK(view.integer == 3);
+    adapter->set_int(view, 10);
+    CHECK(source.peek() == 101);
+    adapter->set_int(view, 20);
+    CHECK(source.peek() == 102);
+}
+
+TEST_CASE("BindingEngine: destruction rejects reentrant binding registration") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    auto engine = std::make_unique<BindingEngine>(adapter);
+    auto* raw = engine.get();
+    FakeView view;
+    bool invoked = false;
+    engine->bind_view_lifetime(view, [&] {
+        invoked = true;
+        CHECK_THROWS_AS(raw->bind_view_lifetime(view, [] {}), std::logic_error);
+    });
+    engine.reset();
+    CHECK(invoked);
+}
+
+TEST_CASE("BindingEngine: projections accept mutable move-only callables") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+    FakeView view;
+    SUBCASE("plain source") {
+        Property<int> source{0};
+        engine.bind_text_projected(source, view,
+            [calls = std::make_unique<int>(0)](int) mutable {
+                return std::to_string(++*calls);
+            });
+        CHECK(view.text == "1");
+        source.set(1);
+        CHECK(view.text == "2");
+        source.set(2);
+        CHECK(view.text == "3");
+    }
+    SUBCASE("optional source") {
+        Property<std::optional<int>> source{std::nullopt};
+        engine.bind_optional_text(source, view,
+            [calls = std::make_unique<int>(0)](int) mutable {
+                return std::to_string(++*calls);
+            });
+        CHECK(view.text.empty());
+        source.set(1);
+        CHECK(view.text == "1");
+        source.set(2);
+        CHECK(view.text == "2");
+    }
 }

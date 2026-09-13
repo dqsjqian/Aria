@@ -20,7 +20,8 @@ struct SlotId {
 /// `void*` "args" pointer (the caller is responsible for casting).
 ///
 /// Why void* instead of std::function?
-///   - Zero allocation for trivially-copyable callables (SBO-friendly).
+///   - An explicit invoker/destroyer pair keeps allocation and destruction
+///     in the module that owns the callable.
 ///   - ABI stable (no template).
 ///   - Templates in `core/` wrap this with strong typing.
 ///
@@ -50,7 +51,7 @@ public:
     SlotErased& operator=(const SlotErased&) = delete;
 
     void invoke(void* args) const noexcept {
-        if (ARIA_LIKELY(invoker_ && state_)) invoker_(state_, args);
+        if (ARIA_LIKELY(invoker_)) invoker_(state_, args);
     }
 
     [[nodiscard]] bool empty() const noexcept { return invoker_ == nullptr; }

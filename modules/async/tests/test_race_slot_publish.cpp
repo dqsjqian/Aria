@@ -31,6 +31,8 @@
 #include <doctest/doctest.h>
 
 #include "aria/async/detail/race_slot.hpp"
+#include "aria/async/when_all.hpp"
+#include "aria/async/timeout.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -184,4 +186,56 @@ TEST_CASE("RaceSlot late-claim losers silently drop") {
     CHECK(std::get<1>(slot->result) == 42);
     CHECK(slot->winner_index == 7);
     CHECK(slot->winner.load(std::memory_order_acquire) == 1);
+}
+
+namespace {
+struct RaceMoveFailure {
+    static inline int moves = 0;
+    RaceMoveFailure() = default;
+    RaceMoveFailure(RaceMoveFailure&&) {
+        if (++moves == 3) throw std::runtime_error("race result move");
+    }
+    RaceMoveFailure& operator=(RaceMoveFailure&&) = default;
+};
+aria::async::Task<RaceMoveFailure> race_move_failure() { co_return RaceMoveFailure{}; }
+aria::async::Task<void> observe_race_move_failure(bool cancellable, bool& error) {
+    using namespace aria::async;
+    if (cancellable) {
+        std::vector<std::function<Task<RaceMoveFailure>(CancellationToken)>> factories;
+        factories.emplace_back([](CancellationToken) { return race_move_failure(); });
+        auto result = co_await when_any_cancellable(std::move(factories));
+        CHECK(result.index == 0);
+        error = bool(result.error);
+    } else {
+        std::vector<Task<RaceMoveFailure>> tasks;
+        tasks.push_back(race_move_failure());
+        auto result = co_await when_any(std::move(tasks));
+        CHECK(result.index == 0);
+        error = bool(result.error);
+    }
+}
+}
+
+TEST_CASE("RaceSlot: a throwing winner move cannot strand when_any") {
+    for (bool cancellable : {false, true}) {
+        RaceMoveFailure::moves = 0;
+        bool error = false;
+        auto task = observe_race_move_failure(cancellable, error);
+        task.start();
+        REQUIRE(task.done());
+        CHECK(error);
+        task.blocking_get();
+    }
+}
+
+TEST_CASE("RaceSlot: a throwing winner move cannot strand fail-fast timeout") {
+    using namespace aria::async;
+    RaceMoveFailure::moves = 0;
+    VirtualTimeExecutor timer;
+    auto task = with_timeout(timer, std::chrono::milliseconds{10},
+                             race_move_failure, OnTimeout::Fail);
+    task.start();
+    REQUIRE(task.done());
+    CHECK_THROWS_WITH_AS(task.blocking_get(), "race result move", std::runtime_error);
+    timer.run_until_idle();
 }

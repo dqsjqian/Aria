@@ -6,6 +6,23 @@
 
 using namespace aria::binding;
 
+TEST_CASE("FormValidator: tracked validator pending is observable") {
+    FormField<std::string> field{"name", "alice"};
+    FormValidator form;
+    form.track(field);
+    field.validator.begin_pending();
+    CHECK(form.is_pending.get());
+    field.validator.cancel_pending();
+    CHECK_FALSE(form.is_pending.get());
+}
+
+TEST_CASE("FormValidator: a rule may clear the form without stale publication") {
+    FormValidator form;
+    form.rule([&] { form.clear(); return false; }, "obsolete failure");
+    CHECK(form.is_valid.get());
+    CHECK(form.first_error.get().empty());
+}
+
 TEST_CASE("FormField: required + min_length update validity") {
     FormField<std::string> username{"username", ""};
     username.required("username required")

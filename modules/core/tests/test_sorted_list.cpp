@@ -8,6 +8,7 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 using namespace aria;
 
@@ -191,7 +192,10 @@ TEST_CASE("SortedList: ItemChanged that crosses sort position emits Move") {
 
     b->v = 10;  // 5 → 10, now goes to the tail
 
-    REQUIRE(log.events.size() == 1);
+    REQUIRE(log.events.size() == 2);
+    CHECK(log.events[1].kind == ListChangeKind::ItemChanged);
+    CHECK(log.events[1].index == log.events[0].index);
+    CHECK(log.events[1].item == log.events[0].item);
     CHECK(log.events[0].kind == ListChangeKind::Move);
     CHECK(log.events[0].from_index == 1);
     CHECK(log.events[0].index == 2);
@@ -218,7 +222,10 @@ TEST_CASE("SortedList: ItemChanged move leftward emits Move") {
 
     c->v = 1;  // 8 → 1, now goes to the head
 
-    REQUIRE(log.events.size() == 1);
+    REQUIRE(log.events.size() == 2);
+    CHECK(log.events[1].kind == ListChangeKind::ItemChanged);
+    CHECK(log.events[1].index == log.events[0].index);
+    CHECK(log.events[1].item == log.events[0].item);
     CHECK(log.events[0].kind == ListChangeKind::Move);
     CHECK(log.events[0].from_index == 2);
     CHECK(log.events[0].index == 0);
@@ -654,7 +661,10 @@ TEST_CASE("SortedList: ItemChanged that crosses INTO an existing equivalence cla
     // equivalence class. ItemChanged crossing positions emits Move.
     a->v = 3;
 
-    REQUIRE(log.events.size() == 1);
+    REQUIRE(log.events.size() == 2);
+    CHECK(log.events[1].kind == ListChangeKind::ItemChanged);
+    CHECK(log.events[1].index == log.events[0].index);
+    CHECK(log.events[1].item == log.events[0].item);
     CHECK(log.events[0].kind == ListChangeKind::Move);
     CHECK(log.events[0].from_index == 2);   // a was at d=2
     CHECK(log.events[0].index      == 0);   // a lands at d=0 (head of eq-class)
@@ -667,65 +677,37 @@ TEST_CASE("SortedList: ItemChanged that crosses INTO an existing equivalence cla
     CHECK(snap[3].get() == d.get());
 }
 
-TEST_CASE("SortedList: source Move WITHIN an equivalence class reshuffles derived order (documented tolerance)") {
-    // The source-Move handler intentionally tolerates that a Move
-    // can reshuffle items WITHIN an equivalence class (see the long
-    // comment in handle_move_). This test pins that behaviour so any
-    // future tightening of the contract is detected.
+TEST_CASE("SortedList: source Move preserves stable order within equivalent keys") {
     auto src = std::make_shared<ObservableList<Plain>>();
-    auto a = make_plain(5);    // s=0
-    auto b = make_plain(5);    // s=1
-    auto c = make_plain(5);    // s=2
-    src->push_back(a);
-    src->push_back(b);
-    src->push_back(c);
+    auto a = make_plain(5);
+    auto b = make_plain(5);
+    auto c = make_plain(5);
+    auto low = make_plain(1);
+    auto high = make_plain(9);
+    const std::vector initial{low, a, b, c, high};
+    src->insert_range(0, initial.begin(), initial.end());
     SortedList<Plain> sorted{src, asc};
     EventLog<Plain> log{sorted};
+    auto mirror = sorted.snapshot();
 
-    // Pre: derived = [a(s=0), b(s=1), c(s=2)].
-    {
-        auto pre = sorted.snapshot();
-        REQUIRE(pre.size() == 3);
-        CHECK(pre[0].get() == a.get());
-        CHECK(pre[1].get() == b.get());
-        CHECK(pre[2].get() == c.get());
+    SUBCASE("forward") { src->move(1, 3); }
+    SUBCASE("backward") { src->move(3, 1); }
+    REQUIRE_FALSE(log.events.empty());
+    for (const auto& change : log.events) {
+        REQUIRE(change.kind == ListChangeKind::Move);
+        REQUIRE(change.from_index < mirror.size());
+        CHECK(mirror[change.from_index] == change.item);
+        mirror.erase(mirror.begin() + static_cast<std::ptrdiff_t>(change.from_index));
+        REQUIRE(change.index <= mirror.size());
+        mirror.insert(mirror.begin() + static_cast<std::ptrdiff_t>(change.index), change.item);
     }
-
-    // Source: move s=0 → s=2. Source becomes [b, c, a].
-    src->move(0, 2);
-
-    // No derived event is emitted — the slot identity at each derived
-    // index is unchanged from the listener's point of view (only the
-    // s2d / d2s mapping is renumbered internally).
-    CHECK(log.events.empty());
-
-    // The DERIVED slots themselves still hold the same shared_ptrs
-    // they did before — RaceSlot... err, SortedList does not move the
-    // items vector during a source Move, only renumbers the index
-    // maps. The "reshuffle within equivalence class" the comment
-    // talks about is therefore observed by source_index_of, not by
-    // the items[] order. Pin both: items unchanged, mapping renumbered.
-    auto post = sorted.snapshot();
-    CHECK(post[0].get() == a.get());
-    CHECK(post[1].get() == b.get());
-    CHECK(post[2].get() == c.get());
-
-    // After the source move, source order is [b(s=0), c(s=1), a(s=2)].
-    // The derived layout (which still puts a/b/c in that order in the
-    // items vector) now maps to source indices {2, 0, 1} — i.e. the
-    // derived view is no longer sorted by ascending source index
-    // within the equivalence class. This is the tolerated behaviour.
-    CHECK(*sorted.source_index_of(0) == 2);   // a
-    CHECK(*sorted.source_index_of(1) == 0);   // b
-    CHECK(*sorted.source_index_of(2) == 1);   // c
-
-    // And source->derived round-trip via at() must stay coherent for
-    // every derived index — the items[] pointer at d MUST equal
-    // src->at(source_index_of(d)).
+    CHECK(mirror == sorted.snapshot());
+    CHECK(sorted.snapshot() == src->snapshot());
     for (std::size_t d = 0; d < sorted.size(); ++d) {
         const auto si = sorted.source_index_of(d);
         REQUIRE(si.has_value());
-        CHECK(sorted.at(d).get() == src->at(*si).get());
+        CHECK(*si == d);
+        CHECK(sorted.at(d) == src->at(*si));
     }
 }
 
@@ -767,7 +749,10 @@ TEST_CASE("SortedList: ItemChanged routes correctly after a source Move renumber
     EventLog<Reactive> log{sorted};
     b->v = 0;
 
-    REQUIRE(log.events.size() == 1);
+    REQUIRE(log.events.size() == 2);
+    CHECK(log.events[1].kind == ListChangeKind::ItemChanged);
+    CHECK(log.events[1].index == log.events[0].index);
+    CHECK(log.events[1].item == log.events[0].item);
     CHECK(log.events[0].kind == ListChangeKind::Move);
     CHECK(log.events[0].from_index == 3);
     CHECK(log.events[0].index      == 0);
@@ -787,4 +772,156 @@ TEST_CASE("SortedList: ItemChanged routes correctly after a source Move renumber
         REQUIRE(si.has_value());
         CHECK(sorted.at(i).get() == src->at(*si).get());
     }
+}
+
+TEST_CASE("SortedList: changing a repeated handle keeps the complete sequence ordered") {
+    auto source = std::make_shared<ObservableList<Reactive>>();
+    auto repeated = std::make_shared<Reactive>(); repeated->v = 1;
+    auto other = std::make_shared<Reactive>(); other->v = 2;
+    for (int i = 0; i < 4; ++i) source->push_back(repeated);
+    source->push_back(other);
+    SortedList<Reactive> view{source, [](const Reactive& a, const Reactive& b) {
+        return a.v.get() < b.v.get();
+    }};
+    auto mirror = view.snapshot();
+    auto subscription = view.observe([&](const ListChange<Reactive>& ch) {
+        if (ch.kind == ListChangeKind::Move) {
+            REQUIRE(ch.from_index < mirror.size());
+            REQUIRE(ch.index < mirror.size());
+            const auto item = mirror[ch.from_index];
+            CHECK(item == ch.item);
+            mirror.erase(mirror.begin() + static_cast<std::ptrdiff_t>(ch.from_index));
+            mirror.insert(mirror.begin() + static_cast<std::ptrdiff_t>(ch.index), item);
+        } else {
+            REQUIRE(ch.kind == ListChangeKind::ItemChanged);
+            REQUIRE(ch.index < mirror.size());
+            CHECK(mirror[ch.index] == ch.item);
+        }
+    });
+    repeated->v = 3;
+    REQUIRE(view.at(0) == other);
+    CHECK(mirror == view.snapshot());
+    for (std::size_t i = 1; i < view.size(); ++i) CHECK(view.at(i) == repeated);
+    repeated->v = 0;
+    REQUIRE(view.at(4) == other);
+    CHECK(mirror == view.snapshot());
+}
+
+TEST_CASE("SortedList: randomized repeated objects preserve ordering and replay through Reset and Replace") {
+    auto source = std::make_shared<ObservableList<Reactive>>();
+    auto cmp = [](const Reactive& a, const Reactive& b) { return a.v.get() < b.v.get(); };
+    auto upstream = std::make_shared<SortedList<Reactive>>(source, cmp);
+    SortedList<Reactive, SortedList<Reactive>> view{upstream, cmp};
+    std::vector<std::shared_ptr<Reactive>> pool;
+    for (int i = 0; i < 5; ++i) {
+        auto item = std::make_shared<Reactive>(); item->v = i;
+        pool.push_back(std::move(item));
+    }
+    auto mirror = view.snapshot();
+    auto subscription = view.observe([&](const ListChange<Reactive>& ch) {
+        const auto pos = static_cast<std::ptrdiff_t>(ch.index);
+        switch (ch.kind) {
+        case ListChangeKind::Insert:
+            REQUIRE(ch.index <= mirror.size());
+            mirror.insert(mirror.begin() + pos, ch.item); break;
+        case ListChangeKind::Remove:
+            REQUIRE(ch.index < mirror.size());
+            CHECK(mirror[ch.index] == ch.item);
+            mirror.erase(mirror.begin() + pos); break;
+        case ListChangeKind::Replace:
+            REQUIRE(ch.index < mirror.size());
+            mirror[ch.index] = ch.item; break;
+        case ListChangeKind::Move: {
+            REQUIRE(ch.from_index < mirror.size());
+            REQUIRE(ch.index < mirror.size());
+            const auto item = mirror[ch.from_index];
+            CHECK(item == ch.item);
+            mirror.erase(mirror.begin() + static_cast<std::ptrdiff_t>(ch.from_index));
+            mirror.insert(mirror.begin() + pos, item); break;
+        }
+        case ListChangeKind::ItemChanged:
+            REQUIRE(ch.index < mirror.size()); CHECK(mirror[ch.index] == ch.item); break;
+        case ListChangeKind::Reset:
+            REQUIRE(ch.snapshot); mirror = *ch.snapshot; break;
+        }
+    });
+    std::mt19937 random{20260913};
+    auto pick = [&] { return pool[random() % pool.size()]; };
+    for (int step = 0; step < 600; ++step) {
+        const auto size = source->size();
+        const auto index = size ? random() % size : 0;
+        switch (random() % 8) {
+        case 0: source->push_back(pick()); break;
+        case 1: if (size) source->remove_at(index); break;
+        case 2: if (size) source->replace_at(index, pick()); break;
+        case 3: {
+            const std::vector<std::shared_ptr<Reactive>> items{pick(), pick(), pick()};
+            source->insert_range(index, items.begin(), items.end()); break;
+        }
+        case 4: pick()->v = static_cast<int>(random() % 9); break;
+        case 5: if (size) source->move(index, random() % size); break;
+        case 6: source->reconcile({pick(), pick(), pick(), pick()}); break;
+        case 7: upstream->set_comparator(cmp); break; // owned, nonempty Reset
+        }
+        if (source->size() > 32) source->clear();
+        const auto actual = view.snapshot();
+        CHECK(mirror == actual);
+        auto expected = source->snapshot();
+        std::sort(expected.begin(), expected.end(), [](const auto& a, const auto& b) {
+            return a->v.get() < b->v.get();
+        });
+        REQUIRE(actual.size() == expected.size());
+        std::unordered_map<const Reactive*, int> counts;
+        for (const auto& item : expected) ++counts[item.get()];
+        for (std::size_t i = 0; i < actual.size(); ++i) {
+            CHECK(actual[i]->v.get() == expected[i]->v.get());
+            --counts[actual[i].get()];
+            const auto source_index = view.source_index_of(i);
+            REQUIRE(source_index.has_value());
+            CHECK(actual[i] == upstream->at(*source_index));
+        }
+        for (const auto& [item, count] : counts) { (void)item; CHECK(count == 0); }
+    }
+}
+
+TEST_CASE("SortedList: independent sort-key writes in one graph batch preserve order") {
+    auto source = std::make_shared<ObservableList<Reactive>>();
+    std::vector<std::shared_ptr<Reactive>> changed;
+    for (int i = 0; i < 4; ++i) {
+        auto item = std::make_shared<Reactive>(); item->v = 1;
+        source->push_back(item); changed.push_back(std::move(item));
+    }
+    auto other = std::make_shared<Reactive>(); other->v = 2;
+    source->push_back(other);
+    SortedList<Reactive> view{source, [](const Reactive& a, const Reactive& b) {
+        return a.v.get() < b.v.get();
+    }};
+    aria::batch([&] { for (const auto& item : changed) item->v = 3; });
+    CHECK(view.at(0) == other);
+}
+
+TEST_CASE("SortedList: structural edits validate rows with pending sort-key notifications") {
+    auto source = std::make_shared<ObservableList<Reactive>>();
+    std::vector<std::shared_ptr<Reactive>> changed;
+    for (int i = 0; i < 4; ++i) {
+        auto item = std::make_shared<Reactive>(); item->v = 1;
+        source->push_back(item); changed.push_back(std::move(item));
+    }
+    auto other = std::make_shared<Reactive>(); other->v = 2;
+    source->push_back(other);
+    SortedList<Reactive> view{source, [](const Reactive& a, const Reactive& b) {
+        return a.v.get() < b.v.get();
+    }};
+    aria::batch([&] {
+        for (const auto& item : changed) item->v = 3;
+        SUBCASE("Insert") { source->insert(1, other); }
+        SUBCASE("Replace") { source->replace_at(0, other); }
+        SUBCASE("Remove") { source->remove_at(0); }
+        SUBCASE("Move") { source->move(0, 1); }
+        // The structural event arrives before the graph's queued ItemChanged.
+        const auto snapshot = view.snapshot();
+        CHECK(std::is_sorted(snapshot.begin(), snapshot.end(), [](const auto& a, const auto& b) {
+            return a->v.get() < b->v.get();
+        }));
+    });
 }

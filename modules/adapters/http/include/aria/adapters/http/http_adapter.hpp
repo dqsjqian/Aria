@@ -40,8 +40,13 @@
 /// * Direct subscriptions and custom command handlers run on HTTP workers.
 ///   BindingEngine marshals bound Property/Command callbacks when configured
 ///   with a dispatcher. Custom handlers must marshal graph access themselves.
+/// * Subscription handles may be released during or after adapter destruction;
+///   they do not keep the adapter or its registered callbacks alive.
 /// * start/stop are serialized; invoke them from the host lifecycle thread,
-///   outside an HTTP callback (stop joins the worker pool).
+///   outside an HTTP callback (stop joins the worker pool). Calls from this
+///   server's tasks throw std::logic_error. Destroying the adapter inside a
+///   callback requests asynchronous shutdown; native state is retained until
+///   every active worker and both background threads have finished.
 
 #include "aria/abi/export.hpp"
 #include "aria/binding/view_adapter.hpp"
@@ -102,7 +107,7 @@ public:
     HttpView& register_view(std::string id, std::string kind);
 
     /// Look up a previously-registered view by id, or nullptr.
-    [[nodiscard]] HttpView* find_view(std::string_view id) noexcept;
+    [[nodiscard]] HttpView* find_view(std::string_view id);
 
     /// Unregister a view (also fires its on_destroy signal so any
     /// BindingEngine subscriptions are released cleanly).
@@ -202,17 +207,15 @@ public:
     ///   constructed eagerly), unlike pre-1.0 versions where you had to
     ///   start first and downcast a `void*`.
     ///
-    /// **Build-time visibility**: The cpp-httplib header is exposed only
-    /// over the BUILD_INTERFACE include path. If you `find_package(aria)`
-    /// against an installed copy, this method will be unreachable at
-    /// link time on most platforms because `httplib::Server` won't be
-    /// declared in the consumer translation unit. That is intentional —
-    /// installed consumers should rely on the high-level API only.
+    /// **Build-time visibility**: Include <httplib.h> to use the returned
+    /// server. The installed aria::http target exports the matching header,
+    /// compile definitions and optional TLS link dependencies. This API
+    /// remains coupled to the bundled cpp-httplib version.
     [[nodiscard]] ::httplib::Server& native_server() noexcept;
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> p_;
+    std::shared_ptr<Impl> p_;
 };
 
 }  // namespace aria::adapters::http

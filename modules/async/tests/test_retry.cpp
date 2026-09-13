@@ -223,3 +223,18 @@ TEST_CASE("retry_with_backoff: large attempt counts stay well-defined") {
     CHECK(out.value == 42);
     CHECK(attempts == 36);
 }
+
+TEST_CASE("retry: nonpositive attempt budgets fail before invoking the factory") {
+    for (int attempts : {0, -1}) {
+        int calls = 0;
+        auto factory = [&] { return fails_then_succeeds(calls, 0); };
+        CHECK_THROWS_AS(retry(attempts, factory).blocking_get(), std::invalid_argument);
+        CHECK_THROWS_AS(retry_if(attempts, [](const std::exception&) { return true; },
+                                 factory).blocking_get(), std::invalid_argument);
+        VirtualTimeExecutor timer;
+        CHECK_THROWS_AS(retry_with_backoff(attempts, 1ms, timer, factory).blocking_get(),
+                        std::invalid_argument);
+        CHECK(calls == 0);
+        CHECK(timer.pending() == 0);
+    }
+}

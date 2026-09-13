@@ -211,7 +211,7 @@ Task<void> drive_any_basic_(Task<T> task,
             co_await std::move(task);
             if (slot->try_claim(/*winner=*/1)) {
                 slot->winner_index = idx;
-                slot->result.template emplace<1>();   // void success
+                slot->store_value_or_exception();   // void success
                 slot->publish(/*winner=*/1);
                 publish_race_trace(race_source::kWhenAny, race_op::kWon, idx);
                 slot->notify_winner_resume();
@@ -220,7 +220,7 @@ Task<void> drive_any_basic_(Task<T> task,
             T v = co_await std::move(task);
             if (slot->try_claim(/*winner=*/1)) {
                 slot->winner_index = idx;
-                slot->result.template emplace<1>(std::move(v));
+                slot->store_value_or_exception(std::move(v));
                 slot->publish(/*winner=*/1);
                 publish_race_trace(race_source::kWhenAny, race_op::kWon, idx);
                 slot->notify_winner_resume();
@@ -272,7 +272,7 @@ Task<void> drive_any_cancellable_(Factory factory,
             co_await factory(tok);
             if (slot->try_claim(/*winner=*/1)) {
                 slot->winner_index = idx;
-                slot->result.template emplace<1>();
+                slot->store_value_or_exception();
                 slot->publish(/*winner=*/1);
                 publish_race_trace(race_source::kWhenAnyCancellable,
                                    race_op::kWon, idx);
@@ -283,7 +283,7 @@ Task<void> drive_any_cancellable_(Factory factory,
             T v = co_await factory(tok);
             if (slot->try_claim(/*winner=*/1)) {
                 slot->winner_index = idx;
-                slot->result.template emplace<1>(std::move(v));
+                slot->store_value_or_exception(std::move(v));
                 slot->publish(/*winner=*/1);
                 publish_race_trace(race_source::kWhenAnyCancellable,
                                    race_op::kWon, idx);

@@ -297,6 +297,20 @@ TEST_CASE("FilteredList: Move of out-of-filter item emits nothing") {
     CHECK(fl.at(1)->value == 3);
 }
 
+TEST_CASE("FilteredList: source indices round-trip after visible moves") {
+    auto src = std::make_shared<ObservableList<Plain>>();
+    for (int value : {1, -2, 3, 4}) src->push_back(std::make_shared<Plain>(Plain{value}));
+    FilteredList<Plain> fl{src, [](const Plain& p) { return p.value > 0; }};
+    for (const auto [from, to] : {
+             std::pair<std::size_t, std::size_t>{0, 3}, {3, 0}, {2, 1}}) {
+        src->move(from, to);
+        for (std::size_t i = 0; i < fl.size(); ++i) {
+            REQUIRE(fl.source_index_of(i).has_value());
+            CHECK(fl.at(i) == src->at(*fl.source_index_of(i)));
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Reset
 // ═══════════════════════════════════════════════════════════════════════
@@ -395,7 +409,7 @@ struct Mirror {
                 case ListChangeKind::Insert:
                     REQUIRE(ch.index <= items.size());
                     items.insert(items.begin() + static_cast<std::ptrdiff_t>(ch.index),
-                                 ch.item);
+                                 ch.item.get());
                     break;
                 case ListChangeKind::Remove:
                     REQUIRE(ch.index < items.size());
@@ -403,7 +417,7 @@ struct Mirror {
                     break;
                 case ListChangeKind::Replace:
                     REQUIRE(ch.index < items.size());
-                    items[ch.index] = ch.item;
+                    items[ch.index] = ch.item.get();
                     break;
                 case ListChangeKind::Move: {
                     REQUIRE(ch.from_index < items.size());
@@ -604,12 +618,12 @@ TEST_CASE("FilteredList: 1000 mixed insert/remove keeps invariants") {
         src->remove_at(pos);
     }
 
-    // Invariant: fl.size() == number of even-valued items in src.
-    std::size_t expected_even = 0;
-    for (std::size_t i = 0; i < src->size(); ++i) {
-        if (src->at(i)->value % 2 == 0) ++expected_even;
-    }
-    CHECK(fl.size() == expected_even);
+    // Independent reference: filter the source sequence itself, including
+    // each pointer identity and order, without using the derived maps.
+    std::vector<std::shared_ptr<Plain>> expected;
+    for (const auto& item : src->snapshot())
+        if (item->value % 2 == 0) expected.push_back(item);
+    CHECK(fl.snapshot() == expected);
 
     // Invariant: source_index_of(j) gives increasing, in-filter source indices.
     std::optional<std::size_t> prev;
@@ -617,6 +631,7 @@ TEST_CASE("FilteredList: 1000 mixed insert/remove keeps invariants") {
         auto si = fl.source_index_of(j);
         REQUIRE(si.has_value());
         CHECK(src->at(*si)->value % 2 == 0);
+        CHECK(fl.at(j) == src->at(*si));
         if (prev) CHECK(*si > *prev);
         prev = si;
     }
@@ -627,4 +642,42 @@ TEST_CASE("FilteredList: 1000 mixed insert/remove keeps invariants") {
     for (std::size_t j = 0; j < snap.size(); ++j) {
         CHECK(snap[j].get() == fl.at(j).get());
     }
+}
+
+TEST_CASE("FilteredList: predicate diff keeps payloads alive when the view is destroyed") {
+    auto src = std::make_shared<ObservableList<int>>();
+    for (int n : {1, 2, 3}) src->emplace_back(n);
+    auto view = std::make_unique<FilteredList<int>>(src, [](int) { return true; });
+    std::vector<int> removed;
+    auto sub = view->observe([&](const auto& ch) {
+        if (ch.kind != ListChangeKind::Remove) return;
+        removed.push_back(*ch.item);
+        if (view) {
+            view.reset();
+            src->clear();
+        }
+    });
+    view->set_predicate([](int) { return false; });
+    CHECK(removed == std::vector<int>{1, 2, 3});
+}
+
+TEST_CASE("FilteredList: source changes from a predicate diff wait for pending indices") {
+    auto src = std::make_shared<ObservableList<int>>();
+    for (int n : {1, 2, 3}) src->emplace_back(n);
+    auto view = filtered(src, [](int) { return true; });
+    auto mirror = view->snapshot();
+    bool cleared = false;
+    auto sub = view->observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::Remove) {
+            REQUIRE(ch.index < mirror.size());
+            CHECK(mirror[ch.index] == ch.item);
+            mirror.erase(mirror.begin() + static_cast<std::ptrdiff_t>(ch.index));
+            if (!cleared) { cleared = true; src->clear(); }
+        } else if (ch.kind == ListChangeKind::Reset) {
+            mirror = view->snapshot();
+        }
+    });
+    view->set_predicate([](int) { return false; });
+    CHECK(mirror.empty());
+    CHECK(view->empty());
 }

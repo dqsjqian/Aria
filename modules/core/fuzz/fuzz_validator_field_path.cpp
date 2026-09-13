@@ -59,18 +59,25 @@ const std::vector<std::string>& paths() {
     return v;
 }
 
-/// Every Error on `state()` must carry the validator's own path.
-void check_all_carry_path(const aria::ValidationState& s,
-                          const std::string& expected) {
-    for (const auto& e : s.errors) {
-        CHECK(e.key.field_path == expected);
-        CHECK(e.kind == ErrorKind::Validation);
-        CHECK_FALSE(e.key.rule_id.empty());   // E-22: always populated
-    }
-    for (const auto& w : s.warnings) {
-        CHECK(w.key.field_path == expected);
-        CHECK(w.kind == ErrorKind::Validation);
-        CHECK_FALSE(w.key.rule_id.empty());
+struct ExpectedIssue {
+    std::string path;
+    std::string rule_id;
+    std::string message;
+};
+
+// The oracle comes from generated rule inputs, never from Validator's
+// output or its has_error_with_rule helper. Missing and rewritten IDs,
+// wrong severity, reordered records and discarded messages must all fail.
+void check_issues(const std::vector<Error>& actual,
+                  const std::vector<ExpectedIssue>& expected,
+                  aria::Severity severity) {
+    REQUIRE(actual.size() == expected.size());
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        CHECK(actual[i].kind == ErrorKind::Validation);
+        CHECK(actual[i].severity == severity);
+        CHECK(actual[i].key.field_path == expected[i].path);
+        CHECK(actual[i].key.rule_id == expected[i].rule_id);
+        CHECK(actual[i].message == expected[i].message);
     }
 }
 
@@ -90,7 +97,8 @@ TEST_CASE("fuzz: Validator field_path is an invariant of the validator") {
         // ── Sync surfaces: a mix of always-failing and always-passing
         // rules and warnings, with and without an explicit rule_id.
         const int n_rules = static_cast<int>(rng.u32(0, 3));
-        std::vector<std::string> explicit_ids;
+        std::vector<ExpectedIssue> expected_errors;
+        std::vector<ExpectedIssue> expected_warnings;
         for (int r = 0; r < n_rules; ++r) {
             const bool fails    = rng.u32(0, 1) == 1;
             const bool explicit_id = rng.u32(0, 1) == 1;
@@ -99,7 +107,10 @@ TEST_CASE("fuzz: Validator field_path is an invariant of the validator") {
             std::string id;
             if (explicit_id) {
                 id = "rid_" + std::to_string(r);
-                explicit_ids.push_back(id);
+            }
+            if (fails) {
+                auto& expected = as_warning ? expected_warnings : expected_errors;
+                expected.push_back({path, explicit_id ? id : "rule_" + std::to_string(r), "failed"});
             }
 
             auto body = [fails](const std::string&) -> std::optional<std::string> {
@@ -113,7 +124,8 @@ TEST_CASE("fuzz: Validator field_path is an invariant of the validator") {
             }
         }
 
-        check_all_carry_path(v.state().peek(), path);
+        check_issues(v.state().peek().errors, expected_errors, aria::Severity::Error);
+        check_issues(v.state().peek().warnings, expected_warnings, aria::Severity::Warning);
 
         // ── Async surface. Alternate between the three `end_pending`
         // overloads so all of them are exercised over the run.
@@ -121,7 +133,6 @@ TEST_CASE("fuzz: Validator field_path is an invariant of the validator") {
         v.begin_pending();
         CHECK(v.state().peek().pending);
 
-        std::optional<std::string> caller_path;
         if (which == 0) {
             v.end_pending();
         } else if (which == 1) {
@@ -130,6 +141,7 @@ TEST_CASE("fuzz: Validator field_path is an invariant of the validator") {
             std::vector<std::string> msgs;
             for (std::size_t m = 0; m < n; ++m) {
                 msgs.push_back("async_" + std::to_string(m));
+                expected_errors.push_back({path, "async_" + std::to_string(m), msgs.back()});
             }
             v.end_pending(std::move(msgs));
         } else {
@@ -144,8 +156,9 @@ TEST_CASE("fuzz: Validator field_path is an invariant of the validator") {
                 supplied.push_back(Error::validation(
                     ValidationKey{own, "caller_rule_" + std::to_string(m)},
                     "caller supplied"));
+                expected_errors.push_back({caller_sets_path ? own : path,
+                                            "caller_rule_" + std::to_string(m), "caller supplied"});
             }
-            if (caller_sets_path) caller_path = "caller/own/path";
             v.end_pending(std::move(supplied));
         }
 
@@ -153,73 +166,24 @@ TEST_CASE("fuzz: Validator field_path is an invariant of the validator") {
 
         const auto settled = v.state().peek();
 
-        if (caller_path.has_value()) {
-            // A path the caller set deliberately survives. Errors from
-            // the validator's own rules still carry the validator path,
-            // so assert per-origin rather than wholesale.
-            for (const auto& e : settled.errors) {
-                const bool ok = (e.key.field_path == *caller_path)
-                             || (e.key.field_path == path);
-                CHECK(ok);
-                CHECK(e.kind == ErrorKind::Validation);
-            }
-            // The caller's own records must be present verbatim.
-            bool found_caller = false;
-            for (const auto& e : settled.errors) {
-                if (e.key.field_path == *caller_path) found_caller = true;
-            }
-            CHECK(found_caller);
-        } else {
-            check_all_carry_path(settled, path);
-        }
+        check_issues(settled.errors, expected_errors, aria::Severity::Error);
+        check_issues(settled.warnings, expected_warnings, aria::Severity::Warning);
+        CHECK(settled.valid == expected_errors.empty());
 
         // `field_path()` itself never drifts, whatever happened above.
         CHECK(v.field_path() == path);
 
-        // Explicit rule_ids are preserved verbatim (E-22 clause 1).
-        for (const auto& id : explicit_ids) {
-            bool seen = settled.has_error_with_rule(id);
-            if (!seen) {
-                for (const auto& w : settled.warnings) {
-                    if (w.key.rule_id == id) { seen = true; break; }
-                }
-            }
-            // A passing rule contributes nothing, so `seen` may be
-            // false; what must never happen is a *different* id
-            // appearing where an explicit one was requested. Assert the
-            // weaker, always-true form: no auto-generated id collides
-            // with an explicit one.
-            for (const auto& e : settled.errors) {
-                if (e.key.rule_id == id) CHECK(e.key.field_path == path);
-            }
-        }
-
         // A later source write re-runs the rules; the path must hold
         // across a revalidation too.
         //
-        // Note that `async_errors_` is NOT consumed by `end_pending` —
-        // `run_` re-merges it on every revalidation (verified in
-        // validator.hpp: `run_` iterates `async_errors_` and only
-        // backfills an EMPTY field_path). So caller-supplied paths keep
-        // surviving after the rewrite, and asserting "everything carries
-        // the validator path" here would be asserting a bug into
-        // existence. Only the no-caller-path case can use the strict
-        // check.
+        // Async records remain until the next settlement. Their caller
+        // paths, IDs and messages must survive this rerun unchanged, so
+        // the same independently generated expectation still applies.
         value.set("changed-" + std::to_string(i));
         const auto rerun = v.state().peek();
-        if (caller_path.has_value()) {
-            for (const auto& e : rerun.errors) {
-                const bool ok = (e.key.field_path == *caller_path)
-                             || (e.key.field_path == path);
-                CHECK(ok);
-                CHECK(e.kind == ErrorKind::Validation);
-            }
-            for (const auto& w : rerun.warnings) {
-                CHECK(w.key.field_path == path);
-            }
-        } else {
-            check_all_carry_path(rerun, path);
-        }
+        check_issues(rerun.errors, expected_errors, aria::Severity::Error);
+        check_issues(rerun.warnings, expected_warnings, aria::Severity::Warning);
+        CHECK(rerun.valid == expected_errors.empty());
         CHECK(v.field_path() == path);
     }
 }

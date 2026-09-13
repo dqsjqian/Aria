@@ -232,3 +232,48 @@ TEST_CASE("Container: stays thread-safe while registering and resolving") {
     CHECK(resolved.load() > 0);
     CHECK(c.resolve<ILogger>()->log("x") == "[console] x");
 }
+
+TEST_CASE("Container: replacing a registration also replaces its lifetime mode") {
+    Container container;
+    container.register_instance<int>(std::make_shared<int>(1));
+    container.register_factory<int>([] { return std::make_shared<int>(2); });
+    CHECK(*container.resolve<int>() == 2);
+    container.register_instance<int>(std::make_shared<int>(3));
+    CHECK(*container.resolve<int>() == 3);
+}
+
+TEST_CASE("Container: factory state persists across resolves") {
+    Container container;
+    container.register_factory<int>([counter = 0]() mutable {
+        return std::make_shared<int>(++counter);
+    });
+    CHECK(*container.resolve<int>() == 1);
+    CHECK(*container.resolve<int>() == 2);
+}
+
+TEST_CASE("Container: copying a factory capture may query its container") {
+    struct Factory {
+        Container* container;
+        bool* armed;
+        Factory(Container& c, bool& a) : container(&c), armed(&a) {}
+        Factory(const Factory& other) : container(other.container), armed(other.armed) {
+            if (*armed) (void)container->has<int>();
+        }
+        std::shared_ptr<int> operator()() const { return std::make_shared<int>(42); }
+    };
+    Container container;
+    bool armed = false;
+    container.register_factory<int>(Factory{container, armed});
+    armed = true;
+    CHECK(*container.resolve<int>() == 42);
+}
+
+TEST_CASE("Container: a released service can destroy the container during clear") {
+    auto container = std::make_unique<Container>();
+    container->register_instance<int>(std::shared_ptr<int>(new int{7}, [&](int* value) {
+        delete value;
+        container.reset();
+    }));
+    container->clear();
+    CHECK_FALSE(container);
+}

@@ -12,7 +12,7 @@ namespace aria::runtime {
 
 /// Type-keyed dependency-injection container. Thread-safe.
 ///
-/// Supports three registration modes:
+/// Supports four registration forms:
 ///   - register_singleton<I, Impl>()   : one shared instance for life of container
 ///   - register_transient<I, Impl>()   : new instance every resolve()
 ///   - register_factory<I>(fn)         : custom factory function
@@ -24,6 +24,9 @@ namespace aria::runtime {
 /// providers before consumers and the container will not hand a
 /// destroyed dependency to a destructor. Re-registering a type keeps its
 /// original position — the instance changed, not the dependency order.
+/// A new registration replaces both the value and lifetime mode for its type.
+/// Factories retain their captured state between resolves and run outside the
+/// registry lock; factories called concurrently must synchronize their own state.
 ///
 /// Each registration is destroyed with the internal mutex released, so a
 /// service destructor may call back into the container (`resolve` /
@@ -56,23 +59,24 @@ public:
     void register_transient() {
         std::function<std::shared_ptr<Interface>()> typed =
             []() -> std::shared_ptr<Interface> { return std::make_shared<Impl>(); };
-        do_register_transient_(typeid(Interface), std::any(std::move(typed)));
+        do_register_(typeid(Interface), std::any(std::move(typed)), true);
     }
 
     template<typename Interface>
     void register_factory(std::function<std::shared_ptr<Interface>()> fn) {
-        do_register_transient_(typeid(Interface), std::any(std::move(fn)));
+        do_register_(typeid(Interface), std::any(std::move(fn)), true);
     }
 
     template<typename Interface>
     [[nodiscard]] std::shared_ptr<Interface> resolve() {
         auto found = do_find_(typeid(Interface));
-        if (found.singleton.has_value()) {
-            return std::any_cast<std::shared_ptr<Interface>>(found.singleton);
-        }
-        if (found.factory.has_value()) {
-            auto fn = std::any_cast<std::function<std::shared_ptr<Interface>()>>(found.factory);
-            return fn();
+        if (found) {
+            if (found->factory) {
+                const auto& fn = std::any_cast<
+                    const std::function<std::shared_ptr<Interface>()>&>(found->payload);
+                return fn();
+            }
+            return std::any_cast<const std::shared_ptr<Interface>&>(found->payload);
         }
         throw std::runtime_error(std::string("Container: not registered: ")
                                  + typeid(Interface).name());
@@ -90,27 +94,26 @@ public:
 private:
     template<typename Interface>
     void register_instance_(std::shared_ptr<Interface> ptr) {
-        do_register_instance_(typeid(Interface), std::any(std::move(ptr)));
+        do_register_(typeid(Interface), std::any(std::move(ptr)), false);
     }
 
-    struct FoundPair {
-        std::any singleton;
-        std::any factory;
+    struct Registration {
+        std::any payload;
+        bool factory;
     };
 
-    void do_register_instance_(std::type_index ti, std::any ptr);
-    void do_register_transient_(std::type_index ti, std::any fn);
-    FoundPair do_find_(std::type_index ti) const;
+    void do_register_(std::type_index ti, std::any payload, bool factory);
+    std::shared_ptr<const Registration> do_find_(std::type_index ti) const;
     bool do_has_(std::type_index ti) const;
 
     struct Impl;
-    // RAII pImpl; C4251 on the unique_ptr member is a false positive for an
+    // RAII pImpl; C4251 on the shared_ptr member is a false positive for an
     // incomplete opaque pointee consumed only via non-template API.
 #ifdef _MSC_VER
 #  pragma warning(push)
 #  pragma warning(disable: 4251)
 #endif
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 #ifdef _MSC_VER
 #  pragma warning(pop)
 #endif

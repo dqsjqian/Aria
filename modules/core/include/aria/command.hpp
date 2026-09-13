@@ -12,6 +12,8 @@
 
 namespace aria {
 
+namespace binding { class BindingEngine; }
+
 /// Encapsulated user action with an optional `CanExecute` predicate.
 ///
 /// Two flavours:
@@ -83,6 +85,8 @@ public:
     Command(Command&&) = delete;
     Command& operator=(Command&&) = delete;
 
+    ~Command() { lifetime_.reset(); }
+
     /// Invoke the action if can_execute(args...) is true.
     void execute(const Args&... args) {
         if (predicate_(args...)) {
@@ -124,9 +128,15 @@ public:
     }
 
 private:
+    friend class binding::BindingEngine;
+    std::weak_ptr<void> lifetime_token_() {
+        if (!lifetime_) lifetime_ = std::make_shared<char>();
+        return lifetime_;
+    }
     Action action_;
     Predicate predicate_;
     std::shared_ptr<CanExecuteSignal> can_signal_;
+    std::shared_ptr<void> lifetime_;
 };
 
 // ----------------------------------------------------------------------------
@@ -217,6 +227,8 @@ public:
     Command(Command&&) = delete;
     Command& operator=(Command&&) = delete;
 
+    ~Command() { lifetime_.reset(); }
+
     void execute() {
         if (predicate_()) {
             if (::aria::has_trace_sink()) {
@@ -251,6 +263,11 @@ public:
     }
 
 private:
+    friend class binding::BindingEngine;
+    std::weak_ptr<void> lifetime_token_() {
+        if (!lifetime_) lifetime_ = std::make_shared<char>();
+        return lifetime_;
+    }
     Action action_;
     Predicate predicate_;
     std::shared_ptr<CanExecuteSignal> can_signal_;
@@ -260,6 +277,7 @@ private:
     // Effect. The `std::nullopt` state represents "no auto-tracking effect
     // was installed".
     std::optional<reactive::Effect> effect_;
+    std::shared_ptr<void> lifetime_;
 };
 
 }  // namespace aria

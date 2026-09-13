@@ -238,3 +238,119 @@ TEST_CASE("inplace_function: zero heap activity for in-budget captures") {
     CHECK(s == (10 + 1 + 2 + 3) + (20 + 1 + 2 + 3));
     CHECK(if_alloc::g_new_count == 0);
 }
+
+TEST_CASE("inplace_function: its copyable interface rejects move-only targets at compile time") {
+    auto move_only = [value = std::make_unique<int>(42)] { return *value; };
+    using Wrapper = inplace_function<int()>;
+    static_assert(!std::is_constructible_v<Wrapper, decltype(move_only)>);
+    static_assert(!std::is_assignable_v<Wrapper&, decltype(move_only)>);
+    auto copyable = [value = 42] { return value; };
+    static_assert(std::is_constructible_v<Wrapper, decltype(copyable)>);
+    Wrapper source = copyable;
+    Wrapper copy = source;
+    CHECK(source() == 42);
+    CHECK(copy() == 42);
+}
+
+namespace {
+struct InplaceThrowingTarget {
+    bool* throw_copy;
+    bool* throw_move;
+    int* live;
+    int value = 42;
+    InplaceThrowingTarget(bool& copy, bool& move, int& count)
+        : throw_copy(&copy), throw_move(&move), live(&count) { ++*live; }
+    InplaceThrowingTarget(const InplaceThrowingTarget& other)
+        : throw_copy(other.throw_copy), throw_move(other.throw_move), live(other.live), value(other.value) {
+        if (*throw_copy) throw std::runtime_error("target copy");
+        ++*live;
+    }
+    InplaceThrowingTarget(InplaceThrowingTarget&& other)
+        : throw_copy(other.throw_copy), throw_move(other.throw_move), live(other.live), value(other.value) {
+        if (*throw_move) throw std::runtime_error("target move");
+        ++*live;
+    }
+    ~InplaceThrowingTarget() { --*live; }
+    int operator()() { return value; }
+};
+struct InplaceReentrantDestructor {
+    inplace_function<int()>* owner;
+    int* calls;
+    bool* armed;
+    bool replace;
+    ~InplaceReentrantDestructor() {
+        if (!*armed) return;
+        auto* target = owner;
+        const bool install = replace;
+        ++*calls;
+        // Save everything needed before a replacement overwrites our storage.
+        if (install) *target = [] { return 17; };
+        else target->reset();
+    }
+    int operator()() { return 1; }
+};
+}
+
+TEST_CASE("inplace_function: target copy and move exceptions preserve valid wrapper lifetimes") {
+    static_assert(!std::is_nothrow_move_constructible_v<inplace_function<int()>>);
+    bool throw_copy = false;
+    bool throw_move = false;
+    int live = 0;
+    {
+        InplaceThrowingTarget target{throw_copy, throw_move, live};
+        inplace_function<int()> source = target;
+        CHECK(live == 2);
+        throw_copy = true;
+        CHECK_THROWS_WITH_AS(inplace_function<int()>{source}, "target copy", std::runtime_error);
+        CHECK(live == 2);
+        inplace_function<int()> destination = [] { return 0; };
+        CHECK_THROWS_WITH_AS(destination = source, "target copy", std::runtime_error);
+        CHECK_FALSE(destination);
+        CHECK(source() == 42);
+        throw_copy = false;
+        destination = source;
+        CHECK(live == 3);
+        throw_move = true;
+        CHECK_THROWS_WITH_AS(inplace_function<int()>{std::move(source)}, "target move", std::runtime_error);
+        CHECK_THROWS_WITH_AS(destination = std::move(source), "target move", std::runtime_error);
+        CHECK_FALSE(destination);
+        CHECK(source() == 42);
+        CHECK(live == 2);
+        throw_move = false;
+        destination = std::move(source);
+        CHECK_FALSE(source);
+        CHECK(destination() == 42);
+        CHECK(live == 2);
+    }
+    CHECK(live == 0);
+}
+
+TEST_CASE("inplace_function: reset handles capture destructors that reset or replace the wrapper") {
+    for (bool replace : {false, true}) {
+        inplace_function<int()> wrapper;
+        int destructions = 0;
+        bool armed = false;
+        wrapper = InplaceReentrantDestructor{&wrapper, &destructions, &armed, replace};
+        armed = true;
+        wrapper.reset();
+        CHECK(destructions == 1);
+        CHECK(static_cast<bool>(wrapper) == replace);
+        if (replace) CHECK(wrapper() == 17);
+    }
+}
+
+TEST_CASE("inplace_function: typed null pointers are empty and void signatures discard results") {
+    int (*pointer)(int) = nullptr;
+    inplace_function<int(int)> empty = pointer;
+    CHECK_FALSE(empty);
+    CHECK_THROWS_AS(empty(1), bad_inplace_function_call);
+    inplace_function<int(int)> assigned = if_free::triple;
+    assigned = pointer;
+    CHECK_FALSE(assigned);
+    int calls = 0;
+    inplace_function<void()> discard = [&] { return ++calls; };
+    discard();
+    CHECK(calls == 1);
+    inplace_function<void(int)> discard_pointer = if_free::triple;
+    discard_pointer(3);
+}

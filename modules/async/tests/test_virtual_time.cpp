@@ -145,3 +145,20 @@ TEST_CASE("retry_with_backoff: virtual time covers exponential delays") {
     CHECK(calls == 3);
     CHECK(ok);
 }
+
+namespace {
+struct VirtualClearCapture {
+    VirtualTimeExecutor* executor;
+    ~VirtualClearCapture() { executor->post([] {}); }
+};
+}
+
+TEST_CASE("VirtualTimeExecutor: clear releases reentrant captures outside its lock") {
+    VirtualTimeExecutor executor;
+    auto capture = std::make_shared<VirtualClearCapture>(&executor);
+    executor.post([capture] {});
+    capture.reset();
+    executor.clear();
+    CHECK(executor.pending() == 1);
+    CHECK(executor.run_until_idle() == 1);
+}

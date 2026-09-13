@@ -29,13 +29,14 @@
         "Computed chain x5 (auto-tracked)": 2000,
         "AsyncCommand<int,int>::execute round-trip": 11000,
         "ObservableList::push_back (no observers)": 900,
-        "FilteredList: source push_back (n=10k)": 41000,
-        "SortedList: source push_back random (n=10k)": 60000,
+        "FilteredList: source push_back (n=10k)": 1500,
+        "SortedList: source push_back random (n=10k)": 130000,
         "has_trace_sink() only (no sink)": 25,
         "publish_trace gated, no sink (D-24 fast path)": 26,
         "publish_trace ungated, no sink (AD2 anti-pattern)": 72,
         "publish_trace gated, sink installed (slow path)": 190
-      }
+      },
+      "_collection_2_0_note": "ABI 2 collection audit, Apple M3 Pro / AppleClang 21 / C++20 Release, five alternating paired runs after one warmup. Generic SortedList now validates live key order before binary search to handle pending batched writes: median sample-average P99 85,589ns (old complete tree 37,930ns); 130,000ns ceiling retains the >1us x1.5 policy, rounded up. FilteredList tail append no longer scans all mappings: single-run P99 623ns, ceiling tightened to 1,500ns. These are intentional contract/algorithm changes; all other ceilings are unchanged."
     }
   }
 }

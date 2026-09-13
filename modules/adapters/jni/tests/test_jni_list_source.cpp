@@ -30,7 +30,10 @@
 #include "aria/derived/mapped_list.hpp"
 
 #include <memory>
+#include <atomic>
+#include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 using ::aria::adapters::jni::JniListSource;
@@ -306,4 +309,150 @@ TEST_CASE("JNI list: destruction detaches before the sink can be reached") {
     // would show up as a growing log rather than as a crash).
     list.push_back(item("c"));
     CHECK(log.count() == 1);
+}
+
+namespace {
+struct QueuedSource {
+    using value_type = Item;
+    std::vector<std::shared_ptr<Item>> rows;
+    std::function<void(const aria::ListChange<Item>&)> callback;
+    std::size_t size() const { return rows.size(); }
+    auto at(std::size_t index) const { return rows.at(index); }
+    auto snapshot() const { return rows; }
+    aria::Subscription observe(std::function<void(const aria::ListChange<Item>&)> fn) {
+        callback = std::move(fn);
+        return {};
+    }
+};
+
+int jni_list_failures = 0;
+void jni_list_failure_sink(const aria::CallbackFailure& failure) {
+    CHECK(failure.category == "jni.list_source.change");
+    ++jni_list_failures;
+}
+} // namespace
+
+TEST_CASE("JNI list: retained upstream callback is harmless after destruction") {
+    QueuedSource source;
+    int notifications = 0;
+    auto bridge = std::make_unique<JniListSource<Item>>(source,
+        [&](const auto&) { ++notifications; });
+    const auto pending_callback = source.callback;
+    bridge.reset();
+    pending_callback({aria::ListChangeKind::Insert, 0, item("late")});
+    CHECK(notifications == 0);
+}
+
+TEST_CASE("JNI list: replay uses owning event payload and Reset snapshot") {
+    QueuedSource source;
+    JniListSource<Item> bridge(source, [](const auto&) {});
+    auto a = item("a");
+    auto b = item("b");
+    // The producer has committed its complete batch before notifying observers.
+    source.rows = {a, b};
+    source.callback(aria::ListChange<Item>::cleared());
+    source.callback({aria::ListChangeKind::Insert, 0, b});
+    source.callback({aria::ListChangeKind::Insert, 0, a});
+    CHECK(rows_of(bridge) == std::vector<std::string>{"a", "b"});
+    source.callback(aria::ListChange<Item>::reset({b}));
+    CHECK(rows_of(bridge) == std::vector<std::string>{"b"});
+}
+
+TEST_CASE("JNI list: dispatcher applies mirror and notification together on owner") {
+    QueuedSource source;
+    auto dispatcher = std::make_shared<aria::runtime::SimpleDispatcher>();
+    const auto owner = std::this_thread::get_id();
+    std::vector<std::vector<std::string>> observed_rows;
+    JniListSource<Item>* current = nullptr;
+    JniListSource<Item> bridge(source, [&](const auto&) {
+        CHECK(std::this_thread::get_id() == owner);
+        observed_rows.push_back(rows_of(*current));
+    }, dispatcher);
+    current = &bridge;
+    auto a = item("a"), b = item("b");
+    source.rows = {a, b};
+    std::thread producer([&] {
+        source.callback(aria::ListChange<Item>::cleared());
+        source.callback({aria::ListChangeKind::Insert, 0, b});
+        source.callback({aria::ListChangeKind::Insert, 0, a});
+        bridge.reload();
+    });
+    producer.join();
+    CHECK(bridge.item_count() == 0);
+    CHECK(observed_rows.empty());
+    dispatcher->pump();
+    CHECK(observed_rows == std::vector<std::vector<std::string>>{
+        {}, {"b"}, {"a", "b"}, {"a", "b"}});
+}
+
+TEST_CASE("JNI list: sink can destroy bridge and cancel queued changes") {
+    QueuedSource source;
+    auto dispatcher = std::make_shared<aria::runtime::SimpleDispatcher>();
+    int notifications = 0;
+    std::unique_ptr<JniListSource<Item>> bridge;
+    bridge = std::make_unique<JniListSource<Item>>(source, [&](const auto&) {
+        ++notifications;
+        bridge.reset();
+    }, dispatcher);
+    std::thread producer([&] {
+        source.callback({aria::ListChangeKind::Insert, 0, item("first")});
+        source.callback({aria::ListChangeKind::Insert, 1, item("second")});
+    });
+    producer.join();
+    dispatcher->pump();
+    CHECK(notifications == 1);
+    CHECK_FALSE(bridge);
+}
+
+TEST_CASE("JNI list: reload sink can destroy its bridge") {
+    QueuedSource source;
+    std::unique_ptr<JniListSource<Item>> bridge;
+    bridge = std::make_unique<JniListSource<Item>>(source, [&](const auto&) { bridge.reset(); });
+    bridge->reload();
+    CHECK_FALSE(bridge);
+}
+
+TEST_CASE("JNI list: callback exceptions are contained and later changes still arrive") {
+    QueuedSource source;
+    int notifications = 0;
+    JniListSource<Item> bridge(source, [&](const auto&) {
+        if (++notifications == 1) throw std::runtime_error("managed sink");
+    });
+    jni_list_failures = 0;
+    auto previous = aria::set_callback_failure_sink(jni_list_failure_sink);
+    CHECK_NOTHROW(source.callback({aria::ListChangeKind::Insert, 0, item("first")}));
+    source.callback({aria::ListChangeKind::Insert, 1, item("second")});
+    aria::set_callback_failure_sink(previous);
+    CHECK(jni_list_failures == 1);
+    CHECK(notifications == 2);
+    CHECK(bridge.item_count() == 2);
+}
+
+TEST_CASE("JNI list: source may be destroyed before reload") {
+    auto source = std::make_unique<QueuedSource>();
+    source->rows = {item("retained")};
+    int notifications = 0;
+    JniListSource<Item> bridge(*source, [&](const auto&) { ++notifications; });
+    source.reset();
+    bridge.reload();
+    CHECK(rows_of(bridge) == std::vector<std::string>{"retained"});
+    CHECK(notifications == 1);
+}
+
+TEST_CASE("JNI list: producer delivery is safe during bridge destruction") {
+    for (int round = 0; round < 32; ++round) {
+        QueuedSource source;
+        auto bridge = std::make_unique<JniListSource<Item>>(source, [](const auto&) {});
+        auto callback = source.callback;
+        std::atomic<bool> started{false};
+        std::thread producer([&] {
+            started.store(true, std::memory_order_release);
+            for (std::size_t i = 0; i < 32; ++i)
+                callback({aria::ListChangeKind::Insert, i, item("row")});
+        });
+        while (!started.load(std::memory_order_acquire)) std::this_thread::yield();
+        bridge.reset();
+        producer.join();
+    }
+    CHECK(true);
 }

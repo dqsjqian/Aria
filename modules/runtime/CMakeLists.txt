@@ -10,7 +10,6 @@ target_sources(aria_runtime PRIVATE
     src/container.cpp
     src/event_bus.cpp
     src/dispatcher.cpp
-    src/diagnostics_sink.cpp
     src/runtime_bootstrap.cpp
 )
 

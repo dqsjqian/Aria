@@ -3,72 +3,92 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+#include <stdexcept>
+#include <utility>
 
 namespace aria::abi {
 
 struct Entry {
     SlotId id;
-    // Held by shared_ptr so emit() can snapshot a small vector of pointers
-    // and invoke them OUTSIDE the lock.  Crucial: a slot may release a
-    // Subscription as part of its callback (e.g. an AutoComputed dropping
-    // its old dep subs during recompute), which would deadlock if we held
-    // the signal's mutex while invoking.
-    std::shared_ptr<SlotErased> slot;
+    SlotErased slot;
+    std::atomic<bool> active{true};
+
+    Entry(SlotId key, SlotErased callback) noexcept
+        : id(key), slot(std::move(callback)) {}
 };
 
 struct SignalErased::ControlBlock {
     mutable std::mutex mutex;
-    std::vector<Entry> entries;
-    std::atomic<std::uint64_t> next_id{1};
+    std::vector<std::shared_ptr<Entry>> entries;
+    std::uint64_t next_id = 1;
+    bool closed = false;
 
-    // Reserve room for the typical observer count. Most UI signals carry
-    // 1–2 slots (one binding, occasionally a diagnostic tap); pre-reserving
-    // 2 avoids the first reallocation for that case without over-allocating
-    // for the long tail of single-observer signals.
     ControlBlock() { entries.reserve(2); }
 };
 
-struct SignalErased::Impl {
-    std::shared_ptr<ControlBlock> cb = std::make_shared<ControlBlock>();
-};
+namespace {
+void clear_slots(const std::shared_ptr<SignalErased::ControlBlock>& state,
+                 bool close = false) noexcept {
+    if (!state) return;
+    std::vector<std::shared_ptr<Entry>> removed;
+    {
+        std::lock_guard lock(state->mutex);
+        if (close) state->closed = true;
+        for (const auto& entry : state->entries)
+            entry->active.store(false, std::memory_order_release);
+        removed.swap(state->entries);
+    }
+}
 
-SignalErased::SignalErased() : impl_(std::make_unique<Impl>()) {}
-SignalErased::~SignalErased() = default;
+void disconnect_slot(const std::shared_ptr<SignalErased::ControlBlock>& state,
+                     SlotId id) noexcept {
+    if (!state || !id.valid()) return;
+    std::shared_ptr<Entry> removed;
+    {
+        std::lock_guard lock(state->mutex);
+        const auto it = std::find_if(state->entries.begin(), state->entries.end(),
+            [id](const auto& entry) { return entry->id == id; });
+        if (it == state->entries.end()) return;
+        (*it)->active.store(false, std::memory_order_release);
+        removed = std::move(*it);
+        state->entries.erase(it);
+    }
+}
+}  // namespace
 
-// Move transfers ownership of the heap Impl, leaving the source in a
-// destructible-only state (`impl_ == nullptr`). std::unique_ptr gives us
-// the correct move semantics for free.
-//
-// IMPORTANT: a moved-from SignalErased has `impl_ == nullptr`. By the
-// classic C++ contract a moved-from object is destructible-only, but
-// in practice users sometimes hand the moved-from instance to other
-// code (e.g. it sits in a container that gets queried later). Every
-// public method below therefore null-checks `impl_` and degrades to
-// a safe no-op rather than dereferencing a dangling control block.
+SignalErased::SignalErased() : cb_(std::make_shared<ControlBlock>()) {}
+SignalErased::~SignalErased() { clear_slots(cb_, true); }
 SignalErased::SignalErased(SignalErased&& other) noexcept = default;
-SignalErased& SignalErased::operator=(SignalErased&& other) noexcept = default;
+SignalErased& SignalErased::operator=(SignalErased&& other) noexcept {
+    if (this != &other) {
+        auto removed = std::exchange(cb_, std::move(other.cb_));
+        clear_slots(removed, true);
+    }
+    return *this;
+}
 
 SlotId SignalErased::connect(SlotErased slot) {
-    if (!impl_) return SlotId{};   // moved-from -> no-op
-    SlotId id{impl_->cb->next_id.fetch_add(1, std::memory_order_relaxed)};
-    auto sp = std::make_shared<SlotErased>(std::move(slot));
-    std::lock_guard lk(impl_->cb->mutex);
-    impl_->cb->entries.push_back(Entry{id, std::move(sp)});
-    return id;
+    const auto state = cb_;
+    if (!state || slot.empty()) return {};
+    auto entry = std::make_shared<Entry>(SlotId{}, std::move(slot));
+    std::lock_guard lock(state->mutex);
+    if (state->closed) return {};
+    if (state->next_id == 0)
+        throw std::overflow_error("SignalErased slot identifiers exhausted");
+    entry->id = SlotId{state->next_id++};
+    // Retain the local owner until unlocking, including allocation failures.
+    state->entries.push_back(entry);
+    return entry->id;
 }
 
 void SignalErased::disconnect(SlotId id) noexcept {
-    if (!impl_) return;
-    if (!id.valid()) return;
-    std::lock_guard lk(impl_->cb->mutex);
-    auto& v = impl_->cb->entries;
-    v.erase(std::remove_if(v.begin(), v.end(),
-                [id](const Entry& e) noexcept { return e.id == id; }),
-            v.end());
+    const auto state = cb_;
+    disconnect_slot(state, id);
 }
 
 void SignalErased::emit(void* args) const {
-    if (!impl_) return;
+    const auto state = cb_;
+    if (!state) return;
     // Snapshot under lock, invoke without lock — this lets slots safely
     // disconnect themselves (or release Subscriptions on this same signal)
     // without deadlocking on the recursive lock.
@@ -81,7 +101,7 @@ void SignalErased::emit(void* args) const {
     // callback may emit on this very signal), so we must NOT share one
     // static buffer: we keep a small stack of buffers keyed by re-entrancy
     // depth, each of which keeps its capacity between uses.
-    using Snapshot = std::vector<std::shared_ptr<SlotErased>>;
+    using Snapshot = std::vector<std::shared_ptr<Entry>>;
     static thread_local std::vector<Snapshot> tl_pool;
     static thread_local std::size_t           tl_depth = 0;
 
@@ -115,42 +135,33 @@ void SignalErased::emit(void* args) const {
     } depth_guard{tl_depth, snap, my_depth};
 
     {
-        std::lock_guard lk(impl_->cb->mutex);
-        snap.reserve(impl_->cb->entries.size());
-        for (auto& e : impl_->cb->entries) snap.push_back(e.slot);
+        std::lock_guard lock(state->mutex);
+        snap.reserve(state->entries.size());
+        for (const auto& entry : state->entries) snap.push_back(entry);
     }
-    for (auto& s : snap) {
-        if (s) s->invoke(args);
+    for (const auto& entry : snap) {
+        if (entry->active.load(std::memory_order_acquire)) entry->slot.invoke(args);
     }
 }
 
 std::size_t SignalErased::slot_count() const noexcept {
-    if (!impl_) return 0;
-    std::lock_guard lk(impl_->cb->mutex);
-    return impl_->cb->entries.size();
+    if (!cb_) return 0;
+    std::lock_guard lock(cb_->mutex);
+    return cb_->entries.size();
 }
 
 void SignalErased::clear() noexcept {
-    if (!impl_) return;
-    std::lock_guard lk(impl_->cb->mutex);
-    impl_->cb->entries.clear();
+    const auto state = cb_;
+    clear_slots(state);
 }
 
 std::weak_ptr<SignalErased::ControlBlock> SignalErased::weak_handle() const noexcept {
-    if (!impl_) return {};
-    return impl_->cb;
+    return cb_;
 }
 
 void SignalErased::disconnect_via_weak(
-        const std::weak_ptr<SignalErased::ControlBlock>& weak,
-        SlotId id) noexcept {
-    if (auto cb = weak.lock()) {
-        std::lock_guard lk(cb->mutex);
-        auto& v = cb->entries;
-        v.erase(std::remove_if(v.begin(), v.end(),
-                    [id](const Entry& e) noexcept { return e.id == id; }),
-                v.end());
-    }
+        const std::weak_ptr<ControlBlock>& weak, SlotId id) noexcept {
+    disconnect_slot(weak.lock(), id);
 }
 
 }  // namespace aria::abi

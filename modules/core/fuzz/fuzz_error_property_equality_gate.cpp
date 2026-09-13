@@ -121,9 +121,20 @@ TEST_CASE("E-11 fuzz: equal Errors do not re-notify, unequal ones always do") {
     auto sub = last_error.on_changed(
         [&notifications](const std::optional<Error>&) { ++notifications; });
 
+    // Cover both gate outcomes before the random walk, even with one
+    // iteration. Distinct exception objects represent the same logical error.
+    const auto first = make_error(0);
+    const auto repeated = make_error(0);
+    REQUIRE(first.inner != repeated.inner);
+    REQUIRE(same_by_contract(first, repeated));
+    last_error.set(first);
+    CHECK(notifications == 1);
+    last_error.set(repeated);
+    CHECK(notifications == 1);
+
     // Reference model: the value the property should currently hold.
-    std::optional<Error> model = std::nullopt;
-    std::size_t expected_notifications = 0;
+    std::optional<Error> model = repeated;
+    std::size_t expected_notifications = 1;
 
     for (std::size_t step = 0; step < fuzz::iters(); ++step) {
         std::optional<Error> next;
@@ -190,8 +201,4 @@ TEST_CASE("E-11 fuzz: equal Errors do not re-notify, unequal ones always do") {
         }
     }
 
-    // Sanity: the walk actually exercised both branches, otherwise the
-    // agreement above is vacuous.
-    CHECK(expected_notifications > 0);
-    CHECK(expected_notifications < fuzz::iters());
 }
