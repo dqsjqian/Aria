@@ -23,5 +23,11 @@ endif()
 
 add_executable(aria_http_package_consumer main.cpp)
 target_link_libraries(aria_http_package_consumer PRIVATE aria::http)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Exercise each installed DSO's runtime dependency lookup even when the
+    # consumer only needs aria::http directly. GNU toolchains commonly enable
+    # this by default; Clang must cover the same package-loading contract.
+    target_link_options(aria_http_package_consumer PRIVATE "LINKER:--as-needed")
+endif()
 enable_testing()
 add_test(NAME http_package_consumer COMMAND aria_http_package_consumer)

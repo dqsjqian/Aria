@@ -255,6 +255,8 @@ jobs:
         run: |
           aria_prefix="$RUNNER_TEMP/aria-prefix"
           cmake --install build/flavors/release --prefix "$aria_prefix"
+          mv "$aria_prefix" "$RUNNER_TEMP/aria-prefix-relocated"
+          aria_prefix="$RUNNER_TEMP/aria-prefix-relocated"
           aria_config=$(find "$aria_prefix" -name ariaConfig.cmake -type f -print -quit)
           test -n "$aria_config"
           cmake -S tests/package_http -B build/flavors/package-http -G Ninja \

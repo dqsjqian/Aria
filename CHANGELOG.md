@@ -94,6 +94,9 @@ implementation status.
 - Build scripts select Qt libraries matching their compiler and explicitly
   reset optional Qt/sanitizer cache state. Editor tasks work with Bash 3.2;
   validation scripts reject incomplete benchmark output and analyzer failure.
+- Installed Linux shared libraries resolve co-located Aria dependencies
+  through an origin-relative runtime path, including dependencies omitted
+  from a consumer's direct link entries by `--as-needed`.
 - BindingEngine marshals scalar, converted-text, and command input from
   worker threads according to its dispatcher policy. Queued callbacks own
   their event data and are cancelled on view destruction, engine clear, or
@@ -141,6 +144,10 @@ implementation status.
   the default and minimum; language-mode support is distinct from a baseline upgrade.
 - Corrected the HTTP guide to use actual routes, request fields, adapter
   ownership, and the shipped `AriaClient` ESM SDK, with a compiled example.
+- Getting-started examples use real Qt view wrappers, current validation
+  errors and an owned asynchronous completion path. Package examples request
+  Aria 2.0; the guide's complete programs are compiled and exercised in both
+  C++20 and C++23 modes.
 - Added framework-owned HTTP/SSE and Node SDK regressions, deterministic
   Channel interleavings, binding dispatcher/lifetime coverage, and an actual
   QComboBox text two-way binding test. HTTP and SDK tests are enabled in

@@ -351,11 +351,14 @@ cmake --build build/flavors/release -j && sudo cmake --install build/flavors/rel
 ```
 
 ```cmake
-find_package(aria 1.0 REQUIRED)
+find_package(aria 2.0 CONFIG REQUIRED)
 add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE aria::aria)
 # 也可以按需选择模块：aria::core / ::async / ::runtime / ::binding
 ```
+
+Linux 安装包中的 Aria 动态库从同目录解析其他 Aria 库。请将这些库一并保留；
+移动 SDK 后，以新安装路径重新配置使用它的项目。
 
 **方式 B —— 直接嵌入（不安装）**：
 
