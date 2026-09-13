@@ -204,6 +204,7 @@ trap 'rm -f "${tmp_log}"' EXIT
 
 echo "==> running benchmark suite (host=${host_key}, runs=${runs})"
 for ((run=1; run<=runs; run++)); do
+    printf "ARIA_BENCH_RUN %s\n" "${run}" >>"${tmp_log}"
     if (( runs > 1 )); then
         echo "  -- run ${run}/${runs}"
     fi
@@ -223,7 +224,7 @@ done
 # Stay strict: any "P " line whose label is unknown to thresholds.json
 # is reported (so new benches don't silently slip through unchecked).
 python3 - "${thresholds_file}" "${tmp_log}" "${host_key}" "${runs}" <<'PY'
-import json, re, sys
+import json, math, re, sys
 
 thresholds_path, log_path, host_key, runs_str = sys.argv[1:5]
 runs = int(runs_str)
@@ -246,32 +247,61 @@ if not ceilings:
     sys.exit(2)
 print(f"==> using ceilings from {ceiling_source}")
 
-# row_pct format:
-#   "P  <name padded>... mean=NNN.Nns  p50=NNN.Nns  p95=NNN.Nns  p99=NNN.Nns  (SxO)"
-# Capture the trimmed name (everything between leading "P " and the
-# first "mean=") and the p99 number.
+# Reject incomplete measurements, including a missing/duplicated metric in
+# just one of several runs. A valid row from a different run cannot cover it.
+for name, ceiling in ceilings.items():
+    if (isinstance(ceiling, bool) or not isinstance(ceiling, (int, float))
+            or not math.isfinite(ceiling) or ceiling < 0):
+        print(f"error: invalid ceiling for {name}: {ceiling}", file=sys.stderr)
+        sys.exit(2)
+
 line_re = re.compile(
-    r"^P\s+(?P<name>.+?)\s+mean=\s*[\d.]+ns\s+p50=\s*[\d.]+ns\s+p95=\s*[\d.]+ns\s+p99=\s*(?P<p99>[\d.]+)ns"
+    r"^P\s+(?P<name>.+?)\s+mean=\s*(?P<mean>\S+)ns\s+"
+    r"p50=\s*(?P<p50>\S+)ns\s+p95=\s*(?P<p95>\S+)ns\s+"
+    r"p99=\s*(?P<p99>\S+)ns(?:\s.*)?$"
 )
+best_p99 = {}
+order = []
+run_metrics = []
 
-# Each metric appears once per run when --runs N is used. Keep the best
-# (lowest) P99 per metric — taking the worst would let local noise
-# anchor the regression budget. Order is preserved by first-seen.
-best_p99 = {}        # name -> lowest p99
-order = []           # first-seen order of metric names
-
-with open(log_path) as f:
-    for raw in f:
-        m = line_re.match(raw.rstrip("\n"))
-        if not m:
-            continue
-        name = m.group("name").strip()
-        p99 = float(m.group("p99"))
-        if name not in best_p99:
-            best_p99[name] = p99
-            order.append(name)
-        elif p99 < best_p99[name]:
-            best_p99[name] = p99
+try:
+    with open(log_path) as f:
+        for raw in f:
+            line = raw.rstrip("\n")
+            if line.startswith("ARIA_BENCH_RUN "):
+                if int(line.split()[1]) != len(run_metrics) + 1:
+                    raise ValueError("unexpected run marker")
+                run_metrics.append(set())
+                continue
+            if not line.startswith("P "):
+                continue
+            match = line_re.fullmatch(line)
+            if not match or not run_metrics:
+                raise ValueError(f"malformed percentile row: {line}")
+            name = match["name"].strip()
+            values = {key: float(match[key]) for key in ("mean", "p50", "p95", "p99")}
+            if not all(math.isfinite(v) and v >= 0 for v in values.values()):
+                raise ValueError(f"invalid measurement for {name}: {values}")
+            if not values["p50"] <= values["p95"] <= values["p99"]:
+                raise ValueError(f"unordered percentiles for {name}: {values}")
+            if name in run_metrics[-1]:
+                raise ValueError(f"duplicate metric in run {len(run_metrics)}: {name}")
+            run_metrics[-1].add(name)
+            p99 = values["p99"]
+            if name not in best_p99:
+                best_p99[name] = p99
+                order.append(name)
+            else:
+                best_p99[name] = min(best_p99[name], p99)
+    if len(run_metrics) != runs:
+        raise ValueError(f"expected {runs} runs, found {len(run_metrics)}")
+    for index, names in enumerate(run_metrics, 1):
+        missing = set(ceilings) - names
+        if missing:
+            raise ValueError(f"run {index} is missing metrics: {', '.join(sorted(missing))}")
+except (OSError, ValueError) as error:
+    print(f"error: {error}", file=sys.stderr)
+    sys.exit(2)
 
 results = [(name, best_p99[name], ceilings.get(name)) for name in order]
 seen_names = set(order)

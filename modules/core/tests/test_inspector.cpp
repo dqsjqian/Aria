@@ -33,7 +33,7 @@ TEST_CASE("GraphInspector: to_dot emits a well-formed digraph") {
     (void)dbl.get();
 
     std::string dot = GraphInspector::to_dot({static_cast<const Node*>(&dbl)}, "testG");
-    CHECK(dot.find("digraph testG") != std::string::npos);
+    CHECK(dot.find("digraph \"testG\"") != std::string::npos);
     CHECK(dot.find("Source") != std::string::npos);
     CHECK(dot.find("Derivation") != std::string::npos);
     // Labels embed Graphviz-style literal "\n" (backslash-n, not a real
@@ -79,6 +79,27 @@ TEST_CASE("GraphInspector: to_json is parseable and captures versions") {
     CHECK(json.find("\"name\":\"c\"") != std::string::npos);
     CHECK(json.find("\"edges\":[") != std::string::npos);
     CHECK(json.find("\"observed_version\":") != std::string::npos);
+}
+
+TEST_CASE("GraphInspector: JSON names escape every control character") {
+    Property<int> value{0};
+    std::string name;
+    for (int c = 0; c < 32; ++c) name.push_back(static_cast<char>(c));
+    value.set_debug_name(name);
+    const auto json = GraphInspector::to_json({&value});
+    for (int c = 0; c < 32; ++c) {
+        CHECK(json.find(static_cast<char>(c)) == std::string::npos);
+    }
+    CHECK(json.find("\\u0000") != std::string::npos);
+    CHECK(json.find("\\u001f") != std::string::npos);
+}
+
+TEST_CASE("GraphInspector: DOT quotes graph names and preserves label line breaks") {
+    Property<int> value{0};
+    value.set_debug_name("price\nEUR");
+    const auto dot = GraphInspector::to_dot({&value}, "a graph\"name");
+    CHECK(dot.starts_with("digraph \"a graph\\\"name\" {\n"));
+    CHECK(dot.find("Source\\nprice\\nEUR\\nd=") != std::string::npos);
 }
 
 TEST_CASE("GraphInspector: flush tracer records pull order") {

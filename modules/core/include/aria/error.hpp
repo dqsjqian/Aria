@@ -34,9 +34,8 @@
 //      `message` carries the human-facing text already.
 //
 //    * `Error::from_exception(...)`: canonical mapping from a thrown
-//      exception_ptr to a typed Error, recognising the framework's own
-//      sentinel exception types (`OperationCancelled`, `TimeoutError`,
-//      `CircularDependencyError`).
+//      exception_ptr to a typed Error. Framework-specific sentinels are
+//      classified at their owning subsystem's error boundary first.
 //
 //  Per docs/api-style.md S-1 the type lives in `aria::` and never
 //  forces the caller to qualify into an implementation namespace.
@@ -92,8 +91,8 @@ enum class ErrorKind : std::uint8_t {
     /// today binding errors propagate as exceptions.
     BindingFailure = 5,
 
-    /// Reactive graph reached `kMaxFlushRounds` -- the dependency DAG
-    /// contains a cycle. Maps `aria::CircularDependencyError`.
+    /// A reactive dependency cycle or non-converging flush was detected.
+    /// Maps `aria::CircularDependencyError`.
     GraphCycle = 6,
 
     /// A documented framework invariant was violated at runtime
@@ -244,9 +243,11 @@ struct Error {
         try {
             std::rethrow_exception(ex);
         } catch (const std::invalid_argument& e) {
-            return Error::user_error(e.what(), std::move(source_tag));
+            return Error{ErrorKind::UserError, Severity::Error, e.what(),
+                         std::move(source_tag), {}, ex};
         } catch (const std::out_of_range& e) {
-            return Error::user_error(e.what(), std::move(source_tag));
+            return Error{ErrorKind::UserError, Severity::Error, e.what(),
+                         std::move(source_tag), {}, ex};
         } catch (const std::exception& e) {
             return Error::async_failure(e.what(), std::move(source_tag), ex);
         } catch (...) {

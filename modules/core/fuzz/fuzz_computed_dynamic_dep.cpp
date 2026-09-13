@@ -30,11 +30,12 @@ TEST_CASE("L-17 fuzz: dynamic dependency drops unread branch under random walks"
     Property<int>  b{0};
     Property<bool> use_a{true};
 
+    int recompute_hits = 0;
     Computed<int> c{[&] {
+        ++recompute_hits;
         return use_a.get() ? a.get() : b.get();
     }};
-    int recompute_hits = 0;
-    auto sub = c.on_changed([&](int) { ++recompute_hits; });
+    auto sub = c.on_changed([](int) {});
 
     int last_seen = c.get();   // prime
     (void)last_seen;
@@ -72,6 +73,7 @@ TEST_CASE("L-17 fuzz: dynamic dependency drops unread branch under random walks"
         // Pull `c` to make any pending recompute happen now.
         const int after_c    = c.get();
         const int after_hits = recompute_hits;
+        CHECK(after_c == (use_a.peek() ? a.peek() : b.peek()));
 
         if (op == 2) {
             // Wrote the unread branch -> Computed must not fire.

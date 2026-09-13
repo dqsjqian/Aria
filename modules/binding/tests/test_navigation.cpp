@@ -17,6 +17,19 @@ struct PageVm : ViewModel {
 
 }  // namespace
 
+TEST_CASE("Navigator: cancellation can push a replacement while popping") {
+    Navigator nav;
+    nav.push<PageVm>(1);
+    nav.push<PageVm>(2);
+    auto token = nav.top_token();
+    std::shared_ptr<PageVm> replacement;
+    token.on_cancel([&] { replacement = nav.push<PageVm>(3); });
+    CHECK(nav.pop());
+    CHECK(nav.size() == 2);
+    CHECK(nav.current.get() == replacement);
+    CHECK(replacement->is_active().get());
+}
+
 TEST_CASE("Navigator: push activates new page and deactivates old current") {
     Navigator nav;
     auto a = nav.push<PageVm>(1);

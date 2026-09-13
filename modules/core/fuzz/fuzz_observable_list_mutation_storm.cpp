@@ -35,12 +35,15 @@ TEST_CASE("L-31 fuzz: event-driven mirror tracks snapshot under random storm") {
     auto sub = list.observe([&](const ListChange<int>& ch) {
         switch (ch.kind) {
             case ListChangeKind::Insert: {
+                REQUIRE(ch.index <= event_mirror.size());
+                REQUIRE(ch.item);
                 event_mirror.insert(
                     event_mirror.begin() + static_cast<std::ptrdiff_t>(ch.index),
                     ch.item ? *ch.item : 0);
                 break;
             }
             case ListChangeKind::Remove: {
+                REQUIRE(ch.index < event_mirror.size());
                 if (ch.index < event_mirror.size()) {
                     event_mirror.erase(event_mirror.begin()
                                        + static_cast<std::ptrdiff_t>(ch.index));
@@ -48,12 +51,16 @@ TEST_CASE("L-31 fuzz: event-driven mirror tracks snapshot under random storm") {
                 break;
             }
             case ListChangeKind::Replace: {
+                REQUIRE(ch.index < event_mirror.size());
+                REQUIRE(ch.item);
                 if (ch.index < event_mirror.size()) {
                     event_mirror[ch.index] = ch.item ? *ch.item : 0;
                 }
                 break;
             }
             case ListChangeKind::Move: {
+                REQUIRE(ch.from_index < event_mirror.size());
+                REQUIRE(ch.index < event_mirror.size());
                 if (ch.from_index < event_mirror.size()) {
                     int v = event_mirror[ch.from_index];
                     event_mirror.erase(event_mirror.begin()
@@ -69,7 +76,12 @@ TEST_CASE("L-31 fuzz: event-driven mirror tracks snapshot under random storm") {
                 break;
             }
             case ListChangeKind::Reset: {
+                REQUIRE(ch.snapshot);
                 event_mirror.clear();
+                for (const auto& item : *ch.snapshot) {
+                    REQUIRE(item);
+                    event_mirror.push_back(*item);
+                }
                 break;
             }
             case ListChangeKind::ItemChanged:

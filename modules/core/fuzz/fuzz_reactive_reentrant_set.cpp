@@ -26,7 +26,7 @@
 using namespace aria;
 using namespace aria::reactive;
 
-TEST_CASE("L-20 fuzz: re-entrant set stabilises or throws CircularDependencyError") {
+TEST_CASE("L-20 fuzz: acyclic re-entrant writes always stabilise") {
     fuzz::Rng rng{fuzz::seed(0xF1'00'5E7'20)};
 
     Property<int> a{0};
@@ -38,42 +38,21 @@ TEST_CASE("L-20 fuzz: re-entrant set stabilises or throws CircularDependencyErro
     for (std::size_t step = 0; step < fuzz::iters(); ++step) {
         const int prev = a.peek();
         const int delta = static_cast<int>(rng.u32(1, 5));
-        bool threw = false;
-        try {
-            a.set(prev + delta);
-        } catch (const CircularDependencyError&) {
-            threw = true;
-        }
-
-        // Either the chain stabilised cleanly -> b == a, or a cycle
-        // was raised and the graph recovered (every node Clean).
-        if (!threw) {
-            CHECK(b.get() == a.get());
-        } else {
-            // After a thrown CircularDependencyError, subsequent
-            // writes must keep working (graph is not poisoned).
-            int probe_before = b.peek();
-            a.set(a.peek() + 1);
-            CHECK(b.get() == a.get());
-            (void)probe_before;
-        }
+        REQUIRE_NOTHROW(a.set(prev + delta));
+        CHECK(b.get() == a.get());
     }
 }
 
-TEST_CASE("L-20 fuzz: self-set Effect converges (clear_sources prevents loop)") {
+TEST_CASE("L-20 fuzz: self-set Effect normalizes each external write once") {
     fuzz::Rng rng{fuzz::seed(0x5E1F'5E7'20)};
 
     Property<int> p{0};
 
-    // An Effect that conditionally writes its own dependency. Per
-    // L-17/L-20 clear_sources runs BEFORE fn body, so p.set() inside
-    // the body does not re-enqueue this Effect into the same flush.
+    // The active Effect is Computing, so writes to its own dependency
+    // do not re-enter the body. External writes still trigger it.
     Effect e{[&] {
         const int v = p.get();
         if (v < 1000 && (v % 2 == 0)) {
-            // Random no-op or +1 to drive shape variation.
-            // No actual recursion: clear_sources broke the upstream
-            // edge before fn ran.
             p.set(v + 1);
         }
     }};
@@ -83,6 +62,8 @@ TEST_CASE("L-20 fuzz: self-set Effect converges (clear_sources prevents loop)") 
         const int delta = static_cast<int>(rng.u32(1, 7));
         // External writes never throw -- self-set converges by L-20.
         p.set(prev + delta);
+        const int input = prev + delta;
+        CHECK(p.peek() == (input < 1000 && input % 2 == 0 ? input + 1 : input));
     }
     // Graph is still healthy after the storm.
     CHECK(p.get() >= 0);

@@ -12,7 +12,7 @@
 #   ├── include/aria/...     # public headers
 #   ├── lib/                    # static libs + import libs
 #   ├── bin/                    # DLLs (Windows)
-#   ├── cmake/aria/          # CMake package config
+#   ├── lib/cmake/aria/      # CMake package config
 #   ├── LICENSE
 #   ├── README.md
 #   └── CHANGELOG.md
@@ -28,15 +28,12 @@ set(ARIA_RELEASE_DIR "${ARIA_REPO_ROOT_DIR}/build/dist/tree"
     CACHE PATH "Output directory for release packaging"
 )
 
-# ── 1. Install targets into release/ prefix ──────────────────────────────────
-set(CMAKE_INSTALL_PREFIX "${ARIA_RELEASE_DIR}" CACHE PATH "" FORCE)
-
-# We re-use the existing install() rules from the root CMakeLists.txt,
-# but force the prefix to be release/ instead of system paths.
-# This is done by setting CMAKE_INSTALL_PREFIX before include(GNUInstallDirs).
+# Packaging uses its own explicit install prefix. Ordinary `cmake --install`
+# continues to respect the consumer's CMAKE_INSTALL_PREFIX.
 
 # ── 2. Custom target: package-release ────────────────────────────────────────
 add_custom_target(package-release
+    DEPENDS ${ARIA_INSTALL_TARGETS}
     COMMENT "Packaging aria release to ${ARIA_RELEASE_DIR}"
 )
 
@@ -49,10 +46,12 @@ add_custom_command(TARGET package-release PRE_BUILD
     COMMENT "  - cleaning previous release tree"
 )
 
-# Step 2a: cmake install into release/ (always use Release config)
+# Install the configuration whose artifacts the target just built.
 add_custom_command(TARGET package-release POST_BUILD
-    COMMAND ${CMAKE_COMMAND} --build "${CMAKE_BINARY_DIR}" --target install --config Release
+    COMMAND ${CMAKE_COMMAND} --install "${PROJECT_BINARY_DIR}"
+            --config "$<CONFIG>" --prefix "${ARIA_RELEASE_DIR}"
     COMMENT "  - installing targets"
+    VERBATIM
 )
 
 # Step 2b: copy top-level docs
@@ -77,7 +76,7 @@ set(ARIA_ARCHIVE_DIR "${ARIA_REPO_ROOT_DIR}/build/dist/archives")
 # create their parent dir as needed).
 
 if(WIN32)
-    # Windows: use PowerShell Compress-Archive for true .zip format
+    # CMake supplies both archive formats, without a platform shell.
     set(ARIA_ARCHIVE_EXT "zip")
     set(ARIA_ARCHIVE_PATH "${ARIA_ARCHIVE_DIR}/${ARIA_ARCHIVE_NAME}.${ARIA_ARCHIVE_EXT}")
 
@@ -89,7 +88,8 @@ if(WIN32)
     add_custom_command(TARGET package-archive POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${ARIA_ARCHIVE_DIR}"
         COMMAND ${CMAKE_COMMAND} -E remove -f "${ARIA_ARCHIVE_PATH}"
-        COMMAND powershell -Command "Compress-Archive -Path '${ARIA_RELEASE_DIR}\*' -DestinationPath '${ARIA_ARCHIVE_PATH}' -Force"
+        COMMAND ${CMAKE_COMMAND} -E chdir "${ARIA_RELEASE_DIR}"
+                ${CMAKE_COMMAND} -E tar cf "${ARIA_ARCHIVE_PATH}" --format=zip .
         COMMAND ${CMAKE_COMMAND} -E echo ""
         COMMAND ${CMAKE_COMMAND} -E echo "[OK] Archive created: ${ARIA_ARCHIVE_PATH}"
         COMMAND ${CMAKE_COMMAND} -E echo ""
@@ -107,8 +107,8 @@ else()
     add_custom_command(TARGET package-archive POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${ARIA_ARCHIVE_DIR}"
         COMMAND ${CMAKE_COMMAND} -E remove -f "${ARIA_ARCHIVE_PATH}"
-        COMMAND ${CMAKE_COMMAND} -E chdir "${ARIA_REPO_ROOT_DIR}/build/dist"
-                ${CMAKE_COMMAND} -E tar "czfv" "${ARIA_ARCHIVE_PATH}" "tree"
+        COMMAND ${CMAKE_COMMAND} -E chdir "${ARIA_RELEASE_DIR}"
+                ${CMAKE_COMMAND} -E tar czf "${ARIA_ARCHIVE_PATH}" .
         COMMAND ${CMAKE_COMMAND} -E echo ""
         COMMAND ${CMAKE_COMMAND} -E echo "[OK] Archive created: ${ARIA_ARCHIVE_PATH}"
         COMMAND ${CMAKE_COMMAND} -E echo ""
@@ -124,10 +124,10 @@ add_custom_command(TARGET package-release POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E echo "    include/    - public headers"
     COMMAND ${CMAKE_COMMAND} -E echo "    lib/        - static libraries + import libs"
     COMMAND ${CMAKE_COMMAND} -E echo "    bin/        - shared libraries, DLLs on Windows"
-    COMMAND ${CMAKE_COMMAND} -E echo "    cmake/      - CMake package configuration"
+    COMMAND ${CMAKE_COMMAND} -E echo "    lib/cmake/  - CMake package configuration"
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "  Usage in consumer CMake:"
-    COMMAND ${CMAKE_COMMAND} -E echo "    find_package(aria REQUIRED PATHS /path/to/release/cmake)"
+    COMMAND ${CMAKE_COMMAND} -E echo "    find_package(aria REQUIRED PATHS /path/to/release)"
     COMMAND ${CMAKE_COMMAND} -E echo "    target_link_libraries(myapp PRIVATE aria::aria)"
     COMMAND ${CMAKE_COMMAND} -E echo ""
     VERBATIM

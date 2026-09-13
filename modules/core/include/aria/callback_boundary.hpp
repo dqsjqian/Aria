@@ -29,7 +29,7 @@
 // Lifetime / threading
 // --------------------
 // * The sink is a function-pointer-based registration stored in an atomic
-//   variable. Installation, replacement, and read are all lock-free.
+//   variable. Installation, replacement, and read use atomic operations.
 // * The reporter is `noexcept`: a sink that throws is itself caught and
 //   degraded to a `stderr` fallback so the framework's noexcept boundaries
 //   stay honest.
@@ -79,14 +79,9 @@ using CallbackFailureSink = void (*)(const CallbackFailure&);
 
 namespace detail::callback_boundary {
 
-// Storage lives in libaria_abi and is exported through this accessor.
-// In the shipped link graph `libaria_abi` is a static archive that is
-// linked exclusively into `libaria_runtime`; every other shared
-// consumer (binding, platform adapters, host exe) reaches this same
-// physical slot by resolving against `libaria_runtime`. That is what
-// gives the framework a single per-process slot — NOT "static archive
-// linked into every shared consumer". See callback_boundary.cpp for
-// the constraints this places on future build-graph changes.
+// Shared builds store this slot in libaria_abi. Static builds link one
+// copy into the host executable; independently linked plugins should use the
+// shared build if they need process-wide diagnostic registration.
 ARIA_ABI_API std::atomic<CallbackFailureSink>& sink_storage() noexcept;
 
 inline std::string render_message_(const CallbackFailure& f) {
@@ -137,22 +132,11 @@ inline CallbackFailureSink set_callback_failure_sink(CallbackFailureSink sink) n
 /// will:
 ///   1. Try the installed sink first (if any).
 ///   2. If the sink throws, swallow it and fall through to the default.
-///   3. Otherwise route to the stderr fallback.
-inline void report_callback_failure(std::string_view   category,
-                                    std::exception_ptr eptr,
-                                    std::string_view   message = {}) noexcept {
-    CallbackFailure f{category, std::move(eptr), message};
-    if (auto* sink = detail::callback_boundary::sink_storage().load(std::memory_order_acquire);
-        sink != nullptr) {
-        try {
-            sink(f);
-            return;
-        } catch (...) {
-            // Sink itself threw — fall through.
-        }
-    }
-    detail::callback_boundary::default_sink_(f);
-}
+///   3. Otherwise route to the stderr fallback. Recursive reports use a minimal
+///      stderr message without invoking user code again.
+ARIA_ABI_API void report_callback_failure(std::string_view category,
+                                            std::exception_ptr exception,
+                                            std::string_view message = {}) noexcept;
 
 /// Convenience overload taking a precomputed message and no exception
 /// pointer (e.g. when the framework observed a contract violation it does

@@ -6,6 +6,7 @@
 #include "aria/runtime/dispatcher.hpp"
 
 #include <any>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <typeindex>
@@ -56,22 +57,41 @@ public:
     /// Subscribe with a dispatcher — incoming events are marshalled to the
     /// dispatcher's thread (e.g. the UI thread) before the handler fires.
     /// Use this if your handler touches UI and publishers may call you from
-    /// a worker thread.
+    /// a worker thread. The dispatcher is borrowed and must outlive the
+    /// subscription and any publish call already in progress. Releasing the
+    /// subscription suppresses queued handlers that have not started.
     template<typename T>
     [[nodiscard]] ::aria::Subscription subscribe_on(
         IDispatcher& dispatcher,
         std::function<void(const T&)> handler)
     {
-        auto shared_handler = std::make_shared<std::function<void(const T&)>>(
-            std::move(handler));
-        return subscribe<T>([&dispatcher, shared_handler](const T& ev) {
-            // Copy the event into a shared_ptr so the posted lambda can
-            // safely outlive the caller.
-            auto keep = std::make_shared<T>(ev);
-            dispatcher.post([shared_handler, keep]() {
-                (*shared_handler)(*keep);
+        struct Delivery {
+            std::atomic<bool> active{true};
+            std::function<void(const T&)> handler;
+            explicit Delivery(std::function<void(const T&)> fn) : handler(std::move(fn)) {}
+        };
+        auto state = std::make_shared<Delivery>(std::move(handler));
+        auto connection = subscribe<T>([&dispatcher, state](const T& event) {
+            if (!state->active.load(std::memory_order_acquire)) return;
+            auto keep = std::make_shared<T>(event);
+            dispatcher.post([weak = std::weak_ptr{state}, keep = std::move(keep)] {
+                if (auto delivery = weak.lock();
+                    delivery && delivery->active.load(std::memory_order_acquire)) {
+                    delivery->handler(*keep);
+                }
             });
         });
+        try {
+            return ::aria::Subscription{
+                [weak = std::weak_ptr{state}, connection = std::move(connection)]() mutable {
+                    if (auto delivery = weak.lock())
+                        delivery->active.store(false, std::memory_order_release);
+                    connection.release();
+                }};
+        } catch (...) {
+            state->active.store(false, std::memory_order_release);
+            throw;
+        }
     }
 
     void clear();

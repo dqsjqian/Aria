@@ -26,6 +26,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <unordered_set>
 
 using namespace aria;
 using namespace aria::binding;
@@ -46,6 +47,7 @@ struct FuzzView : IView {
 class FuzzAdapter : public IViewAdapter {
 public:
     std::atomic<std::size_t> set_int_calls_after_destroy{0};
+    std::unordered_set<const IView*> live_views;
 
     [[nodiscard]] std::string_view platform_name() const noexcept override {
         return "fuzz";
@@ -60,6 +62,10 @@ public:
     Subscription on_bool_changed(IView&, std::function<void(bool)>) override { return {}; }
 
     void set_int(IView& v, int value) override {
+        if (!live_views.contains(&v)) {
+            ++set_int_calls_after_destroy;
+            return;
+        }
         auto& fv = static_cast<FuzzView&>(v);
         if (fv.dead) ++set_int_calls_after_destroy;   // INVARIANT VIOLATION
         else        fv.current = value;
@@ -94,30 +100,39 @@ TEST_CASE("L-32 fuzz: binding survives view destruction at random moments") {
     fuzz::Rng rng{fuzz::seed(0xB1'DF'1'00'7E)};
 
     auto adapter = std::make_shared<FuzzAdapter>();
-    BindingEngine engine{adapter};
+    auto dispatcher = std::make_shared<runtime::SimpleDispatcher>();
+    auto policy = BindingEngine::DispatchPolicy::Direct;
+    SUBCASE("direct delivery") {}
+    SUBCASE("queued delivery") { policy = BindingEngine::DispatchPolicy::AlwaysPost; }
+    BindingEngine engine{adapter, dispatcher, policy};
     Property<int> source{0};
 
     for (std::size_t step = 0; step < fuzz::iters(); ++step) {
         // Spin up a fresh view, bind, exercise, then maybe destroy.
         auto view = std::make_unique<FuzzView>();
+        adapter->live_views.insert(view.get());
         engine.bind_int_oneway(source, *view);
 
         const std::uint32_t writes = rng.u32(0, 4);
         for (std::uint32_t i = 0; i < writes; ++i) {
             source.set(static_cast<int>(rng.u32()));
+            if (rng.coin()) dispatcher->pump();
         }
 
         // Decide: destroy now vs later. Mark `dead` BEFORE the dtor
         // runs so any setter callback that reaches the FakeAdapter
         // can detect "called into a corpse".
         view->dead = true;
+        adapter->live_views.erase(view.get());
         view.reset();
+        dispatcher->pump();
 
         // Pump more writes; per L-32 these MUST NOT route into the
         // destroyed view via a stale binding.
         for (std::uint32_t i = 0; i < writes; ++i) {
             source.set(static_cast<int>(rng.u32()));
         }
+        dispatcher->pump();
     }
 
     CHECK(adapter->set_int_calls_after_destroy.load() == 0);

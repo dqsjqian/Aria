@@ -29,6 +29,7 @@
 #include <doctest/doctest.h>
 
 #include "aria/diagnostics.hpp"
+#include "aria/callback_boundary.hpp"
 #include "fuzz_support.hpp"
 
 #include <cstdint>
@@ -53,6 +54,17 @@ TEST_CASE("D-22 fuzz: sink throws never reach the business path") {
     fuzz::Rng rng{fuzz::seed(0xD22'5177'0BAD)};
 
     const std::size_t steps = fuzz::iters();
+    static std::size_t reported = 0;
+    reported = 0;
+    const auto previous_reporter = set_callback_failure_sink([](const CallbackFailure& failure) {
+        CHECK(failure.category == "diagnostics.trace_sink");
+        CHECK(failure.exception != nullptr);
+        ++reported;
+    });
+    struct RestoreReporter {
+        CallbackFailureSink previous;
+        ~RestoreReporter() { set_callback_failure_sink(previous); }
+    } restore{previous_reporter};
 
     std::size_t invocations = 0;
     std::size_t throws_raised = 0;
@@ -138,5 +150,6 @@ TEST_CASE("D-22 fuzz: sink throws never reach the business path") {
     // the test passes vacuously.
     CHECK(invocations > 0);
     CHECK(throws_raised > 0);
+    CHECK(reported == throws_raised);
     CHECK_FALSE(has_trace_sink());
 }

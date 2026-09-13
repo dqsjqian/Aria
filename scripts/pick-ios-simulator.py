@@ -13,15 +13,16 @@ Both the GitHub macOS runner and a local machine ship pre-created,
 known-good device/runtime pairs, so selecting one of those avoids the
 pairing question entirely.
 
-Selection: the newest iOS runtime that has an available iPhone, and an
-iPhone within it. Runtime keys from `simctl list -j` are ordered oldest
-to newest, so the last match wins.
+Selection: the newest numeric iOS runtime that has an available iPhone.
+Within that runtime, prefer an already booted device and use a stable
+name/UDID tie-breaker, independently of the JSON object or array order.
 
 Exits non-zero with a message on stderr when no candidate exists, so the
 calling workflow step fails loudly instead of booting nothing.
 """
 
 import json
+import re
 import subprocess
 import sys
 
@@ -34,21 +35,30 @@ def main() -> int:
             capture_output=True,
             text=True,
         ).stdout
-    except (OSError, subprocess.CalledProcessError) as exc:
+        data = json.loads(raw)
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
         print(f"error: could not list simulators: {exc}", file=sys.stderr)
         return 1
 
-    data = json.loads(raw)
     chosen = None
+    chosen_rank = None
     for runtime, devices in data.get("devices", {}).items():
-        if "iOS" not in runtime:
+        match = re.fullmatch(r"com\.apple\.CoreSimulator\.SimRuntime\.iOS-(\d+(?:-\d+)*)", runtime)
+        if not match:
             continue
+        version = tuple(int(part) for part in match.group(1).split("-"))
+        version += (0,) * max(0, 3 - len(version))
         for dev in devices:
             if not dev.get("isAvailable"):
                 continue
             if not dev.get("name", "").startswith("iPhone"):
                 continue
-            chosen = (runtime, dev["name"], dev["udid"])
+            if not dev.get("udid"):
+                continue
+            rank = (version, dev.get("state") == "Booted", dev["name"], dev["udid"])
+            if chosen_rank is None or rank > chosen_rank:
+                chosen_rank = rank
+                chosen = (runtime, dev["name"], dev["udid"])
 
     if chosen is None:
         print(

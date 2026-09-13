@@ -71,8 +71,9 @@ std::vector<std::shared_ptr<Task>> fresh = fetch_tasks();
 tasks.reconcile(std::move(fresh), ById{});
 ```
 
-This emits the minimal edit stream — `Insert` / `Remove` / `Replace` /
-`Move` — rather than a `Reset`. That distinction matters: on `Reset`
+For unambiguous keys, this emits incremental `Insert` / `Remove` / `Replace` /
+`Move` events. Ambiguous duplicate keys use `Reset`; the algorithm does not
+promise the globally shortest edit stream. That distinction matters: on `Reset`
 observers must discard their mirror, so the view loses selection, scroll
 position, expansion state and row animations. A poll loop built on
 `clear()` + `insert_range` throws all of that away on every tick, even when
@@ -208,9 +209,13 @@ Virtualize a large list into pages:
 #include "aria/derived/paged_list.hpp"
 
 aria::PagedList<Task> paged{all_tasks, /*page_size=*/20};
-paged.set_page(0);  // show first 20 items
+paged.page_index().set(0);  // show first 20 items
 paged.page_count();  // total pages
 ```
+
+Re-windowing emits incremental Insert, Remove, and Move changes. Moving an
+existing row preserves its identity in downstream derived lists and adapters;
+changing the page does not require a full model reset.
 
 ### GroupedList
 

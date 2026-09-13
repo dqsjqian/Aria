@@ -22,13 +22,10 @@
 namespace aria::reactive {
 
 // ---------------------------------------------------------------------------
-//  Global Graph singleton. Function-local `static` is safe even when used
-//  from constructors of objects created before `main`.
+//  The graph storage lives in aria_abi, so every shared module observes the
+//  same tracker and flush state. Template operations remain inline here.
 // ---------------------------------------------------------------------------
-inline Graph& graph_instance() noexcept {
-    static Graph g;
-    return g;
-}
+ARIA_ABI_API Graph& graph_instance() noexcept;
 
 inline Graph& Node::graph() noexcept { return graph_instance(); }
 
@@ -39,6 +36,18 @@ inline Graph::Graph() noexcept = default;
 //  leave dangling Edge records pointing at freed memory -> UAF.
 // ---------------------------------------------------------------------------
 inline Node::~Node() noexcept {
+    retire_();
+}
+
+inline void Node::retire_() noexcept {
+    // Clear borrowed references before any member/capture destructor can
+    // re-enter the graph. No allocation and no graph-wide queue scan.
+    while (handles_head_) {
+        auto* handle = handles_head_;
+        handles_head_ = handle->next_;
+        handle->node_ = nullptr;
+        handle->previous_ = handle->next_ = nullptr;
+    }
     // Detach downstream observers (their Edge::source would dangle).
     while (observers_head_ != nullptr) {
         Edge* e = observers_head_;
@@ -52,7 +61,7 @@ inline Node::~Node() noexcept {
 // ---------------------------------------------------------------------------
 //  Node: intrusive linked-list manipulation of upstream / downstream edges.
 // ---------------------------------------------------------------------------
-inline void Node::attach_as_observer_of(Node& source, Edge& edge) {
+inline void Node::attach_as_observer_of(Node& source, Edge& edge) noexcept {
     edge.source           = &source;
     edge.observer         = this;
     edge.observed_version = source.version_;
@@ -165,7 +174,7 @@ inline void Node::mark_downstream_maybe_dirty() {
 // ---------------------------------------------------------------------------
 inline void Graph::on_source_changed(Node& src) {
     for (Edge* e = src.observers_head_; e != nullptr; e = e->next_observer) {
-        pending_.push_back(e->observer);
+        enqueue_dirty(*e->observer);
     }
     if (batch_depth_ == 0 && !flushing_) {
         flush();
@@ -187,12 +196,29 @@ inline void Graph::flush() {
     if (flushing_) return;  // no nested flush; recursive set() rolls over
     flushing_ = true;
 
+    // Install before copying or calling diagnostics: either can throw.
+    struct Guard {
+        Graph* g;
+        ~Guard() {
+            g->round_.clear();
+            g->flushing_ = false;
+        }
+    } guard{this};
+
     int rounds = 0;
 
     // Flush-tracing hook (installed by `GraphInspector`). The empty
     // `std::function` check is a single null-compare, so this line costs
     // essentially nothing when diagnostics are not enabled.
-    const FlushTraceFn& trace = flush_trace_hook_();
+    const auto trace = flush_trace_hook_();
+    const auto trace_phase = [&](int phase, const Node* node, int round, bool changed) {
+        if (!trace) return;
+        try {
+            (*trace)(phase, node, round, changed);
+        } catch (...) {
+            ::aria::report_callback_failure("reactive.flush_tracer", std::current_exception());
+        }
+    };
 
     // Bridge to the unified diagnostic sink. Same zero-cost
     // contract: when no sink is installed, `has_trace_sink()` is one
@@ -210,14 +236,17 @@ inline void Graph::flush() {
                               std::move(payload));
     };
 
-    if (trace) trace(0 /*FlushBegin*/, nullptr, 0, false);
+    trace_phase(0 /*FlushBegin*/, nullptr, 0, false);
     publish_phase(::aria::trace::ReactivePhase::FlushBegin, nullptr, 0, false);
 
-    // Reset the flushing flag even on exception unwind.
-    struct Guard {
-        Graph* g;
-        ~Guard() { g->flushing_ = false; }
-    } guard{this};
+    // A diagnostic callback may retire its node. Re-read the borrowed
+    // handle after each callback, including the unified trace sink.
+    auto trace_node = [&](int phase, ::aria::trace::ReactivePhase category,
+                          const detail::NodeHandle& node, bool changed) {
+        if (!node) return;
+        trace_phase(phase, node.get(), rounds, changed);
+        if (node) publish_phase(category, node.get(), rounds, changed);
+    };
 
     while (!pending_.empty()) {
         if (++rounds > kMaxFlushRounds) {
@@ -230,50 +259,55 @@ inline void Graph::flush() {
                                  + " rounds -- likely a circular dependency. "
                                  + "Pending nodes still dirty:";
             int printed = 0;
-            for (Node* n : pending_) {
+            for (const auto& n : pending_) {
+                if (!n) continue;
                 if (printed++ >= 16) { detail += " ..."; break; }
                 detail += "\n  - ";
                 detail += n->effective_debug_name();
             }
+            for (const auto& n : pending_) if (n) n->queued_ = false;
             pending_.clear();
             throw CircularDependencyError(detail);
         }
 
         // Snapshot the current round; new entries during pull land in the
         // fresh empty `pending_` and will be processed in the next round.
-        std::vector<Node*> round;
-        round.swap(pending_);
+        round_.swap(pending_);
+        for (const auto& n : round_) if (n) n->queued_ = false;
 
         // Sort by depth so parents resolve before children (the essence
         // of glitch-free evaluation), then de-duplicate.
-        std::sort(round.begin(), round.end(),
-                  [](Node* a, Node* b) { return a->depth() < b->depth(); });
-        round.erase(std::unique(round.begin(), round.end()), round.end());
+        std::sort(round_.begin(), round_.end(),
+                  [](const auto& a, const auto& b) {
+                      if (!a || !b) return !a && static_cast<bool>(b);
+                      if (a->depth() != b->depth()) return a->depth() < b->depth();
+                      return a->node_id_ < b->node_id_;
+                  });
 
-        if (trace) trace(1 /*RoundBegin*/, nullptr, rounds, false);
+        trace_phase(1 /*RoundBegin*/, nullptr, rounds, false);
         publish_phase(::aria::trace::ReactivePhase::RoundBegin, nullptr, rounds, false);
 
-        for (Node* n : round) {
+        for (const auto& n : round_) {
+            if (!n) continue;
             // A node may have been pulled by an earlier entry in this
             // same round (via the upstream recursion inside pull()),
             // reaching Clean state. Skip those.
             if (n->state() == NodeState::Clean) {
-                if (trace) trace(3 /*SkipClean*/, n, rounds, false);
-                publish_phase(::aria::trace::ReactivePhase::SkipClean, n, rounds, false);
+                trace_node(3, ::aria::trace::ReactivePhase::SkipClean, n, false);
                 continue;
             }
-            if (trace) trace(2 /*Pull*/, n, rounds, false);
-            publish_phase(::aria::trace::ReactivePhase::Pull, n, rounds, false);
+            trace_node(2, ::aria::trace::ReactivePhase::Pull, n, false);
+            if (!n) continue;
             const bool changed = pull(*n);
-            if (trace) trace(4 /*Recomputed*/, n, rounds, changed);
-            publish_phase(::aria::trace::ReactivePhase::Recomputed, n, rounds, changed);
+            trace_node(4, ::aria::trace::ReactivePhase::Recomputed, n, changed);
         }
 
-        if (trace) trace(5 /*RoundEnd*/, nullptr, rounds, false);
+        trace_phase(5 /*RoundEnd*/, nullptr, rounds, false);
         publish_phase(::aria::trace::ReactivePhase::RoundEnd, nullptr, rounds, false);
+        round_.clear();
     }
 
-    if (trace) trace(6 /*FlushEnd*/, nullptr, rounds, false);
+    trace_phase(6 /*FlushEnd*/, nullptr, rounds, false);
     publish_phase(::aria::trace::ReactivePhase::FlushEnd, nullptr, rounds, false);
 }
 
@@ -307,51 +341,68 @@ inline void Graph::flush() {
 // ---------------------------------------------------------------------------
 inline bool Graph::pull(Node& n) {
     if (n.state() == NodeState::Clean) return false;
+    if (n.state() == NodeState::Computing) return pull_settle_(n);
 
-    // ── Settle MaybeDirty upstreams iteratively (depth-first) ──────────
-    //
-    // Every reachable MaybeDirty node deeper in the chain will have its
-    // own MaybeDirty parents resolved before we evaluate it, by ordering
-    // the stack so that ancestors precede descendants in the pop order.
-    // We use a tiny on-demand worklist rather than allocating a member
-    // buffer, to keep `Graph` single-purpose.
-    {
-        std::vector<Node*> work;
-        work.reserve(8);
-        // Seed: every MaybeDirty source of `n` (and recursively).
-        n.for_each_source([&](const Edge& e) {
-            if (e.source->state() == NodeState::MaybeDirty) {
-                work.push_back(e.source);
-            }
-        });
-        while (!work.empty()) {
-            Node* cur = work.back();
-            // Look for a MaybeDirty parent of `cur` that we haven't
-            // settled yet. If there is one, push it and recurse via
-            // the worklist; otherwise we can resolve `cur` now.
-            Node* unresolved = nullptr;
-            cur->for_each_source([&](const Edge& e) {
-                if (!unresolved && e.source->state() == NodeState::MaybeDirty) {
-                    unresolved = e.source;
-                }
-            });
-            if (unresolved) {
-                work.push_back(unresolved);
-                continue;
-            }
-            work.pop_back();
-            // All parents are Clean or Dirty (i.e. they have a definitive
-            // version). Resolve `cur` via the standard pull machinery.
-            // Important: we must NOT recurse — call `pull` only for a
-            // node whose own MaybeDirty parents have all been settled,
-            // which is the case here.
-            if (cur->state() != NodeState::Clean) {
-                this->pull_settle_(*cur);
+    bool has_unsettled_parent = false;
+    n.for_each_source([&](const Edge& e) {
+        has_unsettled_parent |= e.source->state() == NodeState::MaybeDirty;
+    });
+    if (!has_unsettled_parent) return pull_settle_(n);
+
+    // Only a pull through unresolved ancestors needs a worklist. Each
+    // entered frame marks the active DFS path, so MaybeDirty cycles are
+    // diagnosed before the worklist can grow without bound.
+    struct Frame {
+        detail::NodeHandle node;
+        bool entered = false;
+    };
+    std::vector<Frame> work;
+    struct VisitGuard {
+        std::vector<Frame>& work;
+        ~VisitGuard() {
+            for (const auto& frame : work) {
+                if (frame.node && frame.entered) frame.node->resolving_ = false;
             }
         }
-    }
+    } visit_guard{work};
+    work.push_back({detail::NodeHandle{&n}, false});
+    while (!work.empty()) {
+        if (!work.back().node) { work.pop_back(); continue; }
+        auto& frame = work.back();
+        Node& current = *frame.node;
+        if (!frame.entered) {
+            if (current.resolving_) {
+                std::string path;
+                for (const auto& entry : work) {
+                    if (!entry.node) continue;
+                    if (!path.empty()) path += " -> ";
+                    path += entry.node->effective_debug_name();
+                }
+                throw CircularDependencyError(
+                    "reactive::Graph::pull detected an unresolved dependency cycle: " + path);
+            }
+            current.resolving_ = true;
+            frame.entered = true;
+        }
 
-    return pull_settle_(n);
+        Node* unresolved = nullptr;
+        current.for_each_source([&](const Edge& e) {
+            if (!unresolved && e.source->state() == NodeState::MaybeDirty) {
+                unresolved = e.source;
+            }
+        });
+        if (unresolved) {
+            work.push_back({detail::NodeHandle{unresolved}, false});
+            continue;
+        }
+
+        auto ready = std::move(frame.node);
+        current.resolving_ = false;
+        work.pop_back();
+        const bool changed = pull_settle_(*ready);
+        if (work.empty()) return changed;
+    }
+    return false; // The requested node was retired by an upstream callback.
 }
 
 // ---------------------------------------------------------------------------
@@ -367,9 +418,10 @@ inline bool Graph::pull_settle_(Node& n) {
         std::string path;
         std::size_t cycle_start = pulling_stack_.size();
         for (std::size_t i = 0; i < pulling_stack_.size(); ++i) {
-            if (pulling_stack_[i] == &n) { cycle_start = i; break; }
+            if (pulling_stack_[i].get() == &n) { cycle_start = i; break; }
         }
         for (std::size_t i = cycle_start; i < pulling_stack_.size(); ++i) {
+            if (!pulling_stack_[i]) continue;
             path += pulling_stack_[i]->effective_debug_name();
             path += " -> ";
         }
@@ -383,7 +435,8 @@ inline bool Graph::pull_settle_(Node& n) {
     if (n.state() == NodeState::MaybeDirty) {
         bool any_upstream_changed = false;
         n.for_each_source([&](const Edge& e) {
-            if (e.source->version() != e.observed_version) {
+            if (e.source->state() == NodeState::Computing ||
+                e.source->version() != e.observed_version) {
                 any_upstream_changed = true;
             }
         });
@@ -396,9 +449,13 @@ inline bool Graph::pull_settle_(Node& n) {
 
     // Dirty: perform the actual recomputation. Keep pulling_stack_
     // consistent across exceptions via a small RAII guard.
-    pulling_stack_.push_back(&n);
+    // Keep self-cancelling reactions and their captures alive through all
+    // post-callback state writes, exception handling and propagation.
+    auto keep_alive = n.retain_for_recompute();
+    detail::NodeHandle target{&n};
+    pulling_stack_.emplace_back(&n);
     struct StackGuard {
-        std::vector<Node*>* stack;
+        std::vector<detail::NodeHandle>* stack;
         ~StackGuard() { if (stack) stack->pop_back(); }
     } guard{&pulling_stack_};
 
@@ -408,16 +465,17 @@ inline bool Graph::pull_settle_(Node& n) {
         changed = n.recompute();
     } catch (...) {
         // Leave the node in a recoverable state before unwinding.
-        n.set_state_(NodeState::Clean);
+        if (target) target->set_state_(NodeState::Clean);
         throw;
     }
+    if (!target) return false;
     n.set_state_(NodeState::Clean);
 
     if (changed) {
         // Value actually moved -> seed the next round with our downstream.
         n.mark_downstream_maybe_dirty();
         n.for_each_observer([&](Edge& e) {
-            this->pending_.push_back(e.observer);
+            this->enqueue_dirty(*e.observer);
         });
     }
     return changed;

@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "")
 
 project(aria
-    VERSION 1.2.1
+    VERSION 2.0.0
     DESCRIPTION "Modern C++20 MVVM framework — cross-platform, layered, coroutine-first"
     HOMEPAGE_URL "https://github.com/dqsjqian/Aria"
     LANGUAGES CXX
@@ -61,7 +61,12 @@ if(NOT ARIA_ALLOW_BUILD_ROOT AND CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_
 endif()
 
 # ── Project meta ─────────────────────────────────────────────────────────────
-set(CMAKE_CXX_STANDARD 20)
+if(NOT DEFINED CMAKE_CXX_STANDARD)
+    set(CMAKE_CXX_STANDARD 20)
+endif()
+if(CMAKE_CXX_STANDARD LESS 20)
+    message(FATAL_ERROR "Aria requires C++20 or later")
+endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -86,7 +91,7 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 option(ARIA_BUILD_TESTS      "Build tests"              ON)
 option(ARIA_BUILD_BENCHMARK  "Build benchmark"          ON)
 option(ARIA_BUILD_DOCS       "Build Doxygen docs"       OFF)
-option(ARIA_BUILD_SHARED     "Build runtime/binding as SHARED" ON)
+option(ARIA_BUILD_SHARED     "Build compiled modules as SHARED" ON)
 
 option(ARIA_BUILD_QT6        "Build Qt6 adapter"        OFF)
 option(ARIA_BUILD_APPKIT     "Build macOS AppKit adapter" OFF)
@@ -94,7 +99,9 @@ option(ARIA_BUILD_UIKIT      "Build iOS UIKit adapter"  OFF)
 option(ARIA_BUILD_HTTP       "Build HTTP/REST/SSE adapter (Web)" OFF)
 option(ARIA_HTTP_ENABLE_TLS  "Enable HTTPS in the HTTP adapter (builds OpenSSL from source)" ON)
 option(ARIA_BUILD_JNI        "Build Android JNI adapter" OFF)
-option(ARIA_BUILD_WASM       "Build WebAssembly adapter" OFF)
+if(ARIA_BUILD_WASM)
+    message(FATAL_ERROR "The WebAssembly adapter is not implemented; ARIA_BUILD_WASM is unsupported")
+endif()
 
 # ── Includes ─────────────────────────────────────────────────────────────────
 include(PlatformDetect)
@@ -106,33 +113,6 @@ add_library(aria_warnings INTERFACE)
 aria_set_warnings(aria_warnings)
 aria_apply_sanitizers(aria_warnings)
 add_library(aria::warnings ALIAS aria_warnings)
-
-# ── macOS ld duplicate-library suppression ───────────────────────────────────
-#
-# `aria_abi` is a STATIC archive that participates in several transitive
-# link paths (it is in `aria_core`'s INTERFACE link list and also in
-# `aria_runtime` / `aria_binding` PUBLIC link lists, since the SHARED
-# libraries physically absorb it). Apple's `ld-prime` (Xcode 15+) emits
-# `ld: warning: ignoring duplicate libraries: '.../libaria_abi.a'` for
-# every such redundancy on every binary. The redundancy is harmless
-# (one physical archive, listed twice), but a build with warnings
-# treated as errors would be derailed by it. Pass
-# `-Wl,-no_warn_duplicate_libraries` to silence this specific warning
-# while keeping every other -Wl,-w* default in place.
-#
-# We attach it to the project-wide `aria_warnings` INTERFACE target so
-# every binary in the tree picks it up, including tests, acceptance gates,
-# and adapters. Linux / GNU ld and MSVC link.exe do not emit this warning,
-# so we gate strictly on Apple.
-if(APPLE)
-    include(CheckLinkerFlag)
-    check_linker_flag(CXX "-Wl,-no_warn_duplicate_libraries"
-                     ARIA_LD_HAS_NO_WARN_DUPLICATE_LIBRARIES)
-    if(ARIA_LD_HAS_NO_WARN_DUPLICATE_LIBRARIES)
-        target_link_options(aria_warnings INTERFACE
-            "-Wl,-no_warn_duplicate_libraries")
-    endif()
-endif()
 
 # Threads
 find_package(Threads REQUIRED)
@@ -172,23 +152,9 @@ endif()
 
 if(ARIA_BUILD_HTTP)
     if(ARIA_HTTP_ENABLE_TLS)
-        # Self-contained build: always build OpenSSL from the vendored
-        # third_party/openssl source.  Never rely on a system-installed
-        # OpenSSL (Homebrew / MSYS2 pacman / apt) — the framework must not
-        # depend on whether the host happens to have OpenSSL installed.
-        # Source builds on Windows MSYS2 need perl + sh + mingw32-make;
-        # BuildOpenSSL.cmake probes all of them from the compiler location.
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/openssl/Configure")
-            message(STATUS "Building OpenSSL from source for aria::http TLS")
-            include(BuildOpenSSL)
-        else()
-            message(WARNING
-                "ARIA_HTTP_ENABLE_TLS=ON but third_party/openssl source is "
-                "missing (no Configure script). aria::http will be built "
-                "without TLS support. Run 'git submodule update --init "
-                "third_party/openssl' to fetch the vendored OpenSSL source.")
-            set(ARIA_HTTP_ENABLE_TLS OFF CACHE BOOL "" FORCE)
-        endif()
+        # Reuse complete parent targets, otherwise build vendored OpenSSL.
+        # The helper rejects missing source/partial parent configuration.
+        include(BuildOpenSSL)
     endif()
     add_subdirectory(modules/adapters/http)
 endif()
@@ -237,6 +203,11 @@ endif()
 if(ARIA_BUILD_DOCS)
     find_package(Doxygen QUIET)
     if(DOXYGEN_FOUND)
+        find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
+        set(ARIA_DOCS_SOURCE_REVISION "main" CACHE STRING
+            "Git revision used for API reference source links")
+        set(ARIA_DOCS_REPOSITORY_URL "${PROJECT_HOMEPAGE_URL}" CACHE STRING
+            "GitHub repository used for API reference source links")
         set(ARIA_DOCS_OUTPUT_DIR "${CMAKE_BINARY_DIR}/docs")
         if(TARGET Doxygen::dot)
             set(ARIA_DOXYGEN_HAVE_DOT "YES")
@@ -248,33 +219,28 @@ if(ARIA_BUILD_DOCS)
             "${CMAKE_BINARY_DIR}/Doxyfile"
             @ONLY)
         add_custom_target(aria_docs
+            COMMAND ${CMAKE_COMMAND} -E rm -rf "${ARIA_DOCS_OUTPUT_DIR}/html"
             COMMAND ${DOXYGEN_EXECUTABLE} "${CMAKE_BINARY_DIR}/Doxyfile"
+            COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/prepare-docs-html.py"
+                "${ARIA_DOCS_OUTPUT_DIR}/html"
+            COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-docs-html.py"
+                "${ARIA_DOCS_OUTPUT_DIR}/html"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
             COMMENT "Generating Aria API reference with Doxygen → ${ARIA_DOCS_OUTPUT_DIR}/html"
             VERBATIM)
         message(STATUS "  API docs        : aria_docs target (Doxygen ${DOXYGEN_VERSION})")
     else()
-        message(WARNING
+        message(FATAL_ERROR
             "ARIA_BUILD_DOCS=ON but Doxygen was not found; the 'aria_docs' "
             "target was not created. Install doxygen (and optionally "
             "graphviz) to build the API reference.")
     endif()
 endif()
 
-# ── Release packaging ────────────────────────────────────────────────────────
-# Include this BEFORE GNUInstallDirs so PackageRelease.cmake can override
-# CMAKE_INSTALL_PREFIX to point to build/dist/tree/.
-#
-# Only meaningful when Aria is the top-level project. As a submodule the
-# parent project owns install prefix and packaging policy, so we skip
-# this entirely (otherwise we would silently hijack the parent's
-# CMAKE_INSTALL_PREFIX).
-if(PROJECT_IS_TOP_LEVEL)
-    include(PackageRelease)
-endif()
-
 # ── Install / export (only when built standalone, not as a subdirectory) ─────
-if(PROJECT_IS_TOP_LEVEL)
+if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     include(GNUInstallDirs)
     include(CMakePackageConfigHelpers)
 
@@ -392,6 +358,7 @@ if(PROJECT_IS_TOP_LEVEL)
         ${CMAKE_CURRENT_BINARY_DIR}/ariaConfigVersion.cmake
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/aria
     )
+    include(PackageRelease)
 endif()
 
 # ── Summary ──────────────────────────────────────────────────────────────────

@@ -77,6 +77,10 @@ background_work().start_detached();
 
 Cooperative cancellation. A `CancellationSource` owns the flag; a `CancellationToken` is a read-only view.
 
+Destroying a source cancels its outstanding tokens and wakes cancellation
+waiters. Move assignment does the same for the destination's previous state
+before taking ownership of the incoming state; self-move is a no-op.
+
 ```cpp
 aria::async::CancellationSource src;
 aria::async::CancellationToken tok = src.token();

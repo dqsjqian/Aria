@@ -39,7 +39,7 @@ enum class ListChangeKind {
     Remove,       // single-item remove
     Replace,      // single-item replacement
     ItemChanged,  // T's own on_changed fired
-    Reset,        // full clear
+    Reset,        // replace the whole mirror with snapshot
     Move,         // single-item position change
 };
 ```
@@ -52,40 +52,40 @@ break binary compatibility.
 ### D-2: ListChange<T> field semantics
 
 ```cpp
-struct ListChange<T> {
+template<class T>
+struct ListChange {
     ListChangeKind kind;
-    std::size_t    index = 0;
-    const T*       item  = nullptr;
-    std::size_t    from_index = 0;   // only used by Move
+    std::size_t index = 0;
+    std::shared_ptr<T> item;
+    std::size_t from_index = 0;
+    std::shared_ptr<const std::vector<std::shared_ptr<T>>> snapshot;
 };
 ```
 
 | `kind` | meaning of `index` | meaning of `item` | `from_index` |
 |---|---|---|---|
-| `Insert` | element's position after insertion | raw pointer to the new element (lifetime ≥ emit) | unused, always 0 |
-| `Remove` | element's position before removal | raw pointer to the removed element (**still valid during emit**) | unused, always 0 |
-| `Replace` | position of the replaced element | raw pointer to the **new** element | unused |
-| `ItemChanged` | element's current position | raw pointer to that element | unused |
-| `Reset` | 0 | `nullptr` | unused |
-| `Move` | position **after** the move | raw pointer to the moved element | position **before** the move |
+| `Insert` | position after insertion into the receiver's mirror | owning handle to the inserted element | 0 |
+| `Remove` | position before removal from the mirror | owning handle to the removed element | 0 |
+| `Replace` | position of the replaced element | owning handle to the new element | 0 |
+| `ItemChanged` | element's position in the mirror | owning handle to that element | 0 |
+| `Reset` | 0 | empty | 0 |
+| `Move` | position after the move in the mirror | owning handle to the moved element | position before the move |
 
-### D-3: lifetime of the `item` pointer
+`Reset` always carries a non-null `snapshot`, including for an empty list.
+Other kinds carry no snapshot. The snapshot contains the complete replacement
+sequence, not another stream of edits.
 
-The `item` pointer is **always valid for the duration of the emit
-callback**:
-- `Insert / Replace / ItemChanged / Move` — the element is in the
-  list (or has just been added), so the underlying `shared_ptr<T>`
-  refcount is ≥ 1.
-- `Remove` — the framework **MUST** keep a temporary
-  `shared_ptr<T>` keep-alive during the emit so observers can read
-  `item` without it disappearing under them. `ObservableList` already
-  does this (`std::vector<std::shared_ptr<T>> removed; ...
-  emit(... removed.back().get() ...)`).
-- `Reset` — `item == nullptr`; observers MUST NOT dereference.
+### D-3: event payloads own their elements
 
-Observers MUST NOT keep the `item` pointer past the emit callback. To
-keep a long-lived reference, re-fetch `at(index)` from the source
-list.
+Copying an event retains its `item` or `snapshot`, so adapters can queue it
+across threads without borrowing an element from the source. The pointed-to
+`T` remains a shared, potentially mutable object: owning an event preserves
+identity and lifetime, not a deep historical copy of each field.
+
+Consumers MUST use `change.item` and `change.snapshot` to interpret events.
+They MUST NOT fetch `source.at(change.index)` or a later source snapshot to
+recover an event payload. The source may already contain later batch edits
+or a reentrant mutation made by an earlier observer.
 
 ---
 
@@ -104,34 +104,36 @@ list.
 
 `move(from, to)` with `from == to` or out-of-range emits **no** event.
 
-### D-11: batch ops emit multiple events, indices are "as observed"
+### D-11: batch events use incremental mirror coordinates
 
-`insert_range(pos, first, last)` and `remove_range(pos, count)` /
-`remove_all(pred)` emit one single-element event per affected element:
+Batch operations commit their structural changes efficiently, then deliver
+an ordered edit stream. Apply each event to the result of applying all
+preceding events; the producer may already hold the final batch state.
 
-- **Order**: events are emitted in operation order.
-- **Index semantics**: each event's `index` reflects the list state
-  **at the moment of THAT emit** — NOT the state at batch-start or
-  batch-end.
-  - `insert_range(0, [a, b, c])` → `Insert(0, a)`, `Insert(1, b)`,
-    `Insert(2, c)`.
-  - `remove_range(1, 2)` over `[A, B, C, D]` → `Remove(1, B)`,
-    `Remove(1, C)` (the second emit sees the list as `[A, C, D]`).
-- This guarantees that any observer rebuilding state incrementally
-  from the event stream stays consistent.
+- `insert_range(0, [a, b, c])` emits `Insert(0, a)`, `Insert(1, b)`,
+  `Insert(2, c)`.
+- `remove_range(1, 2)` over `[A, B, C, D]` emits `Remove(1, B)` and
+  `Remove(1, C)`. The receiver's mirror becomes `[A, C, D]`, then `[A, D]`.
+- Every batch is queued before fanout. Reentrant edits are appended after
+  the already committed batch and delivered after the current fanout.
 
-### D-12: Reset means "discard everything"
+This permits one vector insertion or compaction for a whole range while
+keeping a deterministic stream for every adapter. Source reads during a
+callback are live reads; event coordinates belong to the receiver's mirror.
 
-After `clear()` emits `Reset`, the list is genuinely empty.
-On receiving `Reset`, observers SHOULD:
-1. wipe their mirror state;
-2. NOT wait for follow-up Insert/Remove events (any subsequent
-   `push_back` is a fresh stream).
+### D-12: Reset replaces the complete mirror
+
+On `Reset`, replace the mirror with `*change.snapshot`. The replacement may
+be nonempty, for example after a derived view rebuild. No follow-up inserts
+are required to describe that snapshot. `clear()` emits an empty snapshot.
 
 ### D-13: ItemChanged is best-effort, only when T fits the convention
 
 `ObservableList<T>` installs a per-item subscription only when `T`
 exposes `Subscription on_changed(std::function<void(const T&)>)`.
+One subscription is installed per distinct object handle. If the same object
+occupies multiple rows, ItemChanged emits once for every valid occurrence,
+using indices frozen when the notification was produced.
 `Property<U>` and friends qualify; user-defined types that don't have
 that signature simply never get `ItemChanged` events — by design, not
 a bug.
@@ -140,11 +142,11 @@ ItemChanged on derived lists (FilteredList / SortedList / MappedList)
 does NOT necessarily mirror upstream events 1:1:
 - `FilteredList` only forwards ItemChanged for elements that pass its
   predicate.
-- `MappedList` does NOT forward upstream ItemChanged (its output is a
-  freshly-mapped T, with no `on_changed` concept).
-- `SortedList` may emit a Move and an ItemChanged in either order
-  when the change moves the element to a different sorted position
-  (relative ordering between the two is implementation-private).
+- `MappedList` remaps the element and emits Replace with the new owning
+  handle, so downstream mirrors adopt the new object identity.
+- `SortedList` emits Move followed by ItemChanged at the destination when
+  the value changes its sorted position. Both belong to one ordered batch.
+  A value change that retains its position emits only ItemChanged.
 
 Derived-list specifics: see D-30.
 
@@ -184,29 +186,33 @@ Guarantees:
    An in-sync reconcile emits nothing and returns 0.
 5. **Return value** is the number of events emitted.
 
-Complexity is O(n) expected. This is a *sequence* reconcile, not a
-minimum-edit-distance diff: it removes and inserts by key, then settles order
-with at most one Move per out-of-place element. Myers would occasionally emit
-one fewer Move, at the cost of O(ND) time and a substantially harder
-correctness argument — and list adapters animate Move identically either way.
+An unchanged sequence or append-only update takes expected O(n) work.
+Arbitrary reorderings can take O(n²) because suffix lookup and vector moves
+are linear. This is a keyed sequence reconciliation, not a minimum-edit-distance
+algorithm. Null target handles are ignored. Duplicate target keys produce one
+empty Reset followed by inserts, all in the same ordered batch.
 
 ---
 
 ## 3. Re-entrancy semantics
 
-### D-20: emit allows unsubscribe / subscribe / further mutation
+### D-20: unsubscribe, subscribe, and reentrant edits
 
-Per [`lifecycle.md`](./lifecycle.md) **L-13** and **L-31**,
-`abi::SignalErased::emit` is "snapshot-then-invoke":
+Each fanout snapshots its subscribers and checks connection activity before
+invocation. Disconnecting a later subscriber prevents its callback in the
+current fanout; a callback already executing on another thread may finish.
+No user callback or capture destructor runs under the signal registry lock.
 
-- Disconnecting your own (or anyone else's) subscription from inside
-  an event callback is safe; the current emit still runs the
-  snapshot it took, the next emit honours the disconnect.
-- Mutating the same list from inside an event callback (`push_back`,
-  `remove_at`, etc.) is **allowed** but **not recommended** — it
-  triggers nested emits and deepens the call stack. The framework
-  does NOT auto-batch nested mutations; the caller decides whether
-  to wrap in `reactive::batch`.
+List signals serialize nested mutations behind their current fanout and any
+already queued batch. They do not recursively deliver the nested edit ahead
+of older events. Reactive batching is separate and controls graph flushes.
+
+New subscribers skip events committed before their subscription, including
+the remaining events of an already queued batch. This allows a view created
+inside an observer to initialize from the current source snapshot without
+replaying that old batch twice. Initialization through separate `snapshot()`
+and `observe()` calls must still be serialized against concurrent writers;
+those two calls are not an atomic operation.
 
 ### D-21: exceptions thrown from a handler are swallowed
 
@@ -245,8 +251,9 @@ necessarily map 1:1 to upstream events.
 - Upstream `Insert(idx, x)`: locates the right position in the sorted
   view and emits `Insert(sorted_idx, x)`.
 - Upstream `Remove`: emits `Remove(sorted_idx)`.
-- Upstream `ItemChanged` that perturbs the order: may emit a `Move`
-  + `ItemChanged` pair (relative ordering is observer-opaque).
+- Upstream `ItemChanged` that changes the order emits Move followed by
+  ItemChanged at the destination. Downstream predicates and mappers therefore
+  see both the new position and the changed value.
 - Upstream `Reset`: emits `Reset`.
 - Upstream `Move`: **typically not observable** in the sorted view —
   sort already rearranged the elements, so a physical upstream move
@@ -254,10 +261,10 @@ necessarily map 1:1 to upstream events.
 
 ### D-32: MappedList<Source, Target>
 
-- Strict 1:1 mapping: every upstream event maps to one local event
-  with the same index (Map preserves position).
-- ItemChanged is NOT forwarded (`Target` is derived through the mapper
-  function and is not reactive itself).
+- Mapping preserves positions. Insert, Remove, Replace, and Move retain
+  their corresponding mirror coordinates.
+- ItemChanged remaps the source element and emits Replace with the new
+  target handle. Reset carries the complete mapped snapshot.
 
 ---
 
@@ -357,9 +364,9 @@ from D-1 ... D-32 into doctest test cases.
 
 | # | Anti-pattern | Consequence | Correct approach |
 |---|---|---|---|
-| DE1 | Observer keeps `change.item` for the next frame | Element gets Removed → dangling pointer | Copy the element, or re-fetch `at(index)` from the list |
-| DE2 | Observer assumes `list.size() == idx + 1` after `Insert(idx)` | Wrong — batch insert can make the list larger | Read `list.size()` if you need the size |
-| DE3 | Observer reads `list.at(idx)` after `Remove(idx, ptr)` | Wrong — `idx` no longer points to `ptr`; may point to the next element or be out of range | The Remove `item` pointer is only valid during emit; discard after |
+| DE1 | Observer keeps only `change.item.get()` for a later frame | Dropping the owning event may destroy the element | Retain the shared handle or event |
+| DE2 | Observer interprets an event using live source size | The source may already contain later edits | Apply edits to an incremental mirror |
+| DE3 | Observer recovers any event payload using `list.at(idx)` | The indexed row may already have changed | Use the owning `item` or Reset `snapshot` |
 | DE4 | Throwing inside an emit callback | Exception is swallowed but can still corrupt state observed by later handlers | Use try/catch inside the handler |
 | DE5 | Treating `Move(to=2, from=5)` as `Remove(5) + Insert(2)` | Adapters lose the "this is a move, not a destroy" signal | Adapters MUST distinguish Move from Remove+Insert |
 | DE6 | Inside an `ItemChanged` callback, writing the element's `Property<T>` back | Feedback loop — relies on the equality gate to break or loops forever | `ItemChanged` is an observation event; do not `set` from inside it |
@@ -375,7 +382,7 @@ from D-1 ... D-32 into doctest test cases.
 - [`api-style.md`](./api-style.md) **S-3** requires that public types
   like `ListChangeKind` live under `aria::` — D-1 already complies.
 - [`error-model.md`](./error-model.md) does not produce list errors
-  (list mutations cannot fail), but a `Property<T>` element's
+  (allocation, predicates, and other user callbacks can fail), but a `Property<T>` element's
   `Validator` error stream may flow through `ItemChanged`, indirectly
   driving derived-list re-filtering.
 

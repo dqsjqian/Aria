@@ -53,7 +53,7 @@ namespace aria::reactive {
 // ---------------------------------------------------------------------------
 namespace detail {
 
-class ReactionNode final : public Node {
+class ReactionNode final : public Node, public std::enable_shared_from_this<ReactionNode> {
 public:
     explicit ReactionNode(std::function<void()> fn)
         : Node(NodeKind::Reaction), fn_(std::move(fn)) {}
@@ -64,7 +64,11 @@ public:
     /// releases their storage; otherwise `~Node()` dereferences freed
     /// Edges via `clear_sources()`.
     ~ReactionNode() noexcept override {
-        clear_sources();
+        retire_();
+    }
+
+    [[nodiscard]] std::shared_ptr<Node> retain_for_recompute() noexcept override {
+        return weak_from_this().lock();
     }
 
     /// Reactions do not produce a value; `recompute()` just runs the side
@@ -107,8 +111,8 @@ public:
     // even when SFINAE picks up a different overload first, the eventual
     // failure points at *why*.
     static_assert(std::copyable<T>,
-        "Property<T> requires T to be copyable: observers receive copies "
-        "of the value on every change. If T is move-only, store it via "
+        "Property<T> requires T to be copyable for snapshot reads. "
+        "If T is move-only, store it via "
         "std::shared_ptr<T> or model the state with an ObservableList<T>.");
     static_assert(EqualityComparable<T>,
         "Property<T> requires T to be equality-comparable (==/!=): writes "
@@ -117,6 +121,8 @@ public:
 
     explicit Property(T initial = T{})
         : Node(NodeKind::Source), value_(std::move(initial)) {}
+
+    ~Property() noexcept override { retire_(); }
 
     // Non-copyable, non-movable: identity in the graph is tied to `this`.
     Property(const Property&)            = delete;
@@ -189,6 +195,8 @@ public:
 
     /// Run `fn(new_value)` every time the value changes. Returns a
     /// Subscription RAII handle; drop it to stop receiving callbacks.
+    /// The argument borrows this property's value; copy it before mutating
+    /// or destroying the property if it is needed afterwards.
     [[nodiscard]] ::aria::Subscription on_changed(std::function<void(const T&)> fn) {
         auto reaction = std::make_shared<detail::ReactionNode>(
             [this, fn = std::move(fn)] { fn(value_); });
@@ -200,7 +208,10 @@ public:
     /// Fire once with the current value, then on every subsequent change.
     /// This is the idiomatic "bind a UI widget to this property" path.
     [[nodiscard]] ::aria::Subscription bind(std::function<void(const T&)> fn) {
+        graph().assert_on_graph_thread();
+        const detail::NodeHandle alive{this};
         fn(value_);  // initial sync — outside the graph, no tracking
+        if (!alive) return {};
         return on_changed(std::move(fn));
     }
 

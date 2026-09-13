@@ -91,9 +91,11 @@ inline Converter<int, std::string> int_to_string() {
 
 inline Converter<double, std::string> double_to_string(int precision = 2) {
     auto to_view = [precision](const double& v) {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "%.*f", precision, v);
-        return std::string(buf);
+        const int length = std::snprintf(nullptr, 0, "%.*f", precision, v);
+        if (length < 0) throw ConversionError{"double_to_string: formatting failed"};
+        std::string text(static_cast<std::size_t>(length), '\0');
+        std::snprintf(text.data(), text.size() + 1, "%.*f", precision, v);
+        return text;
     };
     auto to_model_strict = [](const std::string& s) -> double {
         try {
@@ -126,7 +128,9 @@ inline Converter<bool, std::string> bool_to_yes_no() {
     return {
         [](const bool& v) -> std::string { return v ? "yes" : "no"; },
         [](const std::string& s) {
-            return s == "yes" || s == "true" || s == "1";
+            if (s == "yes" || s == "true" || s == "1") return true;
+            if (s == "no" || s == "false" || s == "0") return false;
+            throw ConversionError{"bool_to_yes_no: not a boolean"};
         },
         [](const std::string& s) -> std::optional<bool> {
             if (s == "yes" || s == "true"  || s == "1") return true;

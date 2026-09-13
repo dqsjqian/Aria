@@ -111,10 +111,8 @@ function Deploy-DllDependencies {
     # ── 1. windeployqt: deploy Qt for every exe that links Qt6 ──────────────
     if ($Qt6Dir -and $objdump) {
         $windeployqt = $null
-        foreach ($candidate in @(
-            (Join-Path $Msys2Bin "windeployqt.exe"),
-            (Join-Path $Qt6Dir "bin\windeployqt.exe")
-        )) {
+        # Deployment tools must come from the selected Qt kit too.
+        foreach ($candidate in @((Join-Path $Qt6Dir "bin\windeployqt.exe"))) {
             if ($candidate -and (Test-Path $candidate)) { $windeployqt = $candidate; break }
         }
         if ($windeployqt) {
@@ -284,16 +282,16 @@ if ($Msys2Bin) {
     if (-not $env:CXX) { $env:CXX = "g++" }
 } else {
     Write-Warning "MSYS2 UCRT64 not found. Install from https://www.msys2.org"
-    Write-Warning "Falling back to whatever compiler CMake auto-detects."
+    Write-Warning "Using CXX, or g++ from PATH, after verifying its MinGW target."
     Write-Warning "If you want MSVC, use scripts\build-msvc.ps1 instead."
 }
 
-# Make sure ninja is available
+# Never fall back to Visual Studio's default generator in a MinGW script.
 $ninja = Get-Command "ninja.exe" -ErrorAction SilentlyContinue
 if (-not $ninja) { $ninja = Get-Command "ninja" -ErrorAction SilentlyContinue }
 if (-not $ninja) {
-    Write-Warning "ninja not on PATH; CMake will fall back to its default generator."
-    $Generator = $null
+    Write-Host "> ninja not on PATH; using MinGW Makefiles"
+    $Generator = "MinGW Makefiles"
 } else {
     $Generator = "Ninja"
 }
@@ -303,7 +301,7 @@ $DoCTest   = $false
 $DoPackage = $false
 $DoArchive = $false
 
-# Qt6 / AppKit adapters are auto-enabled below when the toolchain is present.
+# Qt6 is enabled below only for a matching MinGW kit.
 
 switch ($Mode) {
     "clean" {
@@ -323,6 +321,7 @@ switch ($Mode) {
             -DARIA_ENABLE_TSAN=ON `
             -DARIA_ENABLE_ASAN=OFF `
             -DARIA_ENABLE_UBSAN=OFF `
+            -DARIA_BUILD_TESTS=ON `
             -DARIA_BUILD_QT6=OFF
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         & cmake --build $BuildDir `
@@ -394,7 +393,11 @@ switch ($Mode) {
             -DANDROID_ABI=arm64-v8a `
             -DANDROID_PLATFORM=android-21 `
             -DARIA_BUILD_JNI=ON `
+            -DARIA_BUILD_SHARED=OFF `
             -DARIA_BUILD_TESTS=ON `
+            -DARIA_ENABLE_ASAN=OFF `
+            -DARIA_ENABLE_UBSAN=OFF `
+            -DARIA_ENABLE_TSAN=OFF `
             -DARIA_BUILD_QT6=OFF
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         & $AndroidCmake --build $BuildDir -j $Jobs
@@ -436,46 +439,71 @@ switch ($Mode) {
     }
 }
 
+# Verify the selected compiler before probing a Qt kit for it. Ninja can
+# otherwise auto-select cl.exe from a Visual Studio developer shell.
+$CxxName = if ($env:CXX) { $env:CXX } else { "g++" }
+$CxxCommand = Get-Command $CxxName -ErrorAction SilentlyContinue
+if (-not $CxxCommand) { throw "MinGW C++ compiler not found: $CxxName. For MSVC use build-msvc.ps1." }
+$CxxTriple = & $CxxCommand.Source -dumpmachine
+if ($LASTEXITCODE -ne 0 -or $CxxTriple -notmatch '(mingw32|windows-gnu)') {
+    throw "build.ps1 requires a MinGW C++ target; $CxxName reports '$CxxTriple'. For MSVC use build-msvc.ps1."
+}
+$Msys2Bin = Split-Path -Parent $CxxCommand.Source
+$env:CXX = $CxxCommand.Source
+$env:PATH = "$Msys2Bin;$env:PATH"
+$CMakeOpts += @("-DCMAKE_CXX_COMPILER=$($CxxCommand.Source)")
+
+# Write every sanitizer flag on each configure, including reused caches.
+$CMakeOpts = @("-DARIA_ENABLE_ASAN=OFF", "-DARIA_ENABLE_UBSAN=OFF", "-DARIA_ENABLE_TSAN=OFF") + $CMakeOpts
+
 # ── Auto-enable Qt6 adapter when Qt is found (qt6_tests is part of the core) ─
+function Test-MinGWQt6Kit([string]$Prefix) {
+    if (-not (Test-Path (Join-Path $Prefix "lib\cmake\Qt6\Qt6Config.cmake"))) { return $false }
+    $gnu = (Test-Path (Join-Path $Prefix "lib\libQt6Core.dll.a")) -or
+           (Test-Path (Join-Path $Prefix "lib\libQt6Core.a"))
+    $msvc = (Test-Path (Join-Path $Prefix "lib\Qt6Core.lib")) -or
+            (Test-Path (Join-Path $Prefix "lib\Qt6Cored.lib"))
+    return $gnu -and -not $msvc
+}
+
 function Find-Qt6 {
     if ($env:ARIA_NO_QT6 -eq "1") { return $null }
     if ($env:QT_DIR) {
-        if (Test-Path (Join-Path $env:QT_DIR "lib\cmake\Qt6\Qt6Config.cmake")) {
-            return $env:QT_DIR
-        }
+        if (Test-MinGWQt6Kit $env:QT_DIR) { return $env:QT_DIR }
+        throw "QT_DIR must point to a MinGW Qt6 kit with GNU Qt6Core libraries: $env:QT_DIR"
+    }
+    # Prefer Qt built for the active MSYS2 runtime before other installations.
+    if ($Msys2Bin) {
+        $prefix = Split-Path -Parent $Msys2Bin
+        if (Test-MinGWQt6Kit $prefix) { return $prefix }
     }
     $roots = @("C:\Qt", "$env:USERPROFILE\Qt", "D:\Qt")
     foreach ($root in $roots) {
         if (-not (Test-Path $root)) { continue }
         $versions = Get-ChildItem $root -Directory -ErrorAction SilentlyContinue |
                     Where-Object { $_.Name -match '^6\.' } |
-                    Sort-Object Name -Descending
+                    Sort-Object { try { [version]$_.Name } catch { [version]'0.0' } } -Descending
         foreach ($v in $versions) {
-            foreach ($kit in @("mingw_64", "msvc2019_64", "msvc2022_64")) {
+            foreach ($kit in @("mingw_64")) {
                 $p = Join-Path $v.FullName $kit
-                if (Test-Path (Join-Path $p "lib\cmake\Qt6\Qt6Config.cmake")) {
+                if (Test-MinGWQt6Kit $p) {
                     return $p
                 }
             }
         }
     }
-    $msys2QtCandidates = @(
-        "C:\msys64\ucrt64",
-        "D:\msys64\ucrt64",
-        "D:\worksoft\msys64\ucrt64"
-    )
-    foreach ($p in $msys2QtCandidates) {
-        if (Test-Path (Join-Path $p "lib\cmake\Qt6\Qt6Config.cmake")) {
-            return $p
-        }
-    }
     return $null
 }
 
+# A prefix alone cannot replace cached Qt6Core/Gui/Widgets package locations.
+$CMakeOpts += @("-UQt6*_DIR")
 $Qt6Dir = Find-Qt6
 if ($Qt6Dir) {
     Write-Host "> Qt6 detected at $Qt6Dir - adapter + qt6_tests enabled"
-    $CMakeOpts += @("-DARIA_BUILD_QT6=ON", "-DCMAKE_PREFIX_PATH=$Qt6Dir")
+    $Qt6ConfigDir = (Join-Path $Qt6Dir "lib\cmake\Qt6") -replace '\\', '/'
+    $CMakeOpts += @("-DARIA_BUILD_QT6=ON", "-DCMAKE_PREFIX_PATH=$Qt6Dir", "-DQt6_DIR=$Qt6ConfigDir")
+} else {
+    $CMakeOpts += @("-DARIA_BUILD_QT6=OFF")
 }
 
 # ── Configure ────────────────────────────────────────────────────────────────

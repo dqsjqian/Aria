@@ -13,7 +13,8 @@
 //
 //  Why the entry point is `extern "C"`:
 //    * The *symbol name* is C-mangled, so the host can resolve it whether
-//      the plugin was built by a different C++ compiler / standard library.
+//      it uses a C symbol lookup. The C++ ABI and standard library
+//      must still be compatible on both sides.
 //    * The *parameter types* are still C++ (`aria::IProperty*`), but only
 //      their vtable layout and the std-library payload types they traffic
 //      in (`std::any`, `std::type_info`, `std::function`,

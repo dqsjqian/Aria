@@ -45,6 +45,11 @@ Makefile
 *.userosscache
 *.sln.docstates
 .cache/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.skills_data/
 compile_commands.json
 
 # OS

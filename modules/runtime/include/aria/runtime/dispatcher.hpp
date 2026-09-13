@@ -58,12 +58,13 @@ public:
     }
 };
 
-/// Global accessor — set once at startup by your platform integration code.
-/// (Platform-specific adapters install their dispatcher here.)
-ARIA_RUNTIME_API IDispatcher& main_dispatcher();
+/// Obtain an owning snapshot of the main dispatcher. Replacement does not
+/// invalidate existing snapshots. The first call installs a SimpleDispatcher
+/// owned by the calling thread if no platform dispatcher has been installed.
+ARIA_RUNTIME_API std::shared_ptr<IDispatcher> main_dispatcher();
 ARIA_RUNTIME_API void set_main_dispatcher(std::shared_ptr<IDispatcher> dispatcher);
 
-/// In-process dispatcher: runs queued callables when `run()` is invoked
+/// In-process dispatcher: runs queued callables when `pump()` is invoked
 /// (typically from your main loop). Suitable for console apps and tests.
 class ARIA_RUNTIME_API SimpleDispatcher : public IDispatcher {
 public:
@@ -79,21 +80,23 @@ public:
     void post_delayed(std::chrono::milliseconds delay, std::function<void()> fn) override;
     [[nodiscard]] bool is_main_thread() const noexcept override;
 
-    /// Pump pending callables. Returns the number processed.
+    /// Pump pending callables on the creating thread. Returns the number processed.
+    /// Throws std::logic_error when called from another thread.
     std::size_t pump(std::chrono::milliseconds budget = std::chrono::milliseconds{50});
 
-    /// Block until at least one callable is available, then pump it.
+    /// Block on the creating thread until one callable is available, then run it.
+    /// Throws std::logic_error when called from another thread.
     void run_one();
 
 private:
     struct Impl;
-    // RAII pImpl; C4251 on the unique_ptr member is a false positive for an
+    // RAII pImpl; C4251 on the shared_ptr member is a false positive for an
     // incomplete opaque pointee consumed only via non-template API.
 #ifdef _MSC_VER
 #  pragma warning(push)
 #  pragma warning(disable: 4251)
 #endif
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 #ifdef _MSC_VER
 #  pragma warning(pop)
 #endif

@@ -104,6 +104,7 @@ TEST_CASE("Binding/diag: ScopedTraceSink scope exit returns to no-sink mode") {
         source.set(1);
     }
     const auto count_inside_scope = log.size();
+    REQUIRE(count_inside_scope > 0);
 
     // Outside the ScopedTraceSink, trace publishing returns to
     // no-sink mode -- subsequent writes do NOT grow the log.

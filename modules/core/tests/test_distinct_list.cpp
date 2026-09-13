@@ -15,6 +15,7 @@
 
 #include "aria/derived/distinct_list.hpp"
 #include "aria/observable_list.hpp"
+#include "aria/property.hpp"
 
 #include <memory>
 #include <string>
@@ -294,4 +295,43 @@ TEST_CASE("PD-2: inserting a duplicate-of-existing-rep key is silent"
     REQUIRE(snap.size() == 2);
     CHECK(snap[0]->group == "a");
     CHECK(snap[0]->serial == 1);   // first-appearance preserved
+}
+
+TEST_CASE("DistinctList: Replace evicts the cached old handle") {
+    auto src = std::make_shared<ObservableList<int>>();
+    src->emplace_back(1); src->emplace_back(2);
+    auto unique = distinct<int>(src, [](int n) { return n; });
+    src->replace_at(0, std::make_shared<int>(3));
+    REQUIRE(unique->size() == 2);
+    CHECK(*unique->at(0) == 3);
+    CHECK(*unique->at(1) == 2);
+}
+
+TEST_CASE("DistinctList: removing repeated handles retains the remaining occurrence") {
+    auto src = std::make_shared<ObservableList<int>>();
+    auto shared = std::make_shared<int>(1);
+    src->push_back(shared); src->push_back(shared);
+    auto unique = distinct<int>(src, [](int n) { return n; });
+    src->remove_at(1);
+    REQUIRE(unique->size() == 1);
+    src->remove_at(0);
+    CHECK(unique->empty());
+}
+
+TEST_CASE("DistinctList: ItemChanged observer may mutate the source") {
+    struct Live {
+        Property<int> value{1};
+        Subscription on_changed(std::function<void(const Live&)> fn) {
+            return value.on_changed([this, fn](int) { fn(*this); });
+        }
+    };
+    auto src = std::make_shared<ObservableList<Live>>();
+    auto item = src->emplace_back();
+    auto unique = distinct<int>(src, [](const Live&) { return 0; });
+    auto sub = unique->observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::ItemChanged) src->emplace_back();
+    });
+    item->value.set(2);
+    CHECK(src->size() == 2);
+    CHECK(unique->size() == 1);
 }

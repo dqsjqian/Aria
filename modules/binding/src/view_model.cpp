@@ -3,6 +3,7 @@
 
 #include <utility>
 #include <vector>
+#include <stdexcept>
 
 namespace aria::binding {
 
@@ -41,6 +42,7 @@ const Property<bool>& ViewModel::is_active() const { return impl_->is_active; }
 SubscriptionBag& ViewModel::bag() { return impl_->bag; }
 
 void ViewModel::activate() {
+    auto keep_alive = weak_from_this().lock();
     if (impl_->is_active.get()) return;
 
     // Run the user-defined `on_activate()` BEFORE flipping the
@@ -52,26 +54,32 @@ void ViewModel::activate() {
     //   * The state propagation across parent + every child is atomic
     //     from the reactive graph's point of view (one flush only).
     on_activate();
+    const auto children = impl_->children;
     ::aria::reactive::batch([&]{
         impl_->is_active.set(true);
-        for (auto& c : impl_->children) c->activate();
+        for (const auto& c : children) c->activate();
     });
 }
 
 void ViewModel::deactivate() {
+    auto keep_alive = weak_from_this().lock();
     if (!impl_->is_active.get()) return;
 
     // Symmetric to `activate()`: deactivate children first, run the
     // user hook with the flag still `true` (so the hook sees a live
     // VM), then flip to `false` in a single batch.
+    const auto children = impl_->children;
     ::aria::reactive::batch([&]{
-        for (auto& c : impl_->children) c->deactivate();
+        for (const auto& c : children) c->deactivate();
+        on_deactivate();
+        impl_->is_active.set(false);
     });
-    on_deactivate();
-    impl_->is_active.set(false);
 }
 
 void ViewModel::add_child(std::shared_ptr<ViewModel> child) {
+    if (!child || child.get() == this) {
+        throw std::invalid_argument("ViewModel::add_child: child must be a distinct non-null ViewModel");
+    }
     impl_->children.push_back(std::move(child));
 }
 

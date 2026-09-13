@@ -196,8 +196,8 @@ test('subscriber exceptions are isolated for values, clicks, visibility and enab
     client.onEvent('value', fail);
     client.onEvent('value', () => received.push('click'));
     for (const field of ['visibility', 'enabled']) {
-        client.subscribe('value.' + field, fail);
-        client.subscribe('value.' + field, (value) => received.push([field, value]));
+        client.subscribe('value', fail, field);
+        client.subscribe('value', (value) => received.push([field, value]), field);
     }
     const connected = client.connect();
     streams[0].emit({ type: 'hello', protocol: 2 });
@@ -207,8 +207,8 @@ test('subscriber exceptions are isolated for values, clicks, visibility and enab
     streams[0].emit({ type: 'visibility', view: 'value', value: false });
     streams[0].emit({ type: 'enabled', view: 'value', value: true });
     assert.deepEqual(received, ['hello', 'click', ['visibility', false], ['enabled', true]]);
-    assert.equal(client.getState('value.visibility'), false);
-    assert.equal(client.getState('value.enabled'), true);
+    assert.equal(client.getState('value', 'visibility'), false);
+    assert.equal(client.getState('value', 'enabled'), true);
     assert.equal(diagnostics.length, 4);
     unsubscribe();
     streams[0].emit({ type: 'state', view: 'value', field: 'text', value: 'later' });
@@ -371,4 +371,67 @@ test('successful fetch helpers keep their JSON results and request bodies', asyn
     assert.deepEqual(JSON.parse(requests.at(-1).options.body), { view: 'button' });
     await client.command('vm', 'save', { value: 7 });
     assert.deepEqual(JSON.parse(requests.at(-1).options.body), { view: 'vm', command: 'save', args: { value: 7 } });
+});
+
+test('state channels keep dotted view IDs distinct from visibility and enabled', async (t) => {
+    const { client, streams } = setup(t);
+    const values = [];
+    client.subscribe('item.enabled', value => values.push(['value', value]));
+    client.subscribe('item', value => values.push(['enabled', value]), 'enabled');
+    const connected = client.connect();
+    streams[0].emit({ type: 'hello', protocol: 2 });
+    await connected;
+    streams[0].emit({ type: 'state', view: 'item.enabled', field: 'text', value: 'label' });
+    streams[0].emit({ type: 'enabled', view: 'item', value: false });
+    assert.equal(client.getState('item.enabled'), 'label');
+    assert.equal(client.getState('item', 'enabled'), false);
+    assert.deepEqual(values, [['value', 'label'], ['enabled', false]]);
+});
+
+test('unsubscribe is idempotent across callback reuse and empty buckets are released', async (t) => {
+    const { client, streams } = setup(t);
+    const values = [];
+    const callback = value => values.push(value);
+    const keepBucket = client.subscribe('value', () => {});
+    const stopFirst = client.subscribe('value', callback);
+    stopFirst();
+    const stopSecond = client.subscribe('value', callback);
+    stopFirst();
+    const connected = client.connect();
+    streams[0].emit({ type: 'hello', protocol: 2 });
+    await connected;
+    streams[0].emit({ type: 'state', view: 'value', field: 'int', value: 7 });
+    assert.deepEqual(values, [7]);
+    stopSecond();
+    keepBucket();
+    const stopEvent = client.onEvent('transient', () => {});
+    stopEvent();
+    assert.equal(client._eventSubs.has('transient'), false);
+});
+
+test('duplicate callbacks own separate registrations and cancellation skips pending delivery', async (t) => {
+    const { client, streams } = setup(t);
+    let calls = 0;
+    const callback = () => ++calls;
+    const first = client.subscribe('value', callback);
+    const second = client.subscribe('value', callback);
+    const connected = client.connect();
+    streams[0].emit({ type: 'hello', protocol: 2 });
+    await connected;
+    streams[0].emit({ type: 'state', view: 'value', field: 'int', value: 1 });
+    assert.equal(calls, 2);
+    first();
+    streams[0].emit({ type: 'state', view: 'value', field: 'int', value: 2 });
+    assert.equal(calls, 3);
+    second();
+    let cancelPending;
+    const cancelFirst = client.subscribe('value', () => cancelPending());
+    cancelPending = client.subscribe('value', callback);
+    streams[0].emit({ type: 'state', view: 'value', field: 'int', value: 3 });
+    assert.equal(calls, 3);
+    cancelFirst();
+    assert.equal(client._stateChannels.get('value').subscribers.size, 0);
+    assert.throws(() => client.subscribe('value', callback, 'invalid'), /state field/);
+    assert.throws(() => client.getState('value', 'invalid'), /state field/);
+    assert.throws(() => client.subscribe('value', null), /subscriber/);
 });

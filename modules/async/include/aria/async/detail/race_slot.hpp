@@ -114,6 +114,18 @@ struct RaceSlot {
                                                std::memory_order_acq_rel);
     }
 
+    /// Store a claimed winner's value. A throwing value move is itself a
+    /// completed outcome: preserve it as an exception so publication can
+    /// always follow and the parent cannot remain suspended forever.
+    template<typename... Args>
+    void store_value_or_exception(Args&&... args) noexcept {
+        try {
+            result.template emplace<1>(std::forward<Args>(args)...);
+        } catch (...) {
+            result.template emplace<2>(std::current_exception());
+        }
+    }
+
     /// Phase 2: publish the resolved code. MUST be called AFTER
     /// `result` (and `winner_index` if used) are written. The
     /// release-store synchronises-with the parent's acquire-load in

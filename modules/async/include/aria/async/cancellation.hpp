@@ -269,7 +269,15 @@ public:
     CancellationSource(const CancellationSource&) = delete;
     CancellationSource& operator=(const CancellationSource&) = delete;
     CancellationSource(CancellationSource&&) = default;
-    CancellationSource& operator=(CancellationSource&&) = default;
+    CancellationSource& operator=(CancellationSource&& other) noexcept {
+        if (this != &other) {
+            // Release the previous source just as destruction would: its
+            // tokens may still own the state and have parked waiters.
+            cancel();
+            state_ = std::move(other.state_);
+        }
+        return *this;
+    }
 
 private:
     std::shared_ptr<detail::CancellationState> state_;

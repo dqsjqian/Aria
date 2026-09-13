@@ -4,20 +4,19 @@ This document explains the design principles behind aria.
 
 ## Design goals
 
-1. **One core, every platform.** Application logic should be portable from
-   a console test, through Qt on the desktop, all the way to Android JNI and
-   the WebAssembly browser sandbox — without `#ifdef`s.
-2. **Pay only for what you use.** The header-only core has zero runtime
-   dependencies. Pull in `runtime`/`binding` only if you need them; pull in
-   a platform adapter only when targeting that platform.
-3. **ABI stable.** Hide template implementations behind a small non-template
-   "ABI" layer so internal optimisations don't force callers to recompile.
-4. **Compile-time safety.** Concept-driven public API — the compiler refuses
-   misuse with a one-line error rather than 200 lines of template gibberish.
-5. **Predictable performance.** No hidden allocations on the hot path of
-   `set()/get()`. The reactive graph is single-threaded and lock-free by
-   design; signal-backed events (`ObservableList`, `EventBus`) fire
-   observers outside their short critical sections.
+1. **One core, multiple UI hosts.** Share application logic across desktop,
+   Android JNI, iOS UIKit, and browser clients through the HTTP adapter.
+2. **Explicit dependencies.** Core templates link the compiled `aria::abi`
+   foundation. Add `runtime`, `binding`, and platform adapters as needed.
+3. **Defined binary boundaries.** Shared modules use the same foundation and
+   compatible C++ ABIs. Template layout changes require recompilation; major
+   boundary changes receive a new ABI version.
+4. **Compile-time contracts.** Concepts constrain reactive sources, values,
+   and callbacks at their public entry points.
+5. **Measured performance.** Graph operations stay on one owner thread and
+   reuse traversal storage. Allocations depend on value types, subscription
+   setup, and growth; benchmarks measure actual workloads and build settings.
+   Signal callbacks run outside registry locks.
 
 ## Layer model
 
@@ -27,7 +26,7 @@ This document explains the design principles behind aria.
             ┌─────────────────┼─────────────────┐
             ▼                 ▼                 ▼
         Adapters       Adapters           Adapters
-       (Qt6/AppKit)   (JNI/UIKit)        (WASM/...)
+       (Qt6/AppKit)   (JNI/UIKit)        (HTTP/Web)
             │                 │                 │
             └────────┬────────┴────────┬────────┘
                      ▼                 ▼
@@ -41,15 +40,23 @@ This document explains the design principles behind aria.
                   └─────────┬────────┘
                             ▼
                   ┌──────────────────┐
-                  │       abi        │   ← static, ABI-stable
+                  │       abi        │   ← shared foundation
                   └──────────────────┘
 ```
 
 ### `aria-abi`
 
-Pure non-template code: type-erased `SignalErased`, `SlotErased`, version
-metadata. **Never** changes its ABI within a major version. Built as a
-`STATIC` library so each consumer can link it without DLL boundary issues.
+The compiled foundation owns type-erased signals, version metadata, the
+process-wide reactive graph, diagnostic storage, and the delayed scheduler
+base. It follows `ARIA_BUILD_SHARED`: shared by default, static for a
+statically linked application. `aria::core` links this complete foundation;
+using a Property does not require linking runtime services.
+
+Shared modules must link the same foundation library. Independently linking
+static copies into multiple plugins creates separate global state. C linkage
+does not bridge incompatible C++ standard libraries: hosts and adapters must
+use compatible compiler, standard-library, runtime, and configuration ABIs.
+The 2.0.0 boundary uses `ARIA_ABI_VERSION == 2`.
 
 ### `aria-core`
 

@@ -111,6 +111,185 @@ public:
 
 }  // namespace
 
+TEST_CASE("BindingEngine: queued input drops a destroyed property") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    auto dispatcher = std::make_shared<FakeDispatcher>();
+    BindingEngine engine(adapter, dispatcher, BindingEngine::DispatchPolicy::AlwaysPost);
+    FakeView view;
+    auto property = std::make_unique<Property<int>>(0);
+    engine.bind_int(*property, view);
+    view.sig_int.emit(1);
+    property.reset();
+    CHECK(dispatcher->pump() == 1);
+    view.sig_int.emit(2);
+    CHECK(dispatcher->pump() == 1);
+}
+
+TEST_CASE("BindingEngine: converter clear cancels the remaining model write") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+    Property<int> property(0);
+    FakeView view;
+    engine.bind_int_converted(property, view, Converter<int, int>{
+        [](int value) { return value; }, {},
+        [&](int value) -> std::optional<int> {
+            engine.clear();
+            return value;
+        }});
+    view.sig_int.emit(1);
+    CHECK(property.get() == 0);
+}
+
+TEST_CASE("BindingEngine: queued clicks drop a destroyed command") {
+    auto adapter = std::make_shared<CapturingAdapter>();
+    auto dispatcher = std::make_shared<FakeDispatcher>();
+    BindingEngine engine(adapter, dispatcher, BindingEngine::DispatchPolicy::AlwaysPost);
+    FakeView view;
+    int calls = 0;
+    auto command = std::make_unique<Command<>>([&] { ++calls; });
+    engine.bind_command(*command, view);
+    adapter->click_callback();
+    command.reset();
+    CHECK(dispatcher->pump() == 1);
+    adapter->click_callback();
+    CHECK(dispatcher->pump() == 1);
+    CHECK(calls == 0);
+}
+
+TEST_CASE("BindingEngine: converter may destroy its model before returning") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+    auto property = std::make_unique<Property<int>>(0);
+    FakeView view;
+    engine.bind_int_converted(*property, view, Converter<int, int>{
+        [](int value) { return value; }, {},
+        [&](int value) -> std::optional<int> {
+            property.reset();
+            return value;
+        }});
+    view.sig_int.emit(1);
+    CHECK_FALSE(property);
+}
+
+TEST_CASE("BindingEngine: binding trace can destroy the engine") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    auto engine = std::make_unique<BindingEngine>(adapter);
+    Property<int> property(0);
+    FakeView view;
+    engine->bind_int_oneway(property, view);
+    ScopedTraceSink trace{[&](const TraceEvent& event) {
+        if (event.category == TraceCategory::Binding) engine.reset();
+    }};
+    property.set(1);
+    CHECK_FALSE(engine);
+    CHECK(view.integer == 0);
+}
+
+TEST_CASE("BindingEngine: converter clear cancels the remaining view write") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+    Property<int> property(0);
+    FakeView view;
+    engine.bind_int_converted(property, view, Converter<int, int>{
+        [&](int value) {
+            if (value != 0) engine.clear();
+            return value;
+        }, [](int value) { return value; }, {}});
+    property.set(1);
+    CHECK(view.integer == 0);
+}
+
+TEST_CASE("BindingEngine: clear callbacks may clear and bind again") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+    FakeView first, second;
+    Property<int> property(0);
+    int called = 0;
+    engine.bind_view_lifetime(first, [&] {
+        ++called;
+        engine.clear();
+        engine.bind_int_oneway(property, second);
+    });
+    engine.clear();
+    CHECK(called == 1);
+    property.set(7);
+    CHECK(second.integer == 7);
+}
+
+TEST_CASE("BindingEngine: integer conversion runs on owner thread and clear cancels queued input") {
+    enum class Choice { First, Second, Third };
+    auto adapter = std::make_shared<FakeAdapter>();
+    auto dispatcher = std::make_shared<FakeDispatcher>();
+    BindingEngine engine(adapter, dispatcher, BindingEngine::DispatchPolicy::SmartMarshal);
+    const auto owner = std::this_thread::get_id();
+    Property<Choice> selected(Choice::First);
+    FakeView view;
+    int conversions = 0;
+    engine.bind_int_converted(selected, view, Converter<Choice, int>{
+        [](Choice value) { return static_cast<int>(value); }, {},
+        [&](int value) -> std::optional<Choice> {
+            CHECK(std::this_thread::get_id() == owner);
+            ++conversions;
+            return static_cast<Choice>(value);
+        }});
+    std::thread first([&] { view.sig_int.emit(1); });
+    first.join();
+    CHECK(selected.get() == Choice::First);
+    CHECK(conversions == 0);
+    CHECK(dispatcher->pump() == 1);
+    CHECK(selected.get() == Choice::Second);
+    CHECK(view.integer == 1);
+    CHECK(conversions == 1);
+
+    std::thread second([&] { view.sig_int.emit(2); });
+    second.join();
+    engine.clear();
+    CHECK(dispatcher->pump() == 1);
+    CHECK(selected.get() == Choice::Second);
+    CHECK(conversions == 1);
+    selected.set(Choice::Third);
+    CHECK(view.integer == 1);
+}
+
+TEST_CASE("BindingEngine: posted integer conversion suppresses lossy setter echoes") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    auto dispatcher = std::make_shared<FakeDispatcher>();
+    BindingEngine engine(adapter, dispatcher, BindingEngine::DispatchPolicy::AlwaysPost);
+    Property<double> value(1.9);
+    FakeView view;
+    engine.bind_int_converted(value, view, Converter<double, int>{
+        [](double x) { return static_cast<int>(x); },
+        [](int x) { return static_cast<double>(x); }, {}});
+    CHECK(view.integer == 1);
+    CHECK(value.get() == doctest::Approx(1.9));
+    value.set(2.9);
+    CHECK(view.integer == 1);
+    CHECK(dispatcher->pump() == 1);
+    CHECK(view.integer == 2);
+    CHECK(value.get() == doctest::Approx(2.9));
+    CHECK(dispatcher->queued() == 0);
+    adapter->set_int(view, 7);
+    CHECK(value.get() == doctest::Approx(2.9));
+    dispatcher->pump();
+    CHECK(value.get() == doctest::Approx(7.0));
+}
+
+TEST_CASE("BindingEngine: view destruction cancels queued integer conversion") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    auto dispatcher = std::make_shared<FakeDispatcher>();
+    BindingEngine engine(adapter, dispatcher, BindingEngine::DispatchPolicy::AlwaysPost);
+    Property<int> value(1);
+    auto view = std::make_unique<FakeView>();
+    engine.bind_int_converted(value, *view, Converter<int, int>{
+        [](int x) { return x; }, [](int x) { return x; }, {}});
+    value.set(2);
+    view->sig_int.emit(3);
+    REQUIRE(dispatcher->queued() == 2);
+    view.reset();
+    CHECK(dispatcher->pump() == 2);
+    CHECK(value.get() == 2);
+}
+
 TEST_CASE("BindingEngine: Direct policy never marshals") {
     auto adapter    = std::make_shared<FakeAdapter>();
     auto dispatcher = std::make_shared<FakeDispatcher>();
@@ -258,7 +437,8 @@ TEST_CASE("BindingEngine: two-way feedback guard survives marshalling") {
     // Pump: setter runs under GuardFlag, view emits sig_text, the
     // View→VM sub sees `*guard == true` and skips. The model must NOT
     // see a second write.
-    dispatcher->pump();
+    CHECK(dispatcher->pump() == 1);           // no inbound echo task was posted
+    CHECK(dispatcher->queued() == 0);
     CHECK(view.text == "Bob");
     CHECK(model_writes == 1);                  // guard suppressed the echo
     CHECK(name.get() == "Bob");

@@ -19,7 +19,7 @@
 //  1. **Pure CRTP, zero runtime cost.** The mixin reaches into the
 //     derived class via `static_cast<const Derived*>(this)->signal_`
 //     to avoid taking a virtual call. The compiler inlines every
-//     member straight through to the underlying TypedSignal.
+//     member straight through to the underlying ListSignal.
 //
 //  2. **No vtable, no ABI surface.** The mixin is header-only and
 //     stateless; deriving from it adds nothing to the object layout
@@ -33,7 +33,7 @@
 //     declare exactly the surface they want.
 //
 //  4. **Contract on Derived.** Derived must expose a member
-//     `std::shared_ptr<detail::TypedSignal<ListChange<E>>> signal_`.
+//     `std::shared_ptr<detail::ListSignal<E>> signal_`.
 //     We use a `protected` accessor so the mixin can find it without
 //     forcing each Derived to declare a friendship.
 //
@@ -44,10 +44,10 @@
 //         : public detail::ListSignalMixin<FilteredList<T>, T> {
 //         friend detail::ListSignalMixin<FilteredList<T>, T>;
 //         // ...
-//         std::shared_ptr<detail::TypedSignal<ListChange<T>>> signal_;
+//         std::shared_ptr<detail::ListSignal<T>> signal_;
 //     };
 
-#include "aria/detail/typed_signal.hpp"
+#include "aria/detail/list_signal.hpp"
 #include "aria/subscription.hpp"
 
 #include <cstddef>
@@ -91,7 +91,7 @@ public:
     }
 
 private:
-    using SignalT = TypedSignal<ListChange<E>>;
+    using SignalT = ListSignal<E>;
 
     SignalT& signal_ref_() noexcept {
         // The Derived must expose `std::shared_ptr<SignalT> signal_`

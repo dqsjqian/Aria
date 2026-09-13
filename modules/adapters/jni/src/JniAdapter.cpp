@@ -1,444 +1,325 @@
-/// JniAdapter.cpp — Android JNI implementation of aria::binding::IViewAdapter.
-///
-/// All Java-side interaction routes through a thin helper class on the
-/// Kotlin/Java side (the Aria Android SDK). To keep the C++ side
-/// SDK-shape-agnostic, every operation resolves the Android View's class
-/// and the relevant method ID lazily via JNI reflection and caches it.
-///
-/// Supported widgets are detected by `instanceof` against the standard
-/// android.widget.* classes.
-
+// Android widget operations resolve methods on the runtime class. Managed
+// listeners feed the same JniView wrapper back through notify_*.
 #include "aria/adapters/jni/JniAdapter.hpp"
-
+#include "aria/adapters/jni/detail/jni_support.hpp"
 #include "aria/abi/signal.hpp"
 #include "aria/abi/slot_factory.hpp"
 
-#include <android/log.h>
-
+#include <algorithm>
+#include <limits>
 #include <mutex>
 #include <unordered_map>
 #include <utility>
-#include <vector>
-
-#define ARIA_JNI_TAG "aria.jni"
-#define ARIA_JNI_WARN(...) \
-    __android_log_print(ANDROID_LOG_WARN, ARIA_JNI_TAG, __VA_ARGS__)
 
 namespace aria::adapters::jni {
 namespace {
+using Signal = ::aria::abi::SignalErased;
 
-// Local make_slot shim — mirrors AppKit/UIKit/Qt6 so call sites stay
-// readable as `make_slot([](void*){ ... })`.
-template <class Fn>
-::aria::abi::SlotErased make_slot(Fn&& fn) {
-    return ::aria::abi::make_slot_erased(std::forward<Fn>(fn));
+template<class Int>
+int narrow_int(Int value) noexcept {
+    if (std::cmp_less(value, std::numeric_limits<int>::min())) return std::numeric_limits<int>::min();
+    if (std::cmp_greater(value, std::numeric_limits<int>::max())) return std::numeric_limits<int>::max();
+    return static_cast<int>(value);
 }
 
-// Fetch the JavaVM* from a JNIEnv*. Cached references need the VM to
-// re-attach a JNIEnv on whatever thread later releases them.
-JavaVM* vm_of(JNIEnv* env) {
-    JavaVM* vm = nullptr;
-    if (env) env->GetJavaVM(&vm);
-    return vm;
+float narrow_float(double value) noexcept {
+    constexpr double maximum = std::numeric_limits<float>::max();
+    return static_cast<float>(std::clamp(value, -maximum, maximum));
 }
 
-// std::string_view -> jstring (UTF-8). Caller owns the local ref.
-jstring to_jstring(JNIEnv* env, std::string_view sv) {
-    // NewStringUTF needs a NUL-terminated modified-UTF8 buffer; copy.
-    std::string tmp(sv);
-    return env->NewStringUTF(tmp.c_str());
+jobject native_of(::aria::binding::IView& view) {
+    auto* native = dynamic_cast<JniView*>(&view);
+    return native ? native->native() : nullptr;
 }
 
-// jstring -> std::string (UTF-8). Releases the chars before returning.
-std::string from_jstring(JNIEnv* env, jstring js) {
-    if (!js) return {};
-    const char* chars = env->GetStringUTFChars(js, nullptr);
-    std::string out = chars ? std::string(chars) : std::string{};
-    if (chars) env->ReleaseStringUTFChars(js, chars);
-    return out;
-}
-
-}  // namespace
-
-// ─── Bridge: one native-callback hub per (view,kind) ────────────────────
-//
-// Mirrors the AppKit/UIKit adapters: a Bridge owns a TypedSignal that the
-// Java-side event callback fans into, and user subscriptions connect a
-// slot onto it.
-struct Bridge {
-    ::aria::abi::SignalErased sig;
-};
-
-// ─── JniView ────────────────────────────────────────────────────────────
-
-JniView::JniView(JNIEnv* env, jobject view)
-    : vm_(vm_of(env)),
-      view_(env && view ? env->NewGlobalRef(view) : nullptr) {}
-
-JniView::~JniView() {
-    // Fire destroy while the handle is still valid so BindingEngine can
-    // drop its per-view bucket.
-    fire_destroy_();
-    if (!view_ || !vm_) return;
-    JNIEnv* env = nullptr;
-    // The destructor may run on a non-JNI thread; obtain an env safely.
-    if (vm_->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK
-        && env) {
-        env->DeleteGlobalRef(view_);
-    }
-    view_ = nullptr;
-}
-
-// ─── Adapter::Impl ──────────────────────────────────────────────────────
-
-struct JniAdapter::Impl {
-    struct Key {
-        const void* v;
-        char        k;
-        bool operator==(const Key& o) const noexcept { return v == o.v && k == o.k; }
-    };
-    struct KeyHash {
-        size_t operator()(const Key& key) const noexcept {
-            size_t h = std::hash<const void*>{}(key.v);
-            h ^= static_cast<size_t>(static_cast<unsigned char>(key.k))
-                 + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-            return h;
+struct NativeCall {
+    detail::Env scope;
+    JNIEnv* env;
+    detail::LocalRef<jobject> object;
+    NativeCall(JavaVM* vm, ::aria::binding::IView& view)
+        : scope(vm), env(scope.get()), object(env, retain(env, view)) {}
+    explicit operator bool() const noexcept { return object.get() != nullptr; }
+    static jobject retain(JNIEnv* env, ::aria::binding::IView& view) {
+        if (!env || detail::check_exception(env, "enter widget operation")) return nullptr;
+        auto native = native_of(view);
+        if (!native) return nullptr;
+        auto local = env->NewLocalRef(native);
+        if (detail::check_exception(env, "NewLocalRef")) {
+            if (local) env->DeleteLocalRef(local);
+            return nullptr;
         }
+        return local;
+    }
+    jmethodID method(const char* name, const char* signature) {
+        return detail::method(env, object.get(), name, signature);
+    }
+};
+} // namespace
+
+JniView::JniView(JNIEnv* env, jobject view) : vm_(detail::vm_of(env)), view_(nullptr) {
+    if (vm_ && view) {
+        view_ = env->NewGlobalRef(view);
+        if (detail::check_exception(env, "NewGlobalRef")) {
+            detail::delete_global_ref(vm_, std::exchange(view_, nullptr));
+        }
+    }
+}
+JniView::~JniView() {
+    fire_destroy_();
+    detail::delete_global_ref(vm_, std::exchange(view_, nullptr));
+}
+
+struct JniAdapter::Impl : std::enable_shared_from_this<Impl> {
+    struct Bucket {
+        std::unordered_map<char, std::shared_ptr<Signal>> channels;
+        ::aria::Subscription destroy;
     };
-
     JavaVM* vm = nullptr;
+    std::mutex mutex;
+    bool closed = false;
+    std::unordered_map<const ::aria::binding::IView*, std::shared_ptr<Bucket>> views;
 
-    std::mutex                                                         mu;
-    std::unordered_map<Key, std::shared_ptr<Bridge>, KeyHash>          bridges;
-    std::unordered_map<const void*, std::vector<::aria::Subscription>> destroy_subs;
-
-    ~Impl() {
-        std::lock_guard lk{mu};
-        bridges.clear();
-        destroy_subs.clear();
+    static void retire(const std::shared_ptr<Bucket>& bucket) noexcept {
+        bucket->destroy.release();
+        for (const auto& [kind, signal] : bucket->channels) signal->clear();
     }
-
-    // Obtain a JNIEnv for the current thread (UI thread in practice).
-    JNIEnv* env() const {
-        if (!vm) return nullptr;
-        JNIEnv* e = nullptr;
-        vm->GetEnv(reinterpret_cast<void**>(&e), JNI_VERSION_1_6);
-        return e;
+    void close() noexcept {
+        decltype(views) retired;
+        {
+            std::lock_guard lock(mutex);
+            closed = true;
+            retired.swap(views);
+        }
+        for (const auto& [view, bucket] : retired) retire(bucket);
     }
-
-    std::shared_ptr<Bridge> bridge(const void* view, char kind) {
-        std::lock_guard lk{mu};
-        auto it = bridges.find(Key{view, kind});
-        return it == bridges.end() ? nullptr : it->second;
+    void remove(const ::aria::binding::IView* view) noexcept {
+        decltype(views)::node_type removed;
+        {
+            std::lock_guard lock(mutex);
+            removed = views.extract(view);
+        }
+        if (removed) retire(removed.mapped());
+    }
+    std::shared_ptr<Signal> signal(const ::aria::binding::IView* view, char kind) {
+        std::lock_guard lock(mutex);
+        auto bucket = views.find(view);
+        if (bucket == views.end()) return {};
+        auto channel = bucket->second->channels.find(kind);
+        return channel == bucket->second->channels.end() ? nullptr : channel->second;
+    }
+    ::aria::Subscription connect(::aria::binding::IView& view, char kind, ::aria::abi::SlotErased slot) {
+        std::shared_ptr<Bucket> bucket;
+        std::shared_ptr<Signal> channel;
+        bool created = false;
+        {
+            std::lock_guard lock(mutex);
+            if (closed) return {};
+            auto [it, inserted] = views.try_emplace(&view);
+            if (!it->second) it->second = std::make_shared<Bucket>();
+            created = inserted;
+            bucket = it->second;
+            auto& entry = bucket->channels[kind];
+            if (!entry) entry = std::make_shared<Signal>();
+            channel = entry;
+        }
+        if (created) {
+            bucket->destroy = view.on_destroy([weak = weak_from_this(), key = &view] {
+                if (auto state = weak.lock()) state->remove(key);
+            });
+        }
+        const auto id = channel->connect(std::move(slot));
+        return ::aria::Subscription{[weak = channel->weak_handle(), id] {
+            Signal::disconnect_via_weak(weak, id);
+        }};
     }
 };
 
-JniAdapter::JniAdapter(JNIEnv* env) : p_(std::make_unique<Impl>()) {
-    p_->vm = vm_of(env);
+JniAdapter::JniAdapter(JNIEnv* env) : p_(std::make_shared<Impl>()) { p_->vm = detail::vm_of(env); }
+JniAdapter::~JniAdapter() { p_->close(); }
+
+void JniAdapter::set_text(::aria::binding::IView& view, std::string_view text) {
+    auto state = p_;
+    NativeCall call(state->vm, view);
+    if (!call) return;
+    auto method = call.method("setText", "(Ljava/lang/CharSequence;)V");
+    if (!method) return;
+    detail::LocalRef<jstring> value(call.env, detail::to_jstring(call.env, text));
+    if (!value.get()) return;
+    call.env->CallVoidMethod(call.object.get(), method, value.get());
+    detail::check_exception(call.env, "setText");
 }
-JniAdapter::~JniAdapter() = default;
-
-// ─── helpers ────────────────────────────────────────────────────────────
-namespace {
-
-jobject native_of(::aria::binding::IView& v) {
-    // Only JniView is supported by this adapter.
-    auto* jv = dynamic_cast<JniView*>(&v);
-    return jv ? jv->native() : nullptr;
-}
-
-// Resolve a no-arg / single-arg setter on the view's runtime class.
-jmethodID method(JNIEnv* env, jobject obj, const char* name, const char* sig) {
-    if (!env || !obj) return nullptr;
-    jclass cls = env->GetObjectClass(obj);
-    if (!cls) return nullptr;
-    jmethodID m = env->GetMethodID(cls, name, sig);
-    env->DeleteLocalRef(cls);
-    if (!m && env->ExceptionCheck()) env->ExceptionClear();
-    return m;
-}
-
-}  // namespace
-
-// ── Text ────────────────────────────────────────────────────────────────
-
-void JniAdapter::set_text(::aria::binding::IView& v, std::string_view text) {
-    JNIEnv* env = p_->env();
-    jobject o = native_of(v);
-    if (!env || !o) return;
-    // TextView.setText(CharSequence)
-    jmethodID m = method(env, o, "setText", "(Ljava/lang/CharSequence;)V");
-    if (!m) { ARIA_JNI_WARN("set_text: setText not found"); return; }
-    jstring js = to_jstring(env, text);
-    env->CallVoidMethod(o, m, js);
-    if (js) env->DeleteLocalRef(js);
+std::string JniAdapter::get_text(::aria::binding::IView& view) {
+    auto state = p_;
+    NativeCall call(state->vm, view);
+    if (!call) return {};
+    auto method = call.method("getText", "()Ljava/lang/CharSequence;");
+    if (!method) return {};
+    detail::LocalRef<jobject> sequence(call.env, call.env->CallObjectMethod(call.object.get(), method));
+    if (detail::check_exception(call.env, "getText") || !sequence.get()) return {};
+    auto to_string = detail::method(call.env, sequence.get(), "toString", "()Ljava/lang/String;");
+    if (!to_string) return {};
+    detail::LocalRef<jstring> value(call.env, static_cast<jstring>(call.env->CallObjectMethod(sequence.get(), to_string)));
+    if (detail::check_exception(call.env, "toString")) return {};
+    return detail::from_jstring(call.env, value.get());
 }
 
-std::string JniAdapter::get_text(::aria::binding::IView& v) {
-    JNIEnv* env = p_->env();
-    jobject o = native_of(v);
-    if (!env || !o) return {};
-    // TextView.getText() returns CharSequence; call toString() on it.
-    jmethodID get = method(env, o, "getText", "()Ljava/lang/CharSequence;");
-    if (!get) { ARIA_JNI_WARN("get_text: getText not found"); return {}; }
-    jobject cs = env->CallObjectMethod(o, get);
-    if (!cs) return {};
-    jmethodID toStr = method(env, cs, "toString", "()Ljava/lang/String;");
-    std::string out;
-    if (toStr) {
-        auto js = static_cast<jstring>(env->CallObjectMethod(cs, toStr));
-        out = from_jstring(env, js);
-        if (js) env->DeleteLocalRef(js);
-    }
-    env->DeleteLocalRef(cs);
-    return out;
+void JniAdapter::set_bool(::aria::binding::IView& view, bool value) {
+    auto state = p_;
+    NativeCall call(state->vm, view);
+    if (!call) return;
+    auto method = call.method("setChecked", "(Z)V");
+    if (!method) return;
+    call.env->CallVoidMethod(call.object.get(), method, static_cast<jboolean>(value));
+    detail::check_exception(call.env, "setChecked");
+}
+bool JniAdapter::get_bool(::aria::binding::IView& view) {
+    auto state = p_;
+    NativeCall call(state->vm, view);
+    if (!call) return false;
+    auto method = call.method("isChecked", "()Z");
+    if (!method) return false;
+    const auto result = call.env->CallBooleanMethod(call.object.get(), method);
+    if (detail::check_exception(call.env, "isChecked")) return false;
+    return result == JNI_TRUE;
 }
 
-::aria::Subscription JniAdapter::on_text_changed(::aria::binding::IView& v,
-        std::function<void(std::string_view)> cb) {
-    // Text-change events require a Java-side TextWatcher that calls back
-    // into native code; wiring is provided by the Aria Android SDK. The
-    // C++ side registers the slot onto a per-view Bridge here.
-    jobject o = native_of(v);
-    if (!o || !cb) return {};
-    std::lock_guard lk{p_->mu};
-    auto& br = p_->bridges[Impl::Key{o, 't'}];
-    if (!br) br = std::make_shared<Bridge>();
-    auto id = br->sig.connect(make_slot(
-        [cb = std::move(cb)](void* args) {
-            cb(*static_cast<std::string_view*>(args));
-        }));
-    auto weak = br->sig.weak_handle();
-    p_->destroy_subs[o].push_back(v.on_destroy([this, o]() {
-        std::lock_guard lk2{p_->mu};
-        p_->bridges.erase(Impl::Key{o, 't'});
-    }));
-    return ::aria::Subscription{[weak, id]() noexcept {
-        ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
-    }};
+void JniAdapter::set_int(::aria::binding::IView& view, int value) {
+    auto state = p_;
+    NativeCall call(state->vm, view);
+    if (!call) return;
+    auto method = call.method("setProgress", "(I)V");
+    if (!method) return;
+    call.env->CallVoidMethod(call.object.get(), method, static_cast<jint>(value));
+    detail::check_exception(call.env, "setProgress");
+}
+int JniAdapter::get_int(::aria::binding::IView& view) {
+    auto state = p_;
+    NativeCall call(state->vm, view);
+    if (!call) return 0;
+    auto method = call.method("getProgress", "()I");
+    if (!method) return 0;
+    const auto result = call.env->CallIntMethod(call.object.get(), method);
+    if (detail::check_exception(call.env, "getProgress")) return 0;
+    return static_cast<int>(result);
 }
 
-// ── Bool (CompoundButton: CheckBox / Switch) ─────────────────────────────
-
-void JniAdapter::set_bool(::aria::binding::IView& v, bool value) {
-    JNIEnv* env = p_->env();
-    jobject o = native_of(v);
-    if (!env || !o) return;
-    jmethodID m = method(env, o, "setChecked", "(Z)V");
-    if (!m) { ARIA_JNI_WARN("set_bool: setChecked not found"); return; }
-    env->CallVoidMethod(o, m, static_cast<jboolean>(value));
+void JniAdapter::set_double(::aria::binding::IView& view, double value) {
+    auto state = p_;
+    NativeCall call(state->vm, view);
+    if (!call) return;
+    auto method = call.method("setRating", "(F)V");
+    if (!method) return;
+    call.env->CallVoidMethod(call.object.get(), method, narrow_float(value));
+    detail::check_exception(call.env, "setRating");
+}
+double JniAdapter::get_double(::aria::binding::IView& view) {
+    auto state = p_;
+    NativeCall call(state->vm, view);
+    if (!call) return 0.0;
+    auto method = call.method("getRating", "()F");
+    if (!method) return 0.0;
+    const auto result = call.env->CallFloatMethod(call.object.get(), method);
+    if (detail::check_exception(call.env, "getRating")) return 0.0;
+    return static_cast<double>(result);
 }
 
-bool JniAdapter::get_bool(::aria::binding::IView& v) {
-    JNIEnv* env = p_->env();
-    jobject o = native_of(v);
-    if (!env || !o) return false;
-    jmethodID m = method(env, o, "isChecked", "()Z");
-    if (!m) { ARIA_JNI_WARN("get_bool: isChecked not found"); return false; }
-    return env->CallBooleanMethod(o, m) == JNI_TRUE;
+void JniAdapter::set_visible(::aria::binding::IView& view, bool value) {
+    auto state = p_;
+    NativeCall call(state->vm, view);
+    if (!call) return;
+    auto method = call.method("setVisibility", "(I)V");
+    if (!method) return;
+    call.env->CallVoidMethod(call.object.get(), method, static_cast<jint>(value ? 0 : 8));
+    detail::check_exception(call.env, "setVisibility");
 }
 
-::aria::Subscription JniAdapter::on_bool_changed(::aria::binding::IView& v,
-        std::function<void(bool)> cb) {
-    jobject o = native_of(v);
-    if (!o || !cb) return {};
-    std::lock_guard lk{p_->mu};
-    auto& br = p_->bridges[Impl::Key{o, 'b'}];
-    if (!br) br = std::make_shared<Bridge>();
-    auto id = br->sig.connect(make_slot(
+void JniAdapter::set_enabled(::aria::binding::IView& view, bool value) {
+    auto state = p_;
+    NativeCall call(state->vm, view);
+    if (!call) return;
+    auto method = call.method("setEnabled", "(Z)V");
+    if (!method) return;
+    call.env->CallVoidMethod(call.object.get(), method, static_cast<jboolean>(value));
+    detail::check_exception(call.env, "setEnabled");
+}
+
+::aria::Subscription JniAdapter::on_text_changed(::aria::binding::IView& view, std::function<void(std::string_view)> cb) {
+    auto state = p_;
+    if (!native_of(view) || !cb) return {};
+    return state->connect(view, 't', ::aria::abi::make_slot_erased(
+        [cb = std::move(cb)](void* args) { cb(*static_cast<std::string_view*>(args)); }));
+}
+void JniAdapter::notify_text_changed(::aria::binding::IView& view, std::string_view value) {
+    auto state = p_;
+    if (auto signal = state->signal(&view, 't')) signal->emit(&value);
+}
+
+::aria::Subscription JniAdapter::on_bool_changed(::aria::binding::IView& view, std::function<void(bool)> cb) {
+    auto state = p_;
+    if (!native_of(view) || !cb) return {};
+    return state->connect(view, 'b', ::aria::abi::make_slot_erased(
         [cb = std::move(cb)](void* args) { cb(*static_cast<bool*>(args)); }));
-    auto weak = br->sig.weak_handle();
-    p_->destroy_subs[o].push_back(v.on_destroy([this, o]() {
-        std::lock_guard lk2{p_->mu};
-        p_->bridges.erase(Impl::Key{o, 'b'});
-    }));
-    return ::aria::Subscription{[weak, id]() noexcept {
-        ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
-    }};
+}
+void JniAdapter::notify_bool_changed(::aria::binding::IView& view, bool value) {
+    auto state = p_;
+    if (auto signal = state->signal(&view, 'b')) signal->emit(&value);
 }
 
-// ── Int (SeekBar / ProgressBar) ──────────────────────────────────────────
-
-void JniAdapter::set_int(::aria::binding::IView& v, int value) {
-    JNIEnv* env = p_->env();
-    jobject o = native_of(v);
-    if (!env || !o) return;
-    jmethodID m = method(env, o, "setProgress", "(I)V");
-    if (!m) { ARIA_JNI_WARN("set_int: setProgress not found"); return; }
-    env->CallVoidMethod(o, m, static_cast<jint>(value));
-}
-
-int JniAdapter::get_int(::aria::binding::IView& v) {
-    JNIEnv* env = p_->env();
-    jobject o = native_of(v);
-    if (!env || !o) return 0;
-    jmethodID m = method(env, o, "getProgress", "()I");
-    if (!m) { ARIA_JNI_WARN("get_int: getProgress not found"); return 0; }
-    return static_cast<int>(env->CallIntMethod(o, m));
-}
-
-::aria::Subscription JniAdapter::on_int_changed(::aria::binding::IView& v,
-        std::function<void(int)> cb) {
-    jobject o = native_of(v);
-    if (!o || !cb) return {};
-    std::lock_guard lk{p_->mu};
-    auto& br = p_->bridges[Impl::Key{o, 'i'}];
-    if (!br) br = std::make_shared<Bridge>();
-    auto id = br->sig.connect(make_slot(
+::aria::Subscription JniAdapter::on_int_changed(::aria::binding::IView& view, std::function<void(int)> cb) {
+    auto state = p_;
+    if (!native_of(view) || !cb) return {};
+    return state->connect(view, 'i', ::aria::abi::make_slot_erased(
         [cb = std::move(cb)](void* args) { cb(*static_cast<int*>(args)); }));
-    auto weak = br->sig.weak_handle();
-    p_->destroy_subs[o].push_back(v.on_destroy([this, o]() {
-        std::lock_guard lk2{p_->mu};
-        p_->bridges.erase(Impl::Key{o, 'i'});
-    }));
-    return ::aria::Subscription{[weak, id]() noexcept {
-        ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
-    }};
+}
+void JniAdapter::notify_int_changed(::aria::binding::IView& view, int value) {
+    auto state = p_;
+    if (auto signal = state->signal(&view, 'i')) signal->emit(&value);
 }
 
-// ── Wider/narrower numeric types: forward to int with range guards ───────
-
-void JniAdapter::set_int64(::aria::binding::IView& v, std::int64_t value) {
-    set_int(v, static_cast<int>(value));
-}
-std::int64_t JniAdapter::get_int64(::aria::binding::IView& v) {
-    return static_cast<std::int64_t>(get_int(v));
-}
-::aria::Subscription JniAdapter::on_int64_changed(::aria::binding::IView& v,
-        std::function<void(std::int64_t)> cb) {
-    return on_int_changed(v, [cb = std::move(cb)](int x) { cb(static_cast<std::int64_t>(x)); });
-}
-
-void JniAdapter::set_uint64(::aria::binding::IView& v, std::uint64_t value) {
-    set_int(v, static_cast<int>(value));
-}
-std::uint64_t JniAdapter::get_uint64(::aria::binding::IView& v) {
-    return static_cast<std::uint64_t>(get_int(v));
-}
-::aria::Subscription JniAdapter::on_uint64_changed(::aria::binding::IView& v,
-        std::function<void(std::uint64_t)> cb) {
-    return on_int_changed(v, [cb = std::move(cb)](int x) { cb(static_cast<std::uint64_t>(x)); });
-}
-
-void JniAdapter::set_float(::aria::binding::IView& v, float value) {
-    set_double(v, static_cast<double>(value));
-}
-float JniAdapter::get_float(::aria::binding::IView& v) {
-    return static_cast<float>(get_double(v));
-}
-::aria::Subscription JniAdapter::on_float_changed(::aria::binding::IView& v,
-        std::function<void(float)> cb) {
-    return on_double_changed(v, [cb = std::move(cb)](double x) { cb(static_cast<float>(x)); });
-}
-
-// ── Double (RatingBar.setRating(float)) ──────────────────────────────────
-
-void JniAdapter::set_double(::aria::binding::IView& v, double value) {
-    JNIEnv* env = p_->env();
-    jobject o = native_of(v);
-    if (!env || !o) return;
-    jmethodID m = method(env, o, "setRating", "(F)V");
-    if (!m) { ARIA_JNI_WARN("set_double: setRating not found"); return; }
-    env->CallVoidMethod(o, m, static_cast<jfloat>(value));
-}
-
-double JniAdapter::get_double(::aria::binding::IView& v) {
-    JNIEnv* env = p_->env();
-    jobject o = native_of(v);
-    if (!env || !o) return 0.0;
-    jmethodID m = method(env, o, "getRating", "()F");
-    if (!m) { ARIA_JNI_WARN("get_double: getRating not found"); return 0.0; }
-    return static_cast<double>(env->CallFloatMethod(o, m));
-}
-
-::aria::Subscription JniAdapter::on_double_changed(::aria::binding::IView& v,
-        std::function<void(double)> cb) {
-    jobject o = native_of(v);
-    if (!o || !cb) return {};
-    std::lock_guard lk{p_->mu};
-    auto& br = p_->bridges[Impl::Key{o, 'd'}];
-    if (!br) br = std::make_shared<Bridge>();
-    auto id = br->sig.connect(make_slot(
+::aria::Subscription JniAdapter::on_double_changed(::aria::binding::IView& view, std::function<void(double)> cb) {
+    auto state = p_;
+    if (!native_of(view) || !cb) return {};
+    return state->connect(view, 'd', ::aria::abi::make_slot_erased(
         [cb = std::move(cb)](void* args) { cb(*static_cast<double*>(args)); }));
-    auto weak = br->sig.weak_handle();
-    p_->destroy_subs[o].push_back(v.on_destroy([this, o]() {
-        std::lock_guard lk2{p_->mu};
-        p_->bridges.erase(Impl::Key{o, 'd'});
-    }));
-    return ::aria::Subscription{[weak, id]() noexcept {
-        ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
-    }};
+}
+void JniAdapter::notify_double_changed(::aria::binding::IView& view, double value) {
+    auto state = p_;
+    if (auto signal = state->signal(&view, 'd')) signal->emit(&value);
 }
 
-// ── Visibility / enabled ─────────────────────────────────────────────────
-
-void JniAdapter::set_visible(::aria::binding::IView& v, bool visible) {
-    JNIEnv* env = p_->env();
-    jobject o = native_of(v);
-    if (!env || !o) return;
-    jmethodID m = method(env, o, "setVisibility", "(I)V");
-    if (!m) { ARIA_JNI_WARN("set_visible: setVisibility not found"); return; }
-    // View.VISIBLE == 0, View.GONE == 8
-    env->CallVoidMethod(o, m, static_cast<jint>(visible ? 0 : 8));
-}
-
-void JniAdapter::set_enabled(::aria::binding::IView& v, bool enabled) {
-    JNIEnv* env = p_->env();
-    jobject o = native_of(v);
-    if (!env || !o) return;
-    jmethodID m = method(env, o, "setEnabled", "(Z)V");
-    if (!m) { ARIA_JNI_WARN("set_enabled: setEnabled not found"); return; }
-    env->CallVoidMethod(o, m, static_cast<jboolean>(enabled));
-}
-
-// ── Click ────────────────────────────────────────────────────────────────
-
-::aria::Subscription JniAdapter::on_click(::aria::binding::IView& v,
-        std::function<void()> cb) {
-    jobject o = native_of(v);
-    if (!o || !cb) return {};
-    std::lock_guard lk{p_->mu};
-    auto& br = p_->bridges[Impl::Key{o, 'c'}];
-    if (!br) br = std::make_shared<Bridge>();
-    auto id = br->sig.connect(make_slot(
+::aria::Subscription JniAdapter::on_click(::aria::binding::IView& view, std::function<void()> cb) {
+    auto state = p_;
+    if (!native_of(view) || !cb) return {};
+    return state->connect(view, 'c', ::aria::abi::make_slot_erased(
         [cb = std::move(cb)](void*) { cb(); }));
-    auto weak = br->sig.weak_handle();
-    p_->destroy_subs[o].push_back(v.on_destroy([this, o]() {
-        std::lock_guard lk2{p_->mu};
-        p_->bridges.erase(Impl::Key{o, 'c'});
-    }));
-    return ::aria::Subscription{[weak, id]() noexcept {
-        ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
-    }};
+}
+void JniAdapter::notify_click(::aria::binding::IView& view) {
+    auto state = p_;
+    if (auto signal = state->signal(&view, 'c')) signal->emit(nullptr);
 }
 
-void JniAdapter::notify_text_changed(::aria::binding::IView& v,
-                                     std::string_view value) {
-    if (auto bridge = p_->bridge(native_of(v), 't')) bridge->sig.emit(&value);
+void JniAdapter::set_int64(::aria::binding::IView& view, std::int64_t value) { set_int(view, narrow_int(value)); }
+std::int64_t JniAdapter::get_int64(::aria::binding::IView& view) { return static_cast<std::int64_t>(get_int(view)); }
+::aria::Subscription JniAdapter::on_int64_changed(::aria::binding::IView& view, std::function<void(std::int64_t)> cb) {
+    if (!cb) return {};
+    return on_int_changed(view, [cb = std::move(cb)](int value) { cb(static_cast<std::int64_t>(value)); });
 }
-void JniAdapter::notify_bool_changed(::aria::binding::IView& v, bool value) {
-    if (auto bridge = p_->bridge(native_of(v), 'b')) bridge->sig.emit(&value);
-}
-void JniAdapter::notify_int_changed(::aria::binding::IView& v, int value) {
-    if (auto bridge = p_->bridge(native_of(v), 'i')) bridge->sig.emit(&value);
-}
-void JniAdapter::notify_int64_changed(::aria::binding::IView& v,
-                                      std::int64_t value) {
-    notify_int_changed(v, static_cast<int>(value));
-}
-void JniAdapter::notify_uint64_changed(::aria::binding::IView& v,
-                                       std::uint64_t value) {
-    notify_int_changed(v, static_cast<int>(value));
-}
-void JniAdapter::notify_float_changed(::aria::binding::IView& v, float value) {
-    notify_double_changed(v, static_cast<double>(value));
-}
-void JniAdapter::notify_double_changed(::aria::binding::IView& v,
-                                       double value) {
-    if (auto bridge = p_->bridge(native_of(v), 'd')) bridge->sig.emit(&value);
-}
-void JniAdapter::notify_click(::aria::binding::IView& v) {
-    if (auto bridge = p_->bridge(native_of(v), 'c')) bridge->sig.emit(nullptr);
-}
+void JniAdapter::notify_int64_changed(::aria::binding::IView& view, std::int64_t value) { notify_int_changed(view, narrow_int(value)); }
 
-}  // namespace aria::adapters::jni
+void JniAdapter::set_uint64(::aria::binding::IView& view, std::uint64_t value) { set_int(view, narrow_int(value)); }
+std::uint64_t JniAdapter::get_uint64(::aria::binding::IView& view) { return static_cast<std::uint64_t>(std::max(0, get_int(view))); }
+::aria::Subscription JniAdapter::on_uint64_changed(::aria::binding::IView& view, std::function<void(std::uint64_t)> cb) {
+    if (!cb) return {};
+    return on_int_changed(view, [cb = std::move(cb)](int value) { cb(static_cast<std::uint64_t>(std::max(0, value))); });
+}
+void JniAdapter::notify_uint64_changed(::aria::binding::IView& view, std::uint64_t value) { notify_int_changed(view, narrow_int(value)); }
+
+void JniAdapter::set_float(::aria::binding::IView& view, float value) { set_double(view, value); }
+float JniAdapter::get_float(::aria::binding::IView& view) { return static_cast<float>(get_double(view)); }
+::aria::Subscription JniAdapter::on_float_changed(::aria::binding::IView& view, std::function<void(float)> cb) {
+    if (!cb) return {};
+    return on_double_changed(view, [cb = std::move(cb)](double value) { cb(narrow_float(value)); });
+}
+void JniAdapter::notify_float_changed(::aria::binding::IView& view, float value) { notify_double_changed(view, value); }
+
+} // namespace aria::adapters::jni

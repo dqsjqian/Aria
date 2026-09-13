@@ -14,7 +14,7 @@
 //
 //    PG-2 (live page properties). `page_index` and `page_size` are
 //        public `Property`s. Changing either re-windows synchronously
-//        and emits a minimal Insert/Remove/Reset diff.
+//        and emits an Insert/Remove/Move diff.
 //
 //    PG-3 (source-driven update). Source insert / remove / replace /
 //        item-changed events that fall inside the current window
@@ -41,6 +41,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <optional>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -59,7 +60,7 @@ class PagedList
 
 public:
     using value_type = T;
-    using Signal     = detail::TypedSignal<ListChange<T>>;
+    using Signal     = detail::ListSignal<T>;
 
     /// Construct a PagedList. Both page_index (0-based) and
     /// page_size are bound to public Properties; observers can drive
@@ -77,19 +78,28 @@ public:
         rebuild_window_();
 
         std::weak_ptr<Source> weak_source{source_};
+        std::weak_ptr<bool> weak_alive = alive_;
         source_sub_ = source_->observe(
-            [this, weak_source](const ListChange<T>& ch) {
+            [this, weak_source, weak_alive](const ListChange<T>& ch) {
+                auto alive = weak_alive.lock();
+                if (!alive || !*alive) return;
                 if (!weak_source.lock()) return;
                 handle_source_change_(ch);
             });
 
         page_index_sub_ = page_index_prop_.on_changed(
-            [this](std::size_t /*v*/) { rebuild_and_emit_(); });
+            [this, weak_alive](std::size_t /*v*/) {
+                auto alive = weak_alive.lock();
+                if (alive && *alive) rebuild_and_emit_();
+            });
         page_size_sub_  = page_size_prop_.on_changed(
-            [this](std::size_t /*v*/) { rebuild_and_emit_(); });
+            [this, weak_alive](std::size_t /*v*/) {
+                auto alive = weak_alive.lock();
+                if (alive && *alive) rebuild_and_emit_();
+            });
     }
 
-    ~PagedList() = default;
+    ~PagedList() { *alive_ = false; }
 
     PagedList(const PagedList&)            = delete;
     PagedList& operator=(const PagedList&) = delete;
@@ -117,12 +127,12 @@ public:
     [[nodiscard]] std::size_t page_count() const {
         const std::size_t total = source_->size();
         const std::size_t ps    = std::max<std::size_t>(1, page_size_prop_.peek());
-        return (total + ps - 1) / ps;
+        return total / ps + (total % ps != 0 ? 1 : 0);
     }
 
     [[nodiscard]] bool is_last_page() const {
         const std::size_t pc = page_count();
-        return pc == 0 || page_index_prop_.peek() + 1 >= pc;
+        return pc == 0 || page_index_prop_.peek() >= pc - 1;
     }
 
     // ── Public live properties (PG-2) -----------------------------------
@@ -143,9 +153,21 @@ public:
     }
 
 private:
+    struct InputChange {
+        std::optional<ListChange<T>> source_change;
+        std::size_t page_size;
+        std::size_t page_index;
+    };
+
     struct SharedState {
-        mutable std::shared_mutex          m;
-        std::vector<std::shared_ptr<T>>    window;
+        mutable std::shared_mutex m;
+        std::vector<std::shared_ptr<T>> window;
+        // Upstream may emit a multi-event diff after computing its final
+        // snapshot. Replaying the source slots prevents a refill from using
+        // that final snapshot for every intermediate Remove/Move.
+        std::vector<std::shared_ptr<T>> source_items;
+        std::size_t page_size = 1;
+        std::size_t page_index = 0;
     };
 
     Property<std::size_t>              page_size_prop_;
@@ -154,277 +176,120 @@ private:
     std::shared_ptr<Source> source_;
     std::shared_ptr<Signal>            signal_;
     std::shared_ptr<SharedState>       state_;
+    std::shared_ptr<bool>              alive_ = std::make_shared<bool>(true);
 
     Subscription                       source_sub_;
     Subscription                       page_index_sub_;
     Subscription                       page_size_sub_;
 
-    /// Compute the desired window from current source + properties.
-    [[nodiscard]] std::vector<std::shared_ptr<T>> compute_window_() const {
-        const std::size_t ps    = std::max<std::size_t>(1, page_size_prop_.peek());
-        const std::size_t pi    = page_index_prop_.peek();
-        const std::size_t start = ps * pi;
-        const std::size_t total = source_->size();
-        if (start >= total) return {};
-        const std::size_t end = std::min(start + ps, total);
-        std::vector<std::shared_ptr<T>> out;
-        out.reserve(end - start);
-        for (std::size_t i = start; i < end; ++i) {
-            out.push_back(source_->at(i));   // O(1) per element, no full snapshot copy
-        }
-        return out;
+    static std::vector<std::shared_ptr<T>> compute_window_(
+            const std::vector<std::shared_ptr<T>>& items,
+            std::size_t page_size, std::size_t page_index) {
+        const auto size = std::max<std::size_t>(1, page_size);
+        // Check before multiplying; both page parameters are public size_t.
+        if (items.empty() || page_index > (items.size() - 1) / size) return {};
+        const auto start = page_index * size;
+        const auto count = std::min(size, items.size() - start);
+        const auto first = items.begin() + static_cast<std::ptrdiff_t>(start);
+        return {first, first + static_cast<std::ptrdiff_t>(count)};
     }
 
-    /// Initial seed -- no diff emission, just install the window.
     void rebuild_window_() {
-        auto next = compute_window_();
+        auto items = source_->snapshot();
+        const auto page_size = std::max<std::size_t>(1, page_size_prop_.peek());
+        const auto page_index = page_index_prop_.peek();
+        auto window = compute_window_(items, page_size, page_index);
         std::unique_lock lk(state_->m);
-        state_->window = std::move(next);
+        state_->source_items = std::move(items);
+        state_->window = std::move(window);
+        state_->page_size = page_size;
+        state_->page_index = page_index;
     }
 
-    /// Recompute window and emit minimal diff. Called from page
-    /// property changes (PG-2). For source-driven changes, prefer
-    /// the incremental `handle_source_change_` path below to keep
-    /// per-event cost O(page_size) instead of O(source_size).
     void rebuild_and_emit_() {
-        std::vector<std::shared_ptr<T>> old_window;
-        std::vector<std::shared_ptr<T>> new_window = compute_window_();
-        {
-            std::unique_lock lk(state_->m);
-            old_window     = state_->window;
-            state_->window = new_window;
-        }
-        emit_diff_(*signal_, old_window, new_window);
+        auto state = state_;
+        auto signal = signal_;
+        apply_(*state, *signal, InputChange{
+            {}, page_size_prop_.peek(), page_index_prop_.peek()});
     }
 
-    /// Incremental source-change handler. The window covers source
-    /// indices [start, end) with start = page_index * page_size and
-    /// end = min(start + page_size, source.size()). Each kind of
-    /// source change is mapped to AT MOST one window-local Insert /
-    /// Remove / Replace / ItemChanged event in O(page_size) time --
-    /// never O(source.size()). This is what keeps PG-3 honest at
-    /// 10^5 elements.
-    void handle_source_change_(const ListChange<T>& ch) {
-        const std::size_t ps = std::max<std::size_t>(1, page_size_prop_.peek());
-        const std::size_t pi = page_index_prop_.peek();
-        const std::size_t start = ps * pi;
-        const std::size_t end_excl = start + ps;
-
-        if (ch.kind == ListChangeKind::Reset) {
-            // Source clear -> derived clear. Capture the old window
-            // (already empty after source.clear() returns; we must
-            // emit Reset on the derived side regardless).
-            {
-                std::unique_lock lk(state_->m);
-                state_->window.clear();
-            }
-            signal_->emit(ListChange<T>{ListChangeKind::Reset, 0, nullptr, 0});
-            return;
-        }
-
-        switch (ch.kind) {
-        case ListChangeKind::Insert:      handle_source_insert_(ch, start, end_excl); return;
-        case ListChangeKind::Remove:      handle_source_remove_(ch, start, end_excl); return;
-        case ListChangeKind::Replace:     handle_source_replace_(ch, start, end_excl); return;
-        case ListChangeKind::ItemChanged: handle_source_item_changed_(ch, start, end_excl); return;
-        case ListChangeKind::Move:        handle_source_move_(ch, start, end_excl); return;
-        case ListChangeKind::Reset:       /* handled above */ return;
-        }
+    void handle_source_change_(const ListChange<T>& change) {
+        auto state = state_;
+        auto signal = signal_;
+        apply_(*state, *signal, InputChange{change, page_size_prop_.peek(), page_index_prop_.peek()});
     }
 
-    void handle_source_insert_(const ListChange<T>& ch,
-                               std::size_t start, std::size_t end_excl) {
-        // Source insert at index ch.index. Cases:
-        //   ch.index >= end_excl : after the window -> no derived event,
-        //                          window unchanged (window length cap
-        //                          already enforced).
-        //   ch.index <  start    : before the window -> the window
-        //                          slides; the new last item enters,
-        //                          the previous last item slides out.
-        //                          But: derived list represents indices
-        //                          [start, min(start+ps, src_size)) of
-        //                          the source AFTER the insert. So:
-        //                          (a) the previous source[start-1]
-        //                              becomes source[start] -> new
-        //                              window[0]; the previous window[0]
-        //                              becomes window[1]; ...; the
-        //                              previous window[ps-1] is pushed
-        //                              out of the window; net derived
-        //                              event = Insert at 0 + Remove at ps.
-        //                              We synthesize this as one Insert
-        //                              + one Remove if the window was
-        //                              full, else one Insert at 0.
-        //   start <= ch.index < end_excl : inside the window -> Insert
-        //                          at (ch.index - start). If the window
-        //                          was full, the previously-last item
-        //                          spills out (Remove at ps).
-        std::shared_ptr<T> incoming;
-        std::optional<std::size_t> emit_insert_at;
-        std::optional<std::size_t> emit_remove_at;
-        std::shared_ptr<T>          spilled;
+    static void apply_(SharedState& state, Signal& signal, InputChange event) {
+        std::vector<std::shared_ptr<T>> before;
+        std::vector<std::shared_ptr<T>> after;
+        std::optional<ListChange<T>> direct;
+        bool same_page = false;
         {
-            std::unique_lock lk(state_->m);
-            const std::size_t before = state_->window.size();
-            const std::size_t cap    = end_excl - start;
-
-            if (ch.index >= end_excl) {
-                // Past window -- no event.
+            std::unique_lock lk(state.m);
+            auto& items = state.source_items;
+            const auto page_size = std::max<std::size_t>(1, event.page_size);
+            same_page = state.page_size == page_size && state.page_index == event.page_index;
+            if (event.source_change &&
+                event.source_change->kind == ListChangeKind::Insert &&
+                event.source_change->index == items.size() &&
+                same_page &&
+                state.window.size() == page_size) {
+                // A full, unchanged page cannot see a tail insertion. Still
+                // replay the owned item so later page changes/refills use it.
+                // Compare applied parameters: a reactive batch may already
+                // have changed the Properties without re-windowing yet.
+                items.push_back(event.source_change->item);
                 return;
             }
-            if (ch.index < start) {
-                // Pre-window slide.
-                lk.unlock();
-                incoming = source_->at(start);
-                lk.lock();
-                state_->window.insert(state_->window.begin(), incoming);
-                emit_insert_at = 0;
-                if (state_->window.size() > cap) {
-                    spilled = state_->window.back();
-                    state_->window.pop_back();
-                    emit_remove_at = state_->window.size();
+            before = state.window;
+            if (event.source_change) {
+                const auto& ch = *event.source_change;
+                const auto pos = static_cast<std::ptrdiff_t>(ch.index);
+                switch (ch.kind) {
+                case ListChangeKind::Insert: items.insert(items.begin() + pos, ch.item); break;
+                case ListChangeKind::Remove: items.erase(items.begin() + pos); break;
+                case ListChangeKind::Replace: items.at(ch.index) = ch.item; break;
+                case ListChangeKind::ItemChanged: break;
+                case ListChangeKind::Reset: items = *ch.snapshot; break;
+                case ListChangeKind::Move: {
+                    auto moved = items.at(ch.from_index);
+                    items.erase(items.begin() + static_cast<std::ptrdiff_t>(ch.from_index));
+                    items.insert(items.begin() + pos, std::move(moved));
+                    break;
                 }
-            } else {
-                // Inside window.
-                const std::size_t local = ch.index - start;
-                lk.unlock();
-                incoming = source_->at(ch.index);
-                lk.lock();
-                state_->window.insert(
-                    state_->window.begin() + static_cast<std::ptrdiff_t>(local),
-                    incoming);
-                emit_insert_at = local;
-                if (state_->window.size() > cap) {
-                    spilled = state_->window.back();
-                    state_->window.pop_back();
-                    emit_remove_at = state_->window.size();
                 }
             }
-            (void)before;
-        }
-        if (emit_insert_at.has_value()) {
-            signal_->emit(ListChange<T>{ListChangeKind::Insert, *emit_insert_at,
-                                        incoming.get(), 0});
-        }
-        if (emit_remove_at.has_value()) {
-            signal_->emit(ListChange<T>{ListChangeKind::Remove, *emit_remove_at,
-                                        spilled.get(), 0});
-        }
-    }
-
-    void handle_source_remove_(const ListChange<T>& ch,
-                               std::size_t start, std::size_t end_excl) {
-        // Source remove at ch.index. Cases:
-        //   ch.index >= end_excl : past window -> no event.
-        //   ch.index <  start    : pre-window -> the window slides:
-        //                          previous window[0] becomes the
-        //                          item at start-1 (now removed) ->
-        //                          out; previous window[1] becomes
-        //                          window[0]; ...; a new last item
-        //                          enters from source[end_excl-1]
-        //                          (if it exists). Net: Remove at 0 +
-        //                          maybe Insert at ps-1.
-        //   start <= ch.index < end_excl : inside window -> Remove at
-        //                          (ch.index - start). If a successor
-        //                          source slot exists at end_excl-1
-        //                          AFTER the removal it slides into
-        //                          the window (Insert at ps-1).
-        std::optional<std::size_t> emit_remove_at;
-        std::optional<std::size_t> emit_insert_at;
-        std::shared_ptr<T>          incoming;
-        std::shared_ptr<T>          removed;
-        {
-            std::unique_lock lk(state_->m);
-            const std::size_t cap = end_excl - start;
-            if (ch.index >= end_excl) return;
-
-            if (ch.index < start) {
-                if (state_->window.empty()) return;
-                removed = state_->window.front();
-                state_->window.erase(state_->window.begin());
-                emit_remove_at = 0;
-                // Pull in tail item if exists post-remove.
-                lk.unlock();
-                const std::size_t tail_src = end_excl - 1 - 1;
-                // After source removal, source size decreased by 1.
-                // The new tail-of-window source index is end_excl-1
-                // measured against the post-remove source.
-                const std::size_t post_size = source_->size();
-                if (end_excl - 1 < post_size) {
-                    incoming = source_->at(end_excl - 1);
-                }
-                (void)tail_src;
-                lk.lock();
-                if (incoming && state_->window.size() < cap) {
-                    state_->window.push_back(incoming);
-                    emit_insert_at = state_->window.size() - 1;
-                }
-            } else {
-                const std::size_t local = ch.index - start;
-                if (local >= state_->window.size()) return;
-                removed = state_->window[local];
-                state_->window.erase(state_->window.begin()
-                                         + static_cast<std::ptrdiff_t>(local));
-                emit_remove_at = local;
-                lk.unlock();
-                const std::size_t post_size = source_->size();
-                if (end_excl - 1 < post_size) {
-                    incoming = source_->at(end_excl - 1);
-                }
-                lk.lock();
-                if (incoming && state_->window.size() < cap) {
-                    state_->window.push_back(incoming);
-                    emit_insert_at = state_->window.size() - 1;
+            after = compute_window_(items, event.page_size, event.page_index);
+            state.window = after;
+            state.page_size = page_size;
+            state.page_index = event.page_index;
+            if (event.source_change) {
+                const auto& ch = *event.source_change;
+                if (ch.kind == ListChangeKind::Reset) {
+                    direct = ListChange<T>::reset(after);
+                } else if ((ch.kind == ListChangeKind::Replace ||
+                            ch.kind == ListChangeKind::ItemChanged) && !after.empty()) {
+                    const auto start = event.page_index * std::max<std::size_t>(1, event.page_size);
+                    if (ch.index >= start && ch.index - start < after.size()) {
+                        direct = ListChange<T>{ch.kind, ch.index - start, ch.item, 0};
+                    }
                 }
             }
         }
-        if (emit_remove_at.has_value()) {
-            signal_->emit(ListChange<T>{ListChangeKind::Remove, *emit_remove_at,
-                                        removed.get(), 0});
-        }
-        if (emit_insert_at.has_value()) {
-            signal_->emit(ListChange<T>{ListChangeKind::Insert, *emit_insert_at,
-                                        incoming.get(), 0});
-        }
+        if (direct && (same_page || direct->kind == ListChangeKind::Reset))
+            signal.emit(*direct);
+        else
+            emit_diff_(signal, before, after, std::move(direct));
     }
 
-    void handle_source_replace_(const ListChange<T>& ch,
-                                std::size_t start, std::size_t end_excl) {
-        if (ch.index < start || ch.index >= end_excl) return;
-        const std::size_t local = ch.index - start;
-        std::shared_ptr<T> sp_ = source_->at(ch.index);
-        {
-            std::unique_lock lk(state_->m);
-            if (local >= state_->window.size()) return;
-            state_->window[local] = sp_;
-        }
-        signal_->emit(ListChange<T>{ListChangeKind::Replace, local,
-                                    sp_.get(), 0});
-    }
-
-    void handle_source_item_changed_(const ListChange<T>& ch,
-                                     std::size_t start, std::size_t end_excl) {
-        if (ch.index < start || ch.index >= end_excl) return;
-        const std::size_t local = ch.index - start;
-        signal_->emit(ListChange<T>{ListChangeKind::ItemChanged, local,
-                                    ch.item, 0});
-    }
-
-    void handle_source_move_(const ListChange<T>& /*ch*/,
-                             std::size_t /*start*/, std::size_t /*end_excl*/) {
-        // Conservative implementation: a Move that crosses the
-        // window boundary requires re-windowing in O(page_size).
-        // Fallback to rebuild_and_emit_() which uses compute_window_
-        // (also O(page_size)).
-        rebuild_and_emit_();
-    }
-
-    /// Emit the minimal Remove* + Insert* sequence taking `before`
-    /// to `after`, identifying items by raw shared_ptr address. Same
-    /// algorithm used by DistinctList's emit_diff_, kept local to
-    /// avoid the cross-header dependency.
+    // Keep surviving handles in place whenever possible; repeated handles
+    // retain their multiplicity. Both snapshots own all emitted payloads.
     static void emit_diff_(Signal& sig,
                            const std::vector<std::shared_ptr<T>>& before,
-                           const std::vector<std::shared_ptr<T>>& after) {
+                           const std::vector<std::shared_ptr<T>>& after,
+                           std::optional<ListChange<T>> refresh = {}) {
+        std::vector<ListChange<T>> changes;
+        changes.reserve(before.size() + after.size());
         std::unordered_set<const T*> in_after;
         in_after.reserve(after.size());
         for (const auto& p : after) in_after.insert(p.get());
@@ -434,19 +299,45 @@ private:
              i >= 0; --i) {
             const auto u = static_cast<std::size_t>(i);
             if (!in_after.count(work[u].get())) {
-                sig.emit(ListChange<T>{ListChangeKind::Remove, u,
-                                       work[u].get(), 0});
+                changes.push_back(ListChange<T>{ListChangeKind::Remove, u,
+                                       work[u], 0});
                 work.erase(work.begin() + i);
             }
         }
         for (std::size_t i = 0; i < after.size(); ++i) {
             const T* want = after[i].get();
             if (i < work.size() && work[i].get() == want) continue;
+
+            const auto pos = work.begin() + static_cast<std::ptrdiff_t>(i);
+            const auto existing = std::find_if(pos, work.end(),
+                [want](const auto& item) { return item.get() == want; });
+            if (existing != work.end()) {
+                const auto from = static_cast<std::size_t>(existing - work.begin());
+                std::rotate(pos, existing, existing + 1);
+                changes.push_back(ListChange<T>{ListChangeKind::Move, i, after[i], from});
+                continue;
+            }
+
             work.insert(work.begin() + static_cast<std::ptrdiff_t>(i),
                         after[i]);
-            sig.emit(ListChange<T>{ListChangeKind::Insert, i,
-                                   after[i].get(), 0});
+            changes.push_back(ListChange<T>{ListChangeKind::Insert, i,
+                                   after[i], 0});
         }
+
+        // Membership alone does not account for repeated handles. A
+        // smaller window may retain an identity but fewer occurrences.
+        while (work.size() > after.size()) {
+            const auto index = work.size() - 1;
+            auto removed = work.back();
+            work.pop_back();
+            changes.push_back(ListChange<T>{ListChangeKind::Remove, index,
+                                   removed, 0});
+        }
+        // A source content event may also apply pending page parameters.
+        // Re-window first, then refresh even when the identities match. Keep
+        // both in one batch so reentrant emissions cannot split their order.
+        if (refresh) changes.push_back(std::move(*refresh));
+        sig.emit_batch(std::move(changes));
     }
 };
 

@@ -12,16 +12,18 @@
 // Design contract
 // ---------------
 // 1. **Owns its callable.** Move/copy-constructs / destroys the underlying
-//    object exactly when you would expect from `std::function`.
+//    object. Targets must be copy constructible, matching the wrapper's
+//    own copyable interface. Target copy/move exceptions propagate.
+//    Failed assignment leaves the destination empty (basic guarantee).
 // 2. **Zero heap allocation.** A storage overflow is a static_assert, not a
 //    runtime malloc.
 // 3. **Two pointers + buffer.** Layout is `(invoker_ptr, manager_ptr,
 //    aligned_buffer)`. `invoker_ptr` calls the wrapped callable; the
 //    `manager_ptr` is a single function pointer that handles destroy /
 //    move via a tag dispatch (one indirection rather than three).
-// 4. **Trivially small lambdas optimised.** When the captured callable is
-//    trivially copyable & trivially destructible, the manager is a tiny
-//    memcpy; when not, the manager forwards to typed move/destroy helpers.
+// 4. **Typed lifetime operations.** The manager forwards copy, move and
+//    destruction to the target type; trivial operations can be optimised
+//    by the compiler without changing the lifetime contract.
 // 5. **Empty-state safe.** `operator bool()` reports engagement; calling an
 //    empty `inplace_function` throws `aria::bad_inplace_function_call`,
 //    which derives from `std::bad_function_call`.
@@ -68,12 +70,8 @@ namespace detail::inplace {
 // move, copy, and destruction. Using a single manager pointer (rather than
 // one for each operation) keeps the `inplace_function` footprint tight.
 //
-// `Copy` is only supported for callables that are themselves
-// `CopyConstructible`; the inplace_function copy constructor / copy
-// assignment are SFINAE-disabled when the held callable is move-only, so
-// `Op::Copy` is never reachable in that case. We still always synthesise
-// the manager — invoking it with `Copy` for a non-copyable callable would
-// be a static_assert at the manager template instantiation site.
+// Construction constrains every erased target to be copy constructible,
+// so every engaged wrapper supports the copy opcode.
 enum class Op : unsigned char {
     Destroy,
     MoveConstruct,
@@ -81,7 +79,7 @@ enum class Op : unsigned char {
 };
 
 template<class Fn>
-void manager_for(Op op, void* self, void* other) noexcept {
+void manager_for(Op op, void* self, void* other) {
     auto* dst = static_cast<Fn*>(self);
     switch (op) {
         case Op::Destroy:
@@ -93,14 +91,8 @@ void manager_for(Op op, void* self, void* other) noexcept {
             return;
         }
         case Op::CopyConstruct: {
-            if constexpr (std::is_copy_constructible_v<Fn>) {
-                const auto* src = static_cast<const Fn*>(other);
-                ::new (dst) Fn(*src);
-            } else {
-                // Unreachable: the inplace_function copy constructor is
-                // SFINAE-disabled when Fn is move-only. We still need the
-                // case to keep the switch exhaustive.
-            }
+            const auto* src = static_cast<const Fn*>(other);
+            ::new (dst) Fn(*src);
             return;
         }
     }
@@ -127,6 +119,7 @@ public:
              class = std::enable_if_t<
                  !std::is_same_v<Decayed, inplace_function> &&
                  std::is_invocable_r_v<R, Decayed&, Args...> &&
+                 std::is_copy_constructible_v<Decayed> &&
                  std::is_move_constructible_v<Decayed>>>
     inplace_function(Fn&& fn) {
         emplace_<Decayed>(std::forward<Fn>(fn));
@@ -144,11 +137,11 @@ public:
         return *this;
     }
 
-    inplace_function(inplace_function&& other) noexcept {
+    inplace_function(inplace_function&& other) {
         move_from_(other);
     }
 
-    inplace_function& operator=(inplace_function&& other) noexcept {
+    inplace_function& operator=(inplace_function&& other) {
         if (this != &other) {
             reset();
             move_from_(other);
@@ -166,6 +159,7 @@ public:
              class = std::enable_if_t<
                  !std::is_same_v<Decayed, inplace_function> &&
                  std::is_invocable_r_v<R, Decayed&, Args...> &&
+                 std::is_copy_constructible_v<Decayed> &&
                  std::is_move_constructible_v<Decayed>>>
     inplace_function& operator=(Fn&& fn) {
         reset();
@@ -177,9 +171,11 @@ public:
 
     void reset() noexcept {
         if (manager_ != nullptr) {
-            manager_(detail::inplace::Op::Destroy, storage_(), nullptr);
-            manager_ = nullptr;
+            auto manager = std::exchange(manager_, nullptr);
             invoker_ = nullptr;
+            // A capture destructor may reset us again or install a new
+            // callback. Do not destroy twice or overwrite that new state.
+            manager(detail::inplace::Op::Destroy, storage_(), nullptr);
         }
     }
 
@@ -228,7 +224,7 @@ public:
 private:
     using Invoker = R (*)(const void*, Args...);
     using ManagerFn =
-        void (*)(detail::inplace::Op, void* /*self*/, void* /*other*/) noexcept;
+        void (*)(detail::inplace::Op, void* /*self*/, void* /*other*/);
 
     template<class Stored, class U>
     void emplace_(U&& fn) {
@@ -239,6 +235,11 @@ private:
             "aria::inplace_function: callable alignment exceeds Alignment. "
             "Increase the Alignment template parameter.");
 
+        // A function reference decays to a stored pointer, but cannot be null.
+        using Argument = std::remove_reference_t<U>;
+        if constexpr (std::is_pointer_v<Argument> || std::is_member_pointer_v<Argument>) {
+            if (fn == nullptr) return;
+        }
         ::new (storage_()) Stored(std::forward<U>(fn));
         invoker_ = &invoke_<Stored>;
         manager_ = &detail::inplace::manager_for<Stored>;
@@ -250,10 +251,14 @@ private:
         // (mutable lambdas). The storage is morally non-const; we only mark
         // it const for the function_ref interop.
         auto* p = const_cast<Fn*>(static_cast<const Fn*>(obj));
-        return std::invoke(*p, std::forward<Args>(args)...);
+        if constexpr (std::is_void_v<R>) {
+            std::invoke(*p, std::forward<Args>(args)...);
+        } else {
+            return std::invoke(*p, std::forward<Args>(args)...);
+        }
     }
 
-    void move_from_(inplace_function& other) noexcept {
+    void move_from_(inplace_function& other) {
         if (other.manager_ != nullptr) {
             other.manager_(detail::inplace::Op::MoveConstruct,
                            storage_(), other.storage_());
@@ -265,13 +270,9 @@ private:
 
     void copy_from_(const inplace_function& other) {
         if (other.manager_ != nullptr) {
-            // The manager dispatches to a typed copy that performs a
-            // placement-new copy construction of the held callable.
-            // For move-only Fn the relevant `Op::Copy` arm is unreachable
-            // (see manager_for); the inplace_function copy ctor itself
-            // would fail to instantiate via SFINAE upstream. Here we are
-            // already on the runtime copy path, so the held type is
-            // necessarily CopyConstructible.
+            // Publish engagement only after successful construction. A
+            // throwing target copy leaves
+            // this wrapper empty and the source unchanged.
             other.manager_(detail::inplace::Op::CopyConstruct,
                            storage_(),
                            const_cast<void*>(other.storage_()));

@@ -22,7 +22,7 @@ Step-by-step, chapter-style documentation for library users:
 | 5 | [Validation](guide/validation.md) | `Validator<T>`, `FormValidator`, `ValidationState`, `ValidationKey`, async rules |
 | 6 | [View Binding](guide/binding.md) | `BindingEngine`, `IViewAdapter`, `IView`, `Converter`, two-way binding, feedback-loop suppression |
 | 7 | [Navigation](guide/navigation.md) | `Navigator`, `push`/`pop`/`clear`, `push_for_result<R>`, `Modal` vs `Push`, deep-link routing |
-| 8 | [Diagnostics & Debugging](guide/diagnostics-guide.md) | `TraceEvent`, `TraceSink`, `GraphInspector`, `ScopedTraceSink`, zero-overhead contract |
+| 8 | [Diagnostics & Debugging](guide/diagnostics-guide.md) | `TraceEvent`, `TraceSink`, `GraphInspector`, `ScopedTraceSink`, disabled tracing fast path |
 | 9 | [Adapters](guide/adapters/) | Platform-specific integration guides |
 
 ### Adapter Guides
@@ -51,9 +51,11 @@ Task-oriented recipes — short, self-contained, grounded in shipped APIs:
 | 7 | [View-destroy cancellation](cookbook/07-view-destroy-cancellation.md) |
 | 8 | [Writing a new `IViewAdapter`](cookbook/08-writing-a-view-adapter.md) |
 
-The full symbol-level **API reference** is Doxygen-generated:
+The public [API reference](https://dqsjqian.github.io/Aria/) is generated from
+main. See the [2.0 migration guide](migration-2.0.md) when upgrading.
+To build the same Doxygen reference locally:
 `cmake -B build/flavors/docs -DARIA_BUILD_DOCS=ON && cmake --build build/flavors/docs --target aria_docs`
-→ `build/docs/html/index.html`.
+→ `build/flavors/docs/docs/html/index.html`.
 
 ## Reference
 
@@ -62,9 +64,9 @@ Contract documents for framework developers and advanced users:
 | Document | Description |
 |----------|-------------|
 | [API Style Contract](reference/api-style.md) | Naming, namespace, include-path, error-message, template-diagnostic, deprecation rules |
-| [Lifecycle & Threading](reference/lifecycle.md) | Thread-affinity, subscription detach, view-destroy, coroutine race model |
+| [Lifecycle & Threading](reference/lifecycle.md) | Thread-affinity, subscription release, view-destroy, coroutine race model |
 | [Error Model](reference/error-model.md) | `ErrorKind` taxonomy, `aria::Error`, per-surface protocol, when to throw vs set |
-| [Diagnostics Protocol](reference/diagnostics.md) | `TraceEvent`, `TraceSink`, per-subsystem hook points, zero-overhead contract |
+| [Diagnostics Protocol](reference/diagnostics.md) | `TraceEvent`, `TraceSink`, per-subsystem hook points, disabled tracing fast path |
 | [List Diff Contract](reference/list-diff-contract.md) | `ListChangeKind`, event semantics, deterministic ordering, adapter conformance |
 | [Performance Baselines](reference/performance.md) | Complexity bounds, measured baselines, anti-patterns |
 

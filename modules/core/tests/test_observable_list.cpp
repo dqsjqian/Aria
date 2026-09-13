@@ -285,7 +285,7 @@ TEST_CASE("ObservableList: move emits a single Move with from_index/index") {
     CHECK(captured.kind == ListChangeKind::Move);
     CHECK(captured.from_index == 0);
     CHECK(captured.index == 2);
-    CHECK(captured.item == a.get());
+    CHECK(captured.item == a);
 
     CHECK(list.at(0)->id == 2);
     CHECK(list.at(1)->id == 3);
@@ -351,50 +351,26 @@ TEST_CASE("ObservableList: ItemChanged index is consistent after move") {
 // This is a deliberate trade-off: keeping a multi-map would make every
 // insertion / removal more expensive for a rare edge case. The same
 // limitation exists in most list-model-style APIs across other MVVM
-// frameworks. Users who legitimately need two distinct "slots" for the
-// same logical row should wrap them in two distinct shared_ptrs (e.g.
-// `std::make_shared<Item>(*original)`).
-//
-// This test pins down the current behaviour so future refactors do not
-// silently change the observable semantics.
-TEST_CASE("ObservableList: same shared_ptr inserted twice -- ItemChanged reports latest index") {
+// Each occurrence reports its own replay index, while index_of identifies
+// the last surviving occurrence of the logical object.
+TEST_CASE("ObservableList: repeated handles report every valid occurrence") {
     ObservableList<Item> list;
     auto shared = std::make_shared<Item>(42);
-    list.push_back(shared);           // index 0
-    list.push_back(shared);           // index 1 (SAME underlying T)
+    list.push_back(shared);
+    list.push_back(shared);
     CHECK(list.size() == 2);
-    CHECK(list.at(0).get() == shared.get());
-    CHECK(list.at(1).get() == shared.get());
-
+    CHECK(list.index_of(shared.get()) == 1);
     std::vector<std::size_t> observed_indices;
     auto sub = list.observe([&](const ListChange<Item>& ch) {
-        if (ch.kind == ListChangeKind::ItemChanged) {
-            observed_indices.push_back(ch.index);
-        }
+        if (ch.kind == ListChangeKind::ItemChanged) observed_indices.push_back(ch.index);
     });
-
-    // Each push_back wires up its own per-slot subscription to
-    // `done.on_changed`, so a single Property flip produces TWO
-    // ItemChanged emits. Both emits resolve `raw` through the O(1)
-    // index map, which currently holds the last-inserted position.
     shared->done.set(true);
-    REQUIRE(observed_indices.size() == 2);
-    CHECK(observed_indices[0] == 1);     // last-inserted position wins
-    CHECK(observed_indices[1] == 1);
-
-    // Removing slot 1 tears down slot 1's per-item subscription AND
-    // erases the raw->index mapping. However, slot 0 still has its
-    // independent subscription installed on the SAME `done` Property,
-    // so a flip still fires an ItemChanged. Since `index_of_` no
-    // longer knows the raw pointer, `index_of_raw_` returns
-    // `slots_.size()` as a past-the-end "stale" sentinel — observers
-    // are expected to treat that as "ignore, the item may no longer
-    // be in the list".
+    CHECK(observed_indices == std::vector<std::size_t>{0, 1});
     list.remove_at(1);
+    CHECK(list.index_of(shared.get()) == 0);
     observed_indices.clear();
     shared->done.set(false);
-    REQUIRE(observed_indices.size() == 1);
-    CHECK(observed_indices[0] == list.size());    // past-the-end sentinel
+    CHECK(observed_indices == std::vector<std::size_t>{0});
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -550,7 +526,7 @@ struct ListMirror {
                 case ListChangeKind::Insert:
                     REQUIRE(ch.index <= items.size());
                     items.insert(items.begin() + static_cast<std::ptrdiff_t>(ch.index),
-                                 ch.item);
+                                 ch.item.get());
                     break;
                 case ListChangeKind::Remove:
                     REQUIRE(ch.index < items.size());
@@ -558,7 +534,7 @@ struct ListMirror {
                     break;
                 case ListChangeKind::Replace:
                     REQUIRE(ch.index < items.size());
-                    items[ch.index] = ch.item;
+                    items[ch.index] = ch.item.get();
                     break;
                 case ListChangeKind::Move: {
                     REQUIRE(ch.from_index < items.size());
@@ -646,12 +622,16 @@ TEST_CASE("ObservableList::reconcile: reordering emits Move, not Remove+Insert")
     for (auto& r : initial) list.push_back(r);
 
     ListMirror mirror{list};
+    std::vector<ListChangeKind> kinds;
+    auto record = list.observe([&](const auto& change) { kinds.push_back(change.kind); });
 
     // Reverse the order, reusing the SAME handles so nothing is Replace.
     std::vector<std::shared_ptr<Item>> reversed{initial[2], initial[1], initial[0]};
     list.reconcile(reversed, ById{});
 
     CHECK(mirror.resets == 0);
+    REQUIRE_FALSE(kinds.empty());
+    for (const auto kind : kinds) CHECK(kind == ListChangeKind::Move);
     CHECK(ids_of(list) == std::vector<int>{3, 2, 1});
     mirror.check_matches(list);
 
@@ -759,4 +739,178 @@ TEST_CASE("ObservableList::reconcile: complex churn stays consistent") {
     CHECK(mirror.resets == 0);
     CHECK(ids_of(list) == std::vector<int>{3, 7, 6, 1, 9});
     mirror.check_matches(list);
+}
+
+TEST_CASE("ObservableList: batch callbacks replay owning payloads in event order") {
+    ObservableList<int> list;
+    for (int n : {0, 1, 2, 3, 4}) list.emplace_back(n);
+    auto mirror = list.snapshot();
+    auto sub = list.observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::Insert) {
+            REQUIRE(ch.index <= mirror.size());
+            mirror.insert(mirror.begin() + static_cast<std::ptrdiff_t>(ch.index), ch.item);
+        } else if (ch.kind == ListChangeKind::Remove) {
+            REQUIRE(ch.index < mirror.size());
+            CHECK(mirror[ch.index] == ch.item);
+            mirror.erase(mirror.begin() + static_cast<std::ptrdiff_t>(ch.index));
+        }
+    });
+    list.remove_range(0, 2);
+    CHECK(mirror == list.snapshot());
+    std::vector<std::shared_ptr<int>> added{std::make_shared<int>(8), std::make_shared<int>(9)};
+    list.insert_range(1, added.begin(), added.end());
+    CHECK(mirror == list.snapshot());
+    list.remove_all([](int n) { return n % 2 == 0; });
+    CHECK(mirror == list.snapshot());
+}
+
+TEST_CASE("ObservableList: throwing remove_all predicate leaves the source intact") {
+    ObservableList<int> list;
+    for (int n : {1, 2, 3, 4}) list.emplace_back(n);
+    auto before = list.snapshot();
+    int notifications = 0;
+    auto sub = list.observe([&](const auto&) { ++notifications; });
+    CHECK_THROWS_AS(list.remove_all([](int n) {
+        if (n == 4) throw std::runtime_error("predicate failed");
+        return n % 2 == 0;
+    }), std::runtime_error);
+    CHECK(list.snapshot() == before);
+    CHECK(notifications == 0);
+    for (std::size_t i = 0; i < before.size(); ++i) CHECK(list.index_of(before[i].get()) == i);
+}
+
+TEST_CASE("ObservableList::reconcile: null entries are skipped without duplicating survivors") {
+    ObservableList<int> list;
+    auto a = list.emplace_back(1);
+    auto b = list.emplace_back(2);
+    CHECK(list.reconcile({nullptr, a, nullptr, b, nullptr}) == 0);
+    CHECK(list.snapshot() == std::vector<std::shared_ptr<int>>{a, b});
+}
+
+TEST_CASE("ObservableList: Move payload remains alive throughout nested clear") {
+    ObservableList<int> list;
+    list.emplace_back(1); list.emplace_back(2);
+    bool read_payload = false;
+    auto first = list.observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::Move) list.clear();
+    });
+    auto second = list.observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::Move) {
+            read_payload = true;
+            CHECK(*ch.item == 1);
+        }
+    });
+    list.move(0, 1);
+    CHECK(read_payload);
+}
+
+TEST_CASE("ObservableList: an observer can destroy the source during batch delivery") {
+    auto source = std::make_unique<ObservableList<int>>();
+    std::vector<int> seen;
+    auto first = source->observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::Insert) source.reset();
+    });
+    auto second = source->observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::Insert) seen.push_back(*ch.item);
+    });
+    std::vector<std::shared_ptr<int>> incoming{std::make_shared<int>(1), std::make_shared<int>(2)};
+    source->insert_range(0, incoming.begin(), incoming.end());
+    CHECK(source == nullptr);
+    CHECK(seen == std::vector<int>{1, 2});
+}
+
+TEST_CASE("ObservableList: a reentrant write follows all pending Insert payloads") {
+    ObservableList<int> source;
+    bool changed = false;
+    auto first = source.observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::Insert && !changed) {
+            changed = true;
+            source.replace_at(1, std::make_shared<int>(9));
+            source.remove_at(0);
+        }
+    });
+    std::vector<std::shared_ptr<int>> mirror;
+    std::vector<int> inserted;
+    auto second = source.observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::Insert) {
+            REQUIRE(ch.index <= mirror.size());
+            inserted.push_back(*ch.item);
+            mirror.insert(mirror.begin() + static_cast<std::ptrdiff_t>(ch.index), ch.item);
+        } else if (ch.kind == ListChangeKind::Replace) {
+            REQUIRE(ch.index < mirror.size());
+            mirror[ch.index] = ch.item;
+        } else if (ch.kind == ListChangeKind::Remove) {
+            REQUIRE(ch.index < mirror.size());
+            CHECK(mirror[ch.index] == ch.item);
+            mirror.erase(mirror.begin() + static_cast<std::ptrdiff_t>(ch.index));
+        }
+    });
+    std::vector<std::shared_ptr<int>> incoming;
+    for (int value : {1, 2, 3}) incoming.push_back(std::make_shared<int>(value));
+    source.insert_range(0, incoming.begin(), incoming.end());
+    CHECK(inserted == std::vector<int>{1, 2, 3});
+    CHECK(mirror == source.snapshot());
+}
+
+TEST_CASE("ObservableList: queued Reset retains its own snapshot") {
+    ObservableList<int> source;
+    bool changed = false;
+    auto first = source.observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::Insert && !changed) {
+            changed = true;
+            source.clear();
+            source.emplace_back(9);
+        }
+    });
+    std::vector<ListChange<int>> events;
+    auto second = source.observe([&](const auto& ch) { events.push_back(ch); });
+    source.emplace_back(1);
+    REQUIRE(events.size() == 3);
+    CHECK(*events[0].item == 1);
+    CHECK(events[1].kind == ListChangeKind::Reset);
+    REQUIRE(events[1].snapshot != nullptr);
+    CHECK(events[1].snapshot->empty());
+    CHECK(*events[2].item == 9);
+    source.clear();
+    CHECK(*events[0].item == 1); // event ownership extends beyond source/emit
+}
+
+TEST_CASE("ObservableList: repeated ItemChanged indices stay frozen during reentrant removal") {
+    ObservableList<Item> source;
+    auto shared = source.emplace_back(42);
+    source.push_back(shared);
+    bool removed = false;
+    auto first = source.observe([&](const auto& ch) {
+        if (ch.kind == ListChangeKind::ItemChanged && !removed) {
+            removed = true;
+            source.remove_at(1);
+        }
+    });
+    std::vector<ListChange<Item>> events;
+    auto second = source.observe([&](const auto& ch) { events.push_back(ch); });
+    shared->done.set(true);
+    REQUIRE(events.size() == 3);
+    CHECK(events[0].kind == ListChangeKind::ItemChanged);
+    CHECK(events[0].index == 0);
+    CHECK(events[1].kind == ListChangeKind::ItemChanged);
+    CHECK(events[1].index == 1);
+    CHECK(events[2].kind == ListChangeKind::Remove);
+    CHECK(events[2].index == 1);
+    CHECK(source.index_of(shared.get()) == 0);
+}
+
+TEST_CASE("ObservableList: throwing item subscription still publishes the committed Insert") {
+    struct ThrowingItem {
+        Subscription on_changed(std::function<void(const ThrowingItem&)>) {
+            throw std::runtime_error("subscription failed");
+        }
+    };
+    ObservableList<ThrowingItem> source;
+    auto item = std::make_shared<ThrowingItem>();
+    std::vector<ListChange<ThrowingItem>> events;
+    auto sub = source.observe([&](const auto& ch) { events.push_back(ch); });
+    CHECK_THROWS_AS(source.push_back(item), std::runtime_error);
+    REQUIRE(source.size() == 1);
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].item == item);
 }

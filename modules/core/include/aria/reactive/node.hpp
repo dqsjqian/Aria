@@ -27,10 +27,11 @@
 //     points. Cross-thread updates must be marshalled via a Dispatcher.
 // ============================================================================
 
-#include <atomic>
+#include "aria/abi/export.hpp"
 #include <cassert>
 #include <concepts>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -40,6 +41,40 @@ namespace aria::reactive {
 class Node;      // forward
 class Graph;     // forward
 struct Edge;
+
+namespace detail {
+
+/// Non-owning graph reference. Relocation rethreads the intrusive links;
+/// retiring a node clears its outstanding references without allocation
+/// or a scan of the graph. All operations run on the graph thread.
+class NodeHandle {
+    friend class ::aria::reactive::Node;
+public:
+    NodeHandle() noexcept = default;
+    explicit NodeHandle(Node* node) noexcept;
+    NodeHandle(const NodeHandle& other) noexcept : NodeHandle(other.node_) {}
+    NodeHandle(NodeHandle&& other) noexcept;
+    NodeHandle& operator=(const NodeHandle& other) noexcept;
+    NodeHandle& operator=(NodeHandle&& other) noexcept;
+    ~NodeHandle() { reset_(); }
+
+    [[nodiscard]] Node* get() const noexcept { return node_; }
+    [[nodiscard]] Node& operator*() const noexcept { return *node_; }
+    [[nodiscard]] Node* operator->() const noexcept { return node_; }
+    explicit operator bool() const noexcept { return node_ != nullptr; }
+    friend bool operator==(const NodeHandle& a, const NodeHandle& b) noexcept {
+        return a.node_ == b.node_;
+    }
+
+private:
+    void reset_() noexcept;
+    void take_(NodeHandle& other) noexcept;
+    Node* node_ = nullptr;
+    NodeHandle* previous_ = nullptr;
+    NodeHandle* next_ = nullptr;
+};
+
+}  // namespace detail
 
 // ---------------------------------------------------------------------------
 //  Node role:
@@ -103,6 +138,7 @@ class Node {
     // therefore needs privileged access to Node's intrusive lists and
     // lifecycle state. All other code must go through the public surface.
     friend class Graph;
+    friend class detail::NodeHandle;
 
 public:
     explicit Node(NodeKind kind) noexcept : kind_(kind) {}
@@ -179,8 +215,14 @@ public:
     /// downstream nodes.
     virtual bool recompute() { return false; }
 
+    /// Reactions are shared-owned and may cancel themselves while running.
+    /// Value nodes keep caller-owned lifetimes and return an empty handle.
+    [[nodiscard]] virtual std::shared_ptr<Node> retain_for_recompute() noexcept {
+        return {};
+    }
+
     // ---- Edge manipulation (intrusive linked list) -----------------------
-    void attach_as_observer_of(Node& source, Edge& edge);
+    void attach_as_observer_of(Node& source, Edge& edge) noexcept;
     void detach_edge(Edge& edge) noexcept;
 
     /// Drop every upstream edge. Typical use: a Derivation calls this just
@@ -208,6 +250,10 @@ public:
     [[nodiscard]] bool has_sources()   const noexcept { return sources_head_   != nullptr; }
 
 protected:
+    /// Retire before derived members (including user captures) are destroyed.
+    /// The base destructor repeats this safely for custom Node subclasses.
+    void retire_() noexcept;
+
     // Derived classes call this when a recompute actually changes the value.
     void bump_version_() noexcept { ++version_; }
     void set_state_(NodeState s) noexcept { state_ = s; }
@@ -215,6 +261,8 @@ protected:
 private:
     NodeKind      kind_;
     NodeState     state_      = NodeState::Clean;
+    bool          queued_     = false;
+    bool          resolving_  = false;
     std::uint32_t depth_      = 0;
     std::uint64_t version_    = 1;   ///< Starts at 1; 0 means "never observed".
 
@@ -222,6 +270,7 @@ private:
     // pointers; kept doubly-linked for clarity of implementation.
     Edge* observers_head_ = nullptr;   ///< My downstream edges.
     Edge* sources_head_   = nullptr;   ///< My upstream edges.
+    detail::NodeHandle* handles_head_ = nullptr;
 
     std::string         debug_name_;         ///< User-supplied diagnostic label.
     mutable std::string fallback_name_;      ///< Lazy `"<Kind>#<id>"` cache.
@@ -230,11 +279,55 @@ private:
     /// the fallback debug label so output is stable across runs.
     std::uint64_t node_id_ = next_node_id_();
 
-    static std::uint64_t next_node_id_() noexcept {
-        static std::atomic<std::uint64_t> counter{0};
-        return ++counter;
-    }
+    ARIA_ABI_API static std::uint64_t next_node_id_() noexcept;
 };
+
+inline detail::NodeHandle::NodeHandle(Node* node) noexcept : node_(node) {
+    if (!node_) return;
+    next_ = node_->handles_head_;
+    if (next_) next_->previous_ = this;
+    node_->handles_head_ = this;
+}
+
+inline void detail::NodeHandle::reset_() noexcept {
+    if (!node_) return;
+    if (previous_) previous_->next_ = next_;
+    else node_->handles_head_ = next_;
+    if (next_) next_->previous_ = previous_;
+    node_ = nullptr;
+    previous_ = next_ = nullptr;
+}
+
+inline void detail::NodeHandle::take_(NodeHandle& other) noexcept {
+    node_ = other.node_;
+    previous_ = other.previous_;
+    next_ = other.next_;
+    if (node_) {
+        if (previous_) previous_->next_ = this;
+        else node_->handles_head_ = this;
+        if (next_) next_->previous_ = this;
+    }
+    other.node_ = nullptr;
+    other.previous_ = other.next_ = nullptr;
+}
+
+inline detail::NodeHandle::NodeHandle(NodeHandle&& other) noexcept { take_(other); }
+
+inline detail::NodeHandle& detail::NodeHandle::operator=(const NodeHandle& other) noexcept {
+    if (this != &other) {
+        NodeHandle copy{other};
+        *this = std::move(copy);
+    }
+    return *this;
+}
+
+inline detail::NodeHandle& detail::NodeHandle::operator=(NodeHandle&& other) noexcept {
+    if (this != &other) {
+        reset_();
+        take_(other);
+    }
+    return *this;
+}
 
 }  // namespace aria::reactive
 

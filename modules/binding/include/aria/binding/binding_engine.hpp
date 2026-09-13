@@ -118,18 +118,14 @@ public:
                   std::shared_ptr<runtime::IDispatcher> ui_dispatcher,
                   DispatchPolicy policy = DispatchPolicy::SmartMarshal);
 
-    /// Declared here, defined in binding.cpp — deliberately NOT implicit.
-    ///
-    /// An implicit destructor is generated inline in every consumer TU, and
-    /// it expands the destructors of `per_view_` / `view_alive_` /
-    /// `engine_holders_`. That makes the layout of those private members part
-    /// of the effective ABI: changing one, or merely building the consumer
-    /// against a different standard-library version, would break binary
-    /// compatibility. The C4251 note above argues that the inline template
-    /// *methods* are acceptable, but it does not cover the destructor, which
-    /// every consumer emits whether or not it ever calls a template method.
-    /// Pinning the definition inside the library keeps the layout private.
+    /// Retires all lifetime gates before releasing the bindings. Defined
+    /// out of line so teardown code is emitted once inside the library.
     ~BindingEngine();
+
+    BindingEngine(const BindingEngine&) = delete;
+    BindingEngine& operator=(const BindingEngine&) = delete;
+    BindingEngine(BindingEngine&&) = delete;
+    BindingEngine& operator=(BindingEngine&&) = delete;
 
     [[nodiscard]] IViewAdapter& adapter() noexcept { return *adapter_; }
 
@@ -275,82 +271,24 @@ public:
                                     IView& view,
                                     Converter<typename Src::value_type,
                                               std::string> conv) {
-        using T = typename Src::value_type;
-        adapter_->set_text(view, conv.to_view(src.get()));
-        auto guard_alive = ensure_alive_token_(view);
-        add_view_sub_(view, src.on_changed(
-            [this, adapter = adapter_, &view, to_view = std::move(conv.to_view), guard_alive]
-            (const T& v) {
-                this->dispatch_to_view_(guard_alive,
-                    [adapter, &view, to_view, v]() {
-                        adapter->set_text(view, to_view(v));
-                    });
-            }));
+        bind_projected_(src, view, std::move(conv.to_view), &IViewAdapter::set_text);
     }
 
     template<typename T>
-    void bind_text_converted(Property<T>& prop,
-                             IView& view,
+    void bind_text_converted(Property<T>& prop, IView& view,
                              Converter<T, std::string> conv) {
-        auto guard        = std::make_shared<bool>(false);
-        auto to_view      = conv.to_view;
-        auto to_model     = conv.to_model;
-        auto try_to_model = conv.try_to_model;
-        auto guard_alive  = ensure_alive_token_(view);
+        bind_converted_(prop, view, std::move(conv), &IViewAdapter::set_text,
+                        &IViewAdapter::on_text_changed);
+    }
 
-        // Initial VM → View sync, guarded (RAII — restores flag even if
-        // the adapter setter throws). The initial sync runs inline
-        // because the constructor is documented to be called on the
-        // UI thread.
-        {
-            GuardFlag g{*guard};
-            adapter_->set_text(view, to_view(prop.get()));
-        }
-
-        add_view_sub_(view, prop.on_changed(
-            [this, adapter = adapter_, &view, to_view, guard, guard_alive]
-            (const T& v) {
-                this->dispatch_to_view_(guard_alive,
-                    [adapter, &view, to_view, guard, v]() {
-                        GuardFlag g{*guard};
-                        adapter->set_text(view, to_view(v));
-                    });
-            }));
-        add_view_sub_(view, adapter_->on_text_changed(view,
-            [&prop, to_model, try_to_model, guard, guard_alive,
-             dispatcher = dispatcher_, policy = policy_](std::string_view sv) {
-                dispatch_to_model_(dispatcher, policy, guard_alive, guard,
-                    [&prop, to_model, try_to_model, s = std::string{sv}] {
-                        // Preferred channel: try_to_model returns nullopt on
-                        // unparseable input — drop the View → Model write and
-                        // report once via the unified callback-boundary so the
-                        // host's diagnostics see it. Model retains its previous
-                        // value; UI keeps showing the user's bad text until the
-                        // adapter posts a corrected one.
-                        if (try_to_model) {
-                            if (auto parsed = try_to_model(s)) {
-                                prop.set(*parsed);
-                            } else {
-                                aria::report_callback_failure(
-                                    std::string_view{"binding.converter"},
-                                    nullptr,
-                                    std::string_view{"converter.try_to_model rejected input"});
-                            }
-                            return;
-                        }
-                        // Fallback channel: legacy `to_model` may throw.
-                        // Catch & route to the unified sink so the engine never
-                        // propagates user converter exceptions out of the
-                        // adapter callback (which is conceptually noexcept).
-                        try {
-                            prop.set(to_model(s));
-                        } catch (...) {
-                            aria::report_callback_failure(
-                                std::string_view{"binding.converter"},
-                                std::current_exception());
-                        }
-                    });
-            }));
+    /// Bind a model value to an integer-valued control. The converter
+    /// defines valid inputs; return nullopt to reject an unselected index.
+    /// Rejections and converter exceptions preserve the model and report
+    /// through "binding.converter". Dispatch and echo suppression match text.
+    template<typename T>
+    void bind_int_converted(Property<T>& prop, IView& view, Converter<T, int> conv) {
+        bind_converted_(prop, view, std::move(conv), &IViewAdapter::set_int,
+                        &IViewAdapter::on_int_changed);
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -383,20 +321,7 @@ public:
     /// case and needs no intermediate mirror property.
     template<ReadOnlyReactive Src, typename Project>
     void bind_text_projected(Src& src, IView& view, Project project) {
-        using T = typename Src::value_type;
-        static_assert(std::is_invocable_v<Project&, const T&>,
-            "bind_text_projected: `project` must be callable as "
-            "project(const T&) where T is the source's value_type.");
-        auto guard_alive = ensure_alive_token_(view);
-        adapter_->set_text(view, project(src.get()));
-        add_view_sub_(view, src.on_changed(
-            [this, adapter = adapter_, &view, project = std::move(project), guard_alive]
-            (const T& v) {
-                this->dispatch_to_view_(guard_alive,
-                    [adapter, &view, project, v]() {
-                        adapter->set_text(view, project(v));
-                    });
-            }));
+        bind_projected_(src, view, std::move(project), &IViewAdapter::set_text);
     }
 
     /// Bind a read-only text view to a reactive `std::optional<T>` source.
@@ -418,20 +343,11 @@ public:
         static_assert(std::is_invocable_v<Project&, const T&>,
             "bind_optional_text: `project` must be callable as "
             "project(const T&) where the source holds std::optional<T>.");
-        auto guard_alive = ensure_alive_token_(view);
-        auto render = [project = std::move(project), empty_text]
-                      (const Opt& opt) -> std::string {
+        auto render = [project = std::move(project), empty_text = std::move(empty_text)]
+                      (const Opt& opt) mutable -> std::string {
             return opt ? project(*opt) : empty_text;
         };
-        adapter_->set_text(view, render(src.get()));
-        add_view_sub_(view, src.on_changed(
-            [this, adapter = adapter_, &view, render = std::move(render), guard_alive]
-            (const Opt& opt) {
-                this->dispatch_to_view_(guard_alive,
-                    [adapter, &view, render, opt]() {
-                        adapter->set_text(view, render(opt));
-                    });
-            }));
+        bind_projected_(src, view, std::move(render), &IViewAdapter::set_text);
     }
 
     // ═════════════════════════════════════════════════════════════════
@@ -440,13 +356,19 @@ public:
     template<typename... Args>
     void bind_command(Command<Args...>& cmd, IView& view, const Args&... args) {
         auto guard_alive = ensure_alive_token_(view);
-        add_view_sub_(view,
-            adapter_->on_click(view,
-                [&cmd, args..., guard_alive,
-                 dispatcher = dispatcher_, policy = policy_]() {
+        auto command_lifetime = cmd.lifetime_token_();
+        auto adapter = adapter_;
+        auto dispatcher = dispatcher_;
+        const auto policy = policy_;
+        auto click = adapter->on_click(view,
+                [&cmd, args..., guard_alive, command_lifetime, dispatcher, policy]() {
                     dispatch_to_model_(dispatcher, policy, guard_alive, {},
-                        [&cmd, args...] { cmd.execute(args...); });
-                }));
+                        [&cmd, args..., command_lifetime] {
+                            if (!command_lifetime.expired()) cmd.execute(args...);
+                        });
+                });
+        if (!is_alive_(guard_alive) || command_lifetime.expired()) return;
+        add_view_sub_(view, std::move(click));
         // The signal carries whatever truth value the publisher chose
         // (e.g. `notify_can_execute_changed(other_args...)`). For bound
         // buttons we want the enabled state to track *these specific
@@ -456,15 +378,19 @@ public:
         // in sync with `cmd.can_execute(args...)`.
         add_view_sub_(view,
             cmd.observe_can_execute(
-                [this, &cmd, adapter = adapter_, &view, guard_alive,
-                 args...](bool /*payload*/) {
+                [&cmd, adapter, &view, guard_alive, command_lifetime,
+                 dispatcher, policy, args...](bool /*payload*/) {
+                    if (!is_alive_(guard_alive) || command_lifetime.expired()) return;
                     const bool can = cmd.can_execute(args...);
-                    this->dispatch_to_view_(guard_alive,
+                    if (!is_alive_(guard_alive) || command_lifetime.expired()) return;
+                    dispatch_to_view_(adapter, dispatcher, policy, guard_alive,
                         [adapter, &view, can]() {
                             adapter->set_enabled(view, can);
                         });
                 }));
-        adapter_->set_enabled(view, cmd.can_execute(args...));
+        if (!is_alive_(guard_alive) || command_lifetime.expired()) return;
+        const bool can = cmd.can_execute(args...);
+        if (is_alive_(guard_alive) && !command_lifetime.expired()) adapter->set_enabled(view, can);
     }
 
     // ═════════════════════════════════════════════════════════════════
@@ -498,17 +424,17 @@ public:
     // the third lifetime axis (view-destroy) alongside the existing
     // VM-scope and Navigator-entry cancellation. See ROADMAP P1-H.
     //
-    // The callback must be `noexcept`-safe in spirit: it is invoked from a
-    // Subscription destructor during bucket teardown. Exceptions escaping
-    // it would propagate out of that destructor — keep it to cheap,
-    // non-throwing teardown (cancel a token, reset a handle).
+    // Failures report through the callback boundary; teardown still completes.
     void bind_view_lifetime(IView& view, std::function<void()> on_view_destroyed) {
         if (!on_view_destroyed) return;
         // A Subscription whose deleter runs the callback. Stored in the
         // per-view bucket so it fires on view-destroy; also pinned by the
         // engine, so engine destruction / clear() fires it too.
         (void)ensure_alive_token_(view);  // make sure the bucket+destroy wiring exists
-        add_view_sub_(view, Subscription{std::move(on_view_destroyed)});
+        add_view_sub_(view, Subscription{[callback = std::move(on_view_destroyed)] {
+            try { callback(); }
+            catch (...) { ::aria::report_callback_failure("binding.view_lifetime", std::current_exception()); }
+        }});
     }
 
     /// Adopt an arbitrary `Subscription` into `view`'s per-view bucket.
@@ -538,140 +464,148 @@ public:
     void clear() noexcept;
 
 private:
-    // -------------------------------------------------------------------
-    //  VM → View (one-way) scalar binding.
-    //    `Src` is any `ReadOnlyReactiveOf<T>` — `Property<T>` or
-    //    `Computed<T>`; both expose `get()` + `on_changed()`, which is
-    //    the whole surface this path needs.
-    //    `Setter` is a pointer-to-member on IViewAdapter such as
-    //    &IViewAdapter::set_text / set_int / set_visible ...
-    // -------------------------------------------------------------------
+    template<class Src>
+    static reactive::detail::NodeHandle source_handle_(Src& source) noexcept {
+        if constexpr (std::derived_from<Src, reactive::Node>) return reactive::detail::NodeHandle{&source};
+        else return {};
+    }
+
+    template<class Src>
+    static bool source_alive_(const reactive::detail::NodeHandle& handle) noexcept {
+        if constexpr (std::derived_from<Src, reactive::Node>) return bool(handle);
+        else return true; // Custom ReadOnlyReactive sources own their lifetime contract.
+    }
+
+    template<class Src, class Project, class Setter>
+    void bind_projected_(Src& src, IView& view, Project project, Setter setter) {
+        using T = typename Src::value_type;
+        auto alive = ensure_alive_token_(view);
+        auto source = source_handle_(src);
+        auto adapter = adapter_;
+        auto dispatcher = dispatcher_;
+        const auto policy = policy_;
+        auto projection = std::make_shared<Project>(std::move(project));
+        // Copy before invoking user code; a projection can destroy its source.
+        T initial = src.get();
+        auto rendered = (*projection)(initial);
+        if (!is_alive_(alive) || !source_alive_<Src>(source)) return;
+        (adapter.get()->*setter)(view, rendered);
+        if (!is_alive_(alive) || !source_alive_<Src>(source)) return;
+        auto sub = src.on_changed(
+            [adapter, dispatcher, policy, &view, projection, alive, setter]
+            (const T& value) {
+                dispatch_to_view_(adapter, dispatcher, policy, alive,
+                    [adapter, &view, projection, alive, setter, value] {
+                        auto rendered_value = (*projection)(value);
+                        if (is_alive_(alive)) (adapter.get()->*setter)(view, rendered_value);
+                    });
+            });
+        if (is_alive_(alive)) add_view_sub_(view, std::move(sub));
+    }
+
     template<typename T, typename Src, typename Setter>
     void bind_scalar_oneway_(Src& src, IView& view, Setter setter) {
-        // Initial sync runs inline — BindingEngine constructors are
-        // documented to be called on the UI thread.
-        (adapter_.get()->*setter)(view, src.get());
-        auto guard_alive = ensure_alive_token_(view);
-        add_view_sub_(view, src.on_changed(
-            [this, adapter = adapter_, &view, setter, guard_alive](const T& v) {
-                this->dispatch_to_view_(guard_alive,
-                    [adapter, &view, setter, v]() {
-                        (adapter.get()->*setter)(view, v);
-                    });
-            }));
+        bind_projected_(src, view, [](const T& value) { return value; }, setter);
     }
 
-    // -------------------------------------------------------------------
-    //  Two-way scalar binding. `Subscriber` is a pointer-to-member that
-    //  registers a view-side listener; `ToModel` converts the native
-    //  callback argument (e.g. std::string_view) into the Property's T.
-    //
-    //  Reentrancy / feedback-loop protection
-    //  -------------------------------------
-    //  Many native widgets re-fire their "changed" signal when we write
-    //  back to them (QLineEdit::setText → QLineEdit::textChanged on Qt).
-    //  A naive two-way binding would ping-pong:
-    //      VM.set(x)  →  adapter.set(view, x)
-    //                 →  view emits changed
-    //                 →  prop.set(x)     (no-op thanks to equality gate)
-    //  The equality gate is enough for identity round-trips, but breaks
-    //  as soon as there is a converter or formatter in the middle
-    //  (e.g. `1 → "1.00" → 1.0` can round-trip a different value than
-    //  was originally written). We guard against this explicitly with a
-    //  per-binding `updating_view` flag: while we are pushing VM → View,
-    //  incoming View → VM events are suppressed.
-    // -------------------------------------------------------------------
-    template<typename T, typename Setter, typename Subscriber, typename ToModel>
-    void bind_scalar_two_way_(Property<T>& prop, IView& view,
-                              Setter setter, Subscriber subscriber,
-                              ToModel to_model) {
+    template<typename T, typename U, class Setter, class Subscriber>
+    void bind_converted_(Property<T>& prop, IView& view, Converter<T, U> conv,
+                         Setter setter, Subscriber subscriber) {
         auto guard = std::make_shared<bool>(false);
-        auto guard_alive = ensure_alive_token_(view);
-
-        // Initial sync (VM → View) under an RAII guard so any synchronous
-        // "changed" echo from the setter is ignored. Using an RAII flag
-        // (rather than two raw assignments around the call) guarantees
-        // the guard is restored even if the adapter setter throws —
-        // otherwise a stuck `true` would silently suppress every future
-        // View → VM edit. The initial sync runs inline (UI-thread only).
+        auto alive = ensure_alive_token_(view);
+        auto handle = std::make_shared<reactive::detail::NodeHandle>(&prop);
+        std::weak_ptr<reactive::detail::NodeHandle> model = handle;
+        // The graph thread owns the intrusive handle. Worker callbacks only
+        // copy its weak_ptr; they never link/unlink or retain a NodeHandle.
+        add_view_sub_(view, Subscription{std::move(handle)});
+        auto adapter = adapter_;
+        auto dispatcher = dispatcher_;
+        const auto policy = policy_;
+        auto converter = std::make_shared<Converter<T, U>>(std::move(conv));
+        T initial = prop.get();
+        auto rendered = converter->to_view(initial);
+        if (!is_alive_(alive) || !model_alive_(model)) return;
         {
             GuardFlag g{*guard};
-            (adapter_.get()->*setter)(view, prop.get());
+            (adapter.get()->*setter)(view, rendered);
         }
-
-        // VM → View on every subsequent property change, also guarded
-        // and routed through dispatch_to_view_ so background-thread
-        // emits land safely on the UI thread when a dispatcher is set.
-        add_view_sub_(view, prop.on_changed(
-            [this, adapter = adapter_, &view, setter, guard, guard_alive](const T& v) {
-                this->dispatch_to_view_(guard_alive,
-                    [adapter, &view, setter, guard, v]() {
+        if (!is_alive_(alive) || !model_alive_(model)) return;
+        auto property_sub = prop.on_changed(
+            [adapter, dispatcher, policy, &view, converter,
+             guard, alive, model, setter](const T& value) {
+                dispatch_to_view_(adapter, dispatcher, policy, alive,
+                    [adapter, &view, converter, guard, alive, model, setter, value] {
+                        if (!model_alive_(model)) return;
                         GuardFlag g{*guard};
-                        (adapter.get()->*setter)(view, v);
+                        auto converted = converter->to_view(value);
+                        if (!is_alive_(alive) || !model_alive_(model)) return;
+                        (adapter.get()->*setter)(view, converted);
                     });
-            }));
-
-        // View → VM may originate on an adapter worker. Own borrowed
-        // text before posting, and defer conversion / Property access
-        // to the graph thread. No callback retains the engine pointer.
-        add_view_sub_(view, (adapter_.get()->*subscriber)(view,
-            [&prop, to_model, guard, guard_alive,
-             dispatcher = dispatcher_, policy = policy_](auto cb_arg) {
-                using Value = std::conditional_t<
-                    std::is_same_v<decltype(cb_arg), std::string_view>,
-                    std::string, decltype(cb_arg)>;
-                dispatch_to_model_(dispatcher, policy, guard_alive, guard,
-                    [&prop, to_model, value = Value{cb_arg}] {
-                        prop.set(to_model(value));
+            });
+        if (!is_alive_(alive)) return;
+        add_view_sub_(view, std::move(property_sub));
+        auto view_sub = (adapter.get()->*subscriber)(view,
+            [&prop, converter, guard, alive, model,
+             dispatcher, policy](auto native_value) {
+                dispatch_to_model_(dispatcher, policy, alive, guard,
+                    [&prop, converter, alive, model, value = U{native_value}] {
+                        if (!model_alive_(model)) return;
+                        try {
+                            std::optional<T> parsed = converter->try_to_model
+                                ? converter->try_to_model(value)
+                                : std::optional<T>{converter->to_model(value)};
+                            // Converters may synchronously clear, rebind or destroy
+                            // the property/view. Neither weak token pins the target.
+                            if (!is_alive_(alive) || !model_alive_(model)) return;
+                            if (parsed) prop.set(std::move(*parsed));
+                            else ::aria::report_callback_failure("binding.converter", nullptr,
+                                "converter.try_to_model rejected input");
+                        } catch (...) {
+                            ::aria::report_callback_failure("binding.converter", std::current_exception());
+                        }
                     });
-            }));
+            });
+        if (is_alive_(alive)) add_view_sub_(view, std::move(view_sub));
     }
 
-    // -------------------------------------------------------------------
-    //  Per-view subscription bucket: every `bind_*` call routes through
-    //  here, so that a single `view.on_destroy` callback can release
-    //  ALL subscriptions tied to that view in one shot.
-    //
-    //  Two-level ownership:
-    //    * `per_view_` holds a bucket per live view. When the view dies,
-    //      `IView::on_destroy` fires, the lambda below clears the bucket
-    //      (dropping every subscription from that view), and then the
-    //      map entry is erased.
-    //    * `engine_holders_` is a flat SubscriptionBag that pins every
-    //      bucket *and* every `on_destroy` subscription for the engine's
-    //      own lifetime. When the engine is destroyed, this bag drops
-    //      everything — including bindings for views that are still
-    //      alive, which is exactly the pre-existing contract.
-    // -------------------------------------------------------------------
-    // RAII scope flag used by two-way bindings to suppress View→VM
-    // callbacks while a VM→View write is in flight. Restoring the flag
-    // in the destructor makes the guard exception-safe (adapter setters
-    // are not expected to throw, but a stuck `true` would otherwise
-    // silently disable the binding for good).
+    template<typename T, typename Setter, typename Subscriber, typename ToModel>
+    void bind_scalar_two_way_(Property<T>& prop, IView& view,
+                              Setter setter, Subscriber subscriber, ToModel to_model) {
+        // Scalars use the same lifetime/dispatch/echo path as explicit converters.
+        bind_converted_(prop, view,
+            Converter<T, T>{[](const T& value) { return value; },
+                            [to_model](const T& value) { return to_model(value); }, {}},
+            setter, subscriber);
+    }
+
+    // A view bucket owns every connection and its own destroy listener.
+    // It is retired before any callback can reenter clear/bind.
     struct GuardFlag {
         bool& slot;
-        explicit GuardFlag(bool& s) noexcept : slot(s) { slot = true; }
-        ~GuardFlag() { slot = false; }
+        bool previous;
+        explicit GuardFlag(bool& s) noexcept : slot(s), previous(s) { slot = true; }
+        ~GuardFlag() { slot = previous; }
         GuardFlag(const GuardFlag&)            = delete;
         GuardFlag& operator=(const GuardFlag&) = delete;
     };
 
-    using ViewBucket = std::shared_ptr<std::vector<Subscription>>;
-    /// Alive-token: a weak handle to a per-view sentinel. The sentinel
-    /// is held by the view's subscription bucket, so it dies precisely
-    /// when `IView::on_destroy` fires and the bucket is cleared — NOT
-    /// merely when the engine drops its strong ref to the bucket
-    /// (the engine keeps that ref for its whole lifetime). Posted
-    /// VM→View lambdas hold this and `lock()` it before touching the
-    /// view; if the view was destroyed between `dispatcher.post(fn)`
-    /// and `fn()` running, the lock fails and the lambda is a no-op.
-    using AliveToken    = std::weak_ptr<int>;
-    using AliveSentinel = std::shared_ptr<int>;
+    struct ViewBucket {
+        bool active = true; // Accessed only on the graph thread.
+        std::vector<Subscription> subscriptions;
+        Subscription destroy_listener;
+    };
+    using AliveToken = std::weak_ptr<ViewBucket>;
 
-    /// Acquire (or create) the alive token for `view`. The sentinel is
-    /// pushed into the view's bucket alongside its subscriptions, so it
-    /// is destroyed by `bucket->clear()` inside the `on_destroy`
-    /// callback. Multiple bindings on the same view share one sentinel.
+    static bool is_alive_(const AliveToken& token) noexcept {
+        const auto state = token.lock();
+        return state && state->active;
+    }
+    static bool model_alive_(const std::weak_ptr<reactive::detail::NodeHandle>& token) noexcept {
+        const auto handle = token.lock(); // Only called after dispatch to the graph thread.
+        return handle && bool(*handle);
+    }
+
+    /// Acquire the bucket lifetime gate shared by bindings on this view.
     AliveToken ensure_alive_token_(IView& view);
 
     // Inbound adapter callbacks can outlive their subscription (an HTTP
@@ -694,9 +628,9 @@ private:
 
         auto invoke = [alive_token, guard = std::move(guard),
                        fn = std::forward<Fn>(fn)]() mutable {
-            auto keep_alive = alive_token.lock();
-            if (!keep_alive || (guard && *guard)) return;
-            fn();
+            if (!is_alive_(alive_token) || (guard && *guard)) return;
+            try { fn(); }
+            catch (...) { ::aria::report_callback_failure("binding.callback", std::current_exception()); }
         };
         if (direct || (policy == DispatchPolicy::SmartMarshal && on_graph_thread)) {
             invoke();
@@ -709,99 +643,50 @@ private:
     /// active `DispatchPolicy`. Always weak-guards on `alive_token` so
     /// a posted callback whose target view was destroyed in flight is
     /// dropped silently rather than dereferencing a dead `IView`.
-    // Trace helpers — non-template to keep them out of the per-Fn template
-    // body. Each call site collapses 5 lines of payload boilerplate to a
-    // single helper call; the `tracing` (or `has_trace_sink()`) guard is
-    // preserved at the call site so we don't pay the call-overhead when
-    // diagnostics are off. Marked `noexcept` because trace publishing
-    // itself is `noexcept` — see diagnostics.hpp.
-    static void trace_drop_(std::string_view platform) noexcept {
-        ::aria::publish_trace_unchecked(::aria::TraceCategory::Binding,
-            ::aria::trace::Binding{
-                std::string{platform},
-                std::string{},
-                "view_destroyed_drop",
-            });
-    }
-    static void trace_emit_(std::string_view platform) noexcept {
-        ::aria::publish_trace_unchecked(::aria::TraceCategory::Binding,
-            ::aria::trace::Binding{
-                std::string{platform},
-                std::string{},
-                "vm_to_view",
-            });
+    // The call sites gate payload construction. Protect construction as
+    // well as publication: diagnostic allocation failure must not interrupt
+    // binding delivery or teardown.
+    static void trace_binding_(std::string_view platform, std::string_view operation) noexcept {
+        try {
+            ::aria::publish_trace_unchecked(::aria::TraceCategory::Binding,
+                ::aria::trace::Binding{std::string{platform}, std::string{}, std::string{operation}});
+        } catch (...) {
+            ::aria::report_callback_failure("binding.trace", std::current_exception());
+        }
     }
 
     template <class Fn>
-    void dispatch_to_view_(AliveToken alive_token, Fn&& fn) {
-        const bool tracing = ::aria::has_trace_sink();
-        const std::string_view platform = adapter_->platform_name();
-
-        // Liveness is established by *locking* the weak token, not by
-        // querying `expired()`. `expired()` is a check-then-use: it can
-        // report "alive" and the sentinel can hit zero before `fn()` runs.
-        // Holding the strong reference for the duration of the call closes
-        // that window and matches what both the commentary above and
-        // lifecycle.md L-32 describe ("the weak handle no-ops the call").
-        //
-        // On the Direct / on-thread paths this is currently redundant —
-        // emission and view destruction cannot interleave on one thread —
-        // but it costs one refcount and removes a foot-gun for any future
-        // caller that is not single-threaded. On the posted path it is load
-        // bearing: the view can be destroyed between the post and the drain.
-
-        // Direct path: no dispatcher, or policy explicitly disables
-        // marshalling. Drop straight into the inline behaviour.
-        if (!dispatcher_ || policy_ == DispatchPolicy::Direct) {
-            auto keep_alive = alive_token.lock();
-            if (!keep_alive) {
-                if (tracing) trace_drop_(platform);
+    static void dispatch_to_view_(std::shared_ptr<IViewAdapter> adapter,
+                                  std::shared_ptr<runtime::IDispatcher> dispatcher,
+                                  DispatchPolicy policy, AliveToken alive, Fn&& fn) {
+        auto invoke = [adapter = std::move(adapter), alive,
+                       fn = std::forward<Fn>(fn)]() mutable {
+            if (!is_alive_(alive)) {
+                if (::aria::has_trace_sink()) trace_binding_(adapter->platform_name(), "view_destroyed_drop");
                 return;
             }
-            if (tracing) trace_emit_(platform);
-            std::forward<Fn>(fn)();
-            return;
+            if (::aria::has_trace_sink()) trace_binding_(adapter->platform_name(), "vm_to_view");
+            // Trace sinks are user callbacks and can destroy/clear the binding.
+            if (is_alive_(alive)) fn();
+        };
+        if (!dispatcher || policy == DispatchPolicy::Direct ||
+            (policy == DispatchPolicy::SmartMarshal && dispatcher->is_main_thread())) {
+            invoke();
+        } else {
+            dispatcher->post(std::move(invoke));
         }
-        if (policy_ == DispatchPolicy::SmartMarshal &&
-            dispatcher_->is_main_thread()) {
-            auto keep_alive = alive_token.lock();
-            if (!keep_alive) {
-                if (tracing) trace_drop_(platform);
-                return;
-            }
-            if (tracing) trace_emit_(platform);
-            std::forward<Fn>(fn)();
-            return;
-        }
-        // AlwaysPost, or SmartMarshal off-thread -- marshal via dispatcher.
-        std::string platform_copy{platform};
-        dispatcher_->post(
-            [alive_token, fn = std::forward<Fn>(fn),
-             platform_copy = std::move(platform_copy)]() mutable {
-                auto keep_alive = alive_token.lock();
-                if (!keep_alive) {
-                    if (::aria::has_trace_sink()) trace_drop_(platform_copy);
-                    return;   // view died in flight
-                }
-                if (::aria::has_trace_sink()) trace_emit_(platform_copy);
-                fn();
-            });
     }
 
     void add_view_sub_(IView& view, Subscription sub);
 
-    ViewBucket& bucket_for_(IView& view);
+    std::shared_ptr<ViewBucket> bucket_for_(IView& view);
 
     std::shared_ptr<IViewAdapter>                       adapter_;
     std::shared_ptr<runtime::IDispatcher>               dispatcher_;
     DispatchPolicy                                      policy_ = DispatchPolicy::Direct;
-    std::unordered_map<const IView*, ViewBucket>        per_view_;
-    /// Per-view alive sentinel — the strong ref lives in the bucket,
-    /// this map only holds another strong ref so `ensure_alive_token_`
-    /// can find it cheaply on subsequent binds for the same view.
-    /// Erased by the `on_destroy` callback together with `per_view_`.
-    std::unordered_map<const IView*, AliveSentinel>     view_alive_;
-    SubscriptionBag                                     engine_holders_;
+    std::unordered_map<const IView*, std::shared_ptr<ViewBucket>> per_view_;
+    bool closing_ = false;
+
 };
 #ifdef _MSC_VER
 #pragma warning(pop)

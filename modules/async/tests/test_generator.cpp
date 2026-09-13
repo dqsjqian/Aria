@@ -69,3 +69,19 @@ TEST_CASE("Generator: lazy — values produced on demand") {
     ++it;
     CHECK(produced.load() == 3);
 }
+
+namespace {
+struct YieldMoveFailure {
+    YieldMoveFailure() = default;
+    YieldMoveFailure(YieldMoveFailure&&) = default;
+    YieldMoveFailure& operator=(YieldMoveFailure&&) {
+        throw std::runtime_error("yield move assignment");
+    }
+};
+Generator<YieldMoveFailure> yield_move_failure() { co_yield YieldMoveFailure{}; }
+}
+
+TEST_CASE("Generator: throwing yield storage propagates to its consumer") {
+    auto generator = yield_move_failure();
+    CHECK_THROWS_WITH_AS(generator.begin(), "yield move assignment", std::runtime_error);
+}

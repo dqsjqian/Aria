@@ -153,6 +153,26 @@ TEST_CASE("ValidationState: observable via Property<ValidationState>") {
     CHECK(notifications >= 1);   // at least one observable update happened
 }
 
+TEST_CASE("ValidationState: cancelling pending preserves the prior result") {
+    Property<std::string> name{"alice"};
+    Validator<std::string> validator{name};
+    validator.should([](const std::string&) { return false; }, "existing warning");
+    validator.end_pending(std::vector<std::string>{"existing remote error"});
+    validator.touch();
+    const auto previous = validator.state().get();
+    const auto previous_result = validator.result().get();
+    validator.begin_pending();
+    REQUIRE(validator.state().get().pending);
+
+    validator.cancel_pending();
+    CHECK(validator.state().get() == previous);
+    CHECK(validator.result().get() == previous_result);
+    validator.cancel_pending();
+    CHECK(validator.state().get() == previous);
+    name.set("bob");
+    CHECK(validator.state().get().errors == previous.errors);
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  ValidationKey protocol
 // ═══════════════════════════════════════════════════════════════════════

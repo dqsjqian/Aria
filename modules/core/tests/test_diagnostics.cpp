@@ -277,3 +277,27 @@ TEST_CASE("Sink: throwing handlers do not propagate") {
     publish_trace(TraceCategory::Command, trace::Command{"execute"});
     CHECK(has_trace_sink());
 }
+
+TEST_CASE("Sink: recursive traces do not recursively invoke the same sink") {
+    int calls = 0;
+    ScopedTraceSink guard{[&](const TraceEvent&) {
+        ++calls;
+        publish_trace(TraceCategory::Command, trace::Command{"nested"});
+    }};
+    publish_trace(TraceCategory::Command, trace::Command{"outer"});
+    CHECK(calls == 1);
+}
+
+TEST_CASE("Sink: replacing a sink can release captures that reenter the registry") {
+    bool released = false;
+    auto token = std::shared_ptr<int>(new int, [&](int* value) {
+        delete value;
+        clear_trace_sink();
+        released = true;
+    });
+    install_trace_sink([token = std::move(token)](const TraceEvent&) {});
+    CHECK(has_trace_sink());
+    clear_trace_sink();
+    CHECK(released);
+    CHECK_FALSE(has_trace_sink());
+}

@@ -1,0 +1,69 @@
+name: API reference publication
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify documented API symbols exist
+        run: ./scripts/check-docs-api.sh
+
+      - name: Install documentation tools
+        run: brew install ninja graphviz
+
+      - name: Install official Doxygen
+        run: ./scripts/install-doxygen.sh "$RUNNER_TEMP/aria-doxygen"
+
+      - name: Configure API reference
+        run: |
+          cmake -S . -B build/flavors/docs -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARIA_BUILD_DOCS=ON \
+            -DARIA_BUILD_TESTS=OFF \
+            -DARIA_BUILD_BENCHMARK=OFF \
+            -DDOXYGEN_EXECUTABLE="$RUNNER_TEMP/aria-doxygen/bin/doxygen" \
+            -DARIA_DOCS_SOURCE_REVISION="$GITHUB_SHA" \
+            -DARIA_DOCS_REPOSITORY_URL="https://github.com/$GITHUB_REPOSITORY"
+
+      - name: Build and verify API reference
+        run: cmake --build build/flavors/docs --target aria_docs
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: build/flavors/docs/docs/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Pages must first be enabled with GitHub Actions as its source.
+      # This workflow does not enable or reconfigure the repository site.
+      - name: Read Pages configuration
+        uses: actions/configure-pages@v5
+        with:
+          enablement: false
+
+      - name: Publish API reference
+        id: deployment
+        uses: actions/deploy-pages@v4

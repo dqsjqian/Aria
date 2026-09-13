@@ -106,24 +106,27 @@ Implications:
 ### D-22: sink exceptions **never** propagate
 
 `publish_trace` / `publish_trace_unchecked` wrap the call in
-`try { sink(ev); } catch (...) { /* swallow */ }`. Sink throws are
-swallowed; the business path continues unaffected.
+a shared runtime callback boundary. Sink exceptions are reported through
+`report_callback_failure`; they do not escape into the business path. Nested
+traces produced by the sink on the same thread are suppressed to prevent
+unbounded recursion.
 
 ### D-23: `ScopedTraceSink` is the test-side primitive
 
 Tests SHOULD use `ScopedTraceSink`: it installs on construction and
 **restores** the previous state on destruction (which may be no sink
-or an outer scoped sink). This lets tests nest in parallel without
-bleeding into one another.
+or an outer scoped sink). Scopes may nest on one thread. Because the sink
+is process-wide, independent parallel tests must coordinate installation;
+scoped restoration does not provide per-test isolation.
 
-### D-24: zero-overhead contract
+### D-24: disabled-path cost
 
 Exact costs (per the call-site gating convention):
 
 | Path | Real cost |
 |---|---|
-| **Fast path** (no sink) | One `shared_ptr` snapshot + null check at the call site (`if (has_trace_sink()) { ... }`); the inner block never runs. |
-| **Slow path** (sink present) | One snapshot at the call site (gating) + one snapshot inside `publish_trace_unchecked` (to invoke) = **2 snapshots**; payload construction happens only on the slow path. |
+| **Fast path** (no sink) | One atomic presence load and branch at `has_trace_sink()`; no mutex, shared ownership increment, or payload construction. |
+| **Slow path** (sink present) | One atomic presence check at the call site, then one owning snapshot under the sink mutex inside `publish_trace_unchecked`; invocation occurs outside the lock. |
 
 The two publish entry points are deliberately split (D-1 implementation
 detail):

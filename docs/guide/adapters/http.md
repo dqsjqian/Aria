@@ -118,16 +118,30 @@ await client.setText('search_query', 'hello world');
 Connection errors clear `isConnected()`; EventSource can reconnect automatically,
 and each new hello triggers `onOpen`. Closing rejects a pending connection.
 Fetch helpers reject non-success HTTP statuses. State subscriptions can also
-use the `viewId.visibility` and `viewId.enabled` keys.
+use an explicit channel: `client.subscribe(viewId, callback, "visibility")`
+or `client.getState(viewId, "enabled")`. View IDs are never split on dots.
+Each returned unsubscribe function owns one registration, is idempotent,
+and cancels callbacks that have not started.
 
 ## Threading and extensibility
 
-HTTP subscriptions and custom command handlers run on server worker threads.
+State and click subscriptions run on server worker threads. Their notification
+batches are serialized in the order that updates enter the registry; reentrant
+updates are queued after the current batch. Releasing a subscription cancels a
+callback that has not begun, and a throwing callback is reported without stopping siblings.
+Custom command handlers can execute concurrently on different workers.
 Use `BindingEngine` with a dispatcher and `SmartMarshal` or `AlwaysPost` to
 route bound Property and Command work onto the graph owner thread. A successful
 POST acknowledges validation and dispatch; queued model work may still be
 pending. Direct adapter subscriptions and custom handlers must explicitly
 marshal any graph access themselves.
+
+The pending notification limit returns 503 before accepting another state or
+click update. A queued notification can be cancelled by removing its view or
+destroying the adapter before delivery. Call `start()` and `stop()` from the
+host lifecycle thread; calling either from the adapter's worker callbacks
+raises `std::logic_error`. Destruction from a callback closes the adapter and
+lets the retained worker state finish teardown.
 
 Registry maps and shadow state are mutex protected; getters return copies.
 Setters enqueue SSE data without waiting for socket writes. The returned view
@@ -138,7 +152,8 @@ view while another thread dereferences it.
 `register_command(view_id, name, handler)` receives a JSON argument string and
 returns a JSON response string. The view must exist when invoked.
 `native_server()` allows custom cpp-httplib routes before start, but is an
-unstable escape hatch and requires the dependency's headers. Replacing its
+unstable escape hatch. The installed `aria::http` target supplies `<httplib.h>`
+and its matching compile/link requirements. Replacing its
 worker queue or blocking custom handlers changes the adapter's capacity
 assumptions.
 
@@ -152,6 +167,8 @@ assumptions.
 | `static_root` | empty | Optional static-file directory |
 | `worker_threads` | `0` | Fixed pool; 0 detects CPU count, minimum 2; explicit counts must be ≥2 |
 | `max_sse_clients` | `64` | Also capped at workers minus one; 0 removes only this extra cap |
+| `max_pending_sse_bytes` | `4194304` | Positive per-client queued-byte limit; an overflowing stream closes and can reconnect for a fresh snapshot |
+| `max_pending_notifications` | `1024` | Positive limit on queued state/click notification batches; excess updates receive 503 |
 | `heartbeat_sec` | `25` | Positive interval in seconds |
 | `enable_cors` | `false` | Adds permissive CORS headers when enabled |
 | `tls_cert_file`, `tls_key_file` | empty | PEM pair for a TLS-enabled build |
@@ -159,6 +176,7 @@ assumptions.
 | `tls_min_version` | `1.2` | `1.2` or `1.3` |
 
 Excess SSE connections receive 503 so a worker remains available for REST.
+An initial snapshot exceeding the per-client queue limit also receives 503.
 This is a connection limit, not event rate limiting. Long-running custom REST
 handlers can still consume the remaining workers. The default address is local;
 external deployments must provide their own authentication/network boundary.

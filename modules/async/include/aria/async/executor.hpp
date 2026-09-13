@@ -362,8 +362,13 @@ public:
     /// Drop all pending callables without running them. Owner-thread-only.
     void clear() noexcept {
         bind_owner_();
-        std::lock_guard lk(m_);
-        queue_.clear();
+        std::deque<std::function<void()>> retired;
+        {
+            std::lock_guard lk(m_);
+            retired.swap(queue_);
+        }
+        // Destroy user captures after unlocking: their destructors may post.
+
     }
 
 private:

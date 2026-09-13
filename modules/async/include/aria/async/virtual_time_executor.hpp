@@ -161,9 +161,12 @@ public:
 
     /// Drop all scheduled tasks without firing them.
     void clear() noexcept {
-        std::lock_guard lk(m_);
-        std::priority_queue<Entry, std::vector<Entry>, Cmp> empty;
-        std::swap(queue_, empty);
+        std::priority_queue<Entry, std::vector<Entry>, Cmp> retired;
+        {
+            std::lock_guard lk(m_);
+            std::swap(queue_, retired);
+        }
+        // Capture destructors can safely schedule new work after unlocking.
     }
 
 private:

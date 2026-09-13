@@ -103,8 +103,10 @@ is **forbidden**; empty source is reserved for unit-test internals.
 |---|---|
 | `std::invalid_argument` | `UserError` |
 | `std::out_of_range`     | `UserError` |
-| Other `std::exception`  | `AsyncFailure` (`inner` retained) |
+| Other `std::exception`  | `AsyncFailure` |
 | Unknown                 | `AsyncFailure("unknown error")` |
+
+Every non-null input retains its original `exception_ptr` in `inner`.
 
 **Aria's own sentinel exceptions** are NOT recognised inside
 `from_exception` — that would force `error.hpp` to back-include
@@ -390,12 +392,10 @@ the invariant statement alone:
   `field_path` but must not clobber one the caller set. Note also that
   `async_errors_` is re-merged on every revalidation rather than consumed
   once, so a caller-set path keeps surviving later source writes.
-- **`from_exception`**: `expects_inner` in the catalogue follows the
-  *factory* each catch branch calls, not the exception's richness.
-  `Error::user_error` has no `inner` parameter, so the two `UserError`
-  branches drop the `exception_ptr`; `catch (...)` forwards it, so a bare
-  `throw 42` ends up **with** an inner ptr. Tidying that asymmetry would
-  change observable behaviour.
+- **`from_exception`**: every non-null input retains its original
+  `exception_ptr`, including `UserError` mappings and non-standard throws.
+  Classification and display text may degrade; the cause remains available.
+
 
 Iteration count defaults to 50k per fuzzer; set
 `ARIA_FUZZ_ITERS=1000000` (optionally with `ARIA_FUZZ_SEED`) for

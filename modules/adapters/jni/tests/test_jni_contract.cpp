@@ -1,10 +1,6 @@
-// test_jni_contract.cpp — compile-time interface contract for the JNI adapter.
-//
-// The JNI adapter cannot exercise the runtime `adapter_conformance`
-// battery on the build host (no JVM, so no JNIEnv*/jobject). Behavioural
-// conformance is covered by an on-device instrumentation test in the
-// Android SDK. Here we pin the *static* contract: if the adapter ever
-// drifts out of shape with aria::binding's interfaces, the build breaks.
+// JNI interface and transport regressions. Static assertions pin the public
+// shape; a JNI function-table fixture exercises ownership, text encoding,
+// pending exceptions and signal teardown without requiring an Android UI.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
@@ -19,6 +15,8 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <limits>
+#include "fake_jni.hpp"
 
 namespace {
 
@@ -112,4 +110,177 @@ TEST_CASE("JNI adapter: platform name is reported as android") {
     // that the binding layer routes on.
     constexpr std::string_view expected = "android";
     CHECK(expected == "android");
+}
+
+TEST_CASE("JNI adapter: embedded NUL and Unicode text round trip") {
+    FakeJni jni;
+    JniView view(&jni.env, &jni.view);
+    JniAdapter adapter(&jni.env);
+    const std::string expected = std::string{"A\0B", 3} + "中😀";
+    adapter.set_text(view, expected);
+    CHECK(adapter.get_text(view) == expected);
+    CHECK(jni.leased_chars == 0);
+    CHECK(jni.strings.empty());
+}
+
+TEST_CASE("JNI view: detached-thread destruction releases its global reference") {
+    FakeJni jni;
+    auto view = std::make_unique<JniView>(&jni.env, &jni.view);
+    REQUIRE(jni.globals == 1);
+    jni.attached = false;
+    view.reset();
+    CHECK(jni.globals == 0);
+    CHECK(jni.attaches == 1);
+    CHECK(jni.detaches == 1);
+}
+
+TEST_CASE("JNI recycler: failed lookup never continues with a pending exception") {
+    FakeJni jni;
+    jni.missing_method = "notifyItemInserted";
+    {
+        JniRecyclerNotifier notifier(&jni.env, &jni.view);
+        CHECK_FALSE(notifier.valid());
+        CHECK(jni.calls_with_pending == 0);
+        CHECK_FALSE(jni.pending);
+    }
+    CHECK(jni.globals == 0);
+}
+
+TEST_CASE("JNI recycler: retained sink is inert after notifier destruction") {
+    FakeJni jni;
+    std::function<void(const RecyclerNotification&)> sink;
+    {
+        auto notifier = std::make_unique<JniRecyclerNotifier>(&jni.env, &jni.view);
+        REQUIRE(notifier->valid());
+        sink = notifier->sink();
+    }
+    sink({aria::adapters::jni::RecyclerNotify::DataSetChanged});
+    CHECK(jni.calls == 0);
+    CHECK(jni.globals == 0);
+}
+
+TEST_CASE("JNI adapter: native exceptions are cleared before the next operation") {
+    FakeJni jni;
+    JniView view(&jni.env, &jni.view);
+    JniAdapter adapter(&jni.env);
+    jni.fail_call = true;
+    adapter.set_int(view, 1);
+    CHECK_FALSE(jni.pending);
+    jni.fail_call = false;
+    adapter.set_int(view, 2);
+    CHECK(jni.calls_with_pending == 0);
+    CHECK(jni.view.progress == 2);
+}
+
+TEST_CASE("JNI adapter: wide integer values saturate consistently") {
+    FakeJni jni;
+    JniView view(&jni.env, &jni.view);
+    JniAdapter adapter(&jni.env);
+    adapter.set_int64(view, std::numeric_limits<std::int64_t>::max());
+    CHECK(jni.view.progress == std::numeric_limits<int>::max());
+    adapter.set_uint64(view, std::numeric_limits<std::uint64_t>::max());
+    CHECK(jni.view.progress == std::numeric_limits<int>::max());
+    jni.view.progress = -1;
+    CHECK(adapter.get_uint64(view) == 0);
+}
+
+TEST_CASE("JNI adapter: signal ownership follows the bound wrapper") {
+    FakeJni jni;
+    JniAdapter adapter(&jni.env);
+    auto first_view = std::make_unique<JniView>(&jni.env, &jni.view);
+    JniView second_view(&jni.env, &jni.view);
+    int first_calls = 0, second_calls = 0;
+    auto first = adapter.on_click(*first_view, [&] { ++first_calls; });
+    auto second = adapter.on_click(second_view, [&] { ++second_calls; });
+    adapter.notify_click(*first_view);
+    CHECK(first_calls == 1);
+    CHECK(second_calls == 0);
+    first_view.reset();
+    adapter.notify_click(second_view);
+    CHECK(second_calls == 1);
+}
+
+TEST_CASE("JNI adapter: deleting adapter during event cancels later observers") {
+    FakeJni jni;
+    JniView view(&jni.env, &jni.view);
+    auto adapter = std::make_unique<JniAdapter>(&jni.env);
+    int later_calls = 0;
+    auto first = adapter->on_click(view, [&] { adapter.reset(); });
+    auto later = adapter->on_click(view, [&] { ++later_calls; });
+    adapter->notify_click(view);
+    CHECK(later_calls == 0);
+}
+
+TEST_CASE("JNI adapter: capture teardown can reenter a closing adapter") {
+    FakeJni jni;
+    JniView view(&jni.env, &jni.view);
+    auto adapter = std::make_unique<JniAdapter>(&jni.env);
+    auto* raw = adapter.get();
+    bool retired = false;
+    auto capture = std::shared_ptr<int>(new int(0), [&](int* value) {
+        raw->notify_click(view);
+        retired = true;
+        delete value;
+    });
+    auto sub = adapter->on_click(view, [capture = std::move(capture)] {});
+    adapter.reset();
+    CHECK(retired);
+}
+
+TEST_CASE("JNI recycler: detached notifications balance attachment and reject overflow") {
+    FakeJni jni;
+    auto notifier = std::make_unique<JniRecyclerNotifier>(&jni.env, &jni.view);
+    REQUIRE(notifier->valid());
+    jni.attached = false;
+    notifier->dispatch({aria::adapters::jni::RecyclerNotify::ItemInserted, 4});
+    CHECK(jni.calls == 1);
+    CHECK(jni.attaches == 1);
+    CHECK(jni.detaches == 1);
+    notifier->dispatch({aria::adapters::jni::RecyclerNotify::ItemInserted, std::numeric_limits<std::size_t>::max()});
+    CHECK(jni.calls == 1);
+    notifier.reset();
+    CHECK(jni.globals == 0);
+    CHECK(jni.attaches == jni.detaches);
+}
+
+TEST_CASE("JNI adapter: malformed UTF is replaced and empty strings round trip") {
+    FakeJni jni;
+    JniView view(&jni.env, &jni.view);
+    JniAdapter adapter(&jni.env);
+    adapter.set_text(view, "");
+    CHECK(adapter.get_text(view).empty());
+    adapter.set_text(view, std::string(1, static_cast<char>(0xff)));
+    CHECK(adapter.get_text(view) == "\xef\xbf\xbd");
+    jni.view.text = {static_cast<char16_t>(0xd800), u'A'};
+    CHECK(adapter.get_text(view) == "\xef\xbf\xbd" "A");
+    CHECK(jni.leased_chars == 0);
+}
+
+TEST_CASE("JNI adapter: wide float ingress saturates and empty observers stay empty") {
+    FakeJni jni;
+    JniView view(&jni.env, &jni.view);
+    JniAdapter adapter(&jni.env);
+    float observed = 0;
+    auto sub = adapter.on_float_changed(view, [&](float value) { observed = value; });
+    adapter.notify_double_changed(view, std::numeric_limits<double>::max());
+    CHECK(observed == std::numeric_limits<float>::max());
+    adapter.set_double(view, -std::numeric_limits<double>::max());
+    CHECK(jni.view.rating == -std::numeric_limits<float>::max());
+    CHECK_FALSE(adapter.on_int64_changed(view, {}));
+    CHECK_FALSE(adapter.on_uint64_changed(view, {}));
+    CHECK_FALSE(adapter.on_float_changed(view, {}));
+}
+
+TEST_CASE("JNI recycler: callback destruction keeps the current Java receiver alive") {
+    FakeJni jni;
+    auto notifier = std::make_unique<JniRecyclerNotifier>(&jni.env, &jni.view);
+    auto sink = notifier->sink();
+    jni.on_call = [&] {
+        notifier.reset();
+        CHECK(jni.globals == 1);
+    };
+    sink({aria::adapters::jni::RecyclerNotify::DataSetChanged});
+    CHECK(jni.globals == 0);
+    sink({aria::adapters::jni::RecyclerNotify::DataSetChanged});
+    CHECK(jni.calls == 1);
 }

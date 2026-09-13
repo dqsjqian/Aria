@@ -103,9 +103,7 @@ auto action_with_retry(int max_attempts,
         // Delay schedule: 1x, 2x, 4x, 8x ... of initial_backoff.
         auto next_delay = [initial_backoff](int attempt)
                            -> std::chrono::milliseconds {
-            return initial_backoff
-                   * (static_cast<std::chrono::milliseconds::rep>(1)
-                      << attempt);
+            return detail::retry_delay_(initial_backoff, attempt);
         };
 
         // `should_retry` routes directly into retry_impl_ so the
@@ -119,11 +117,11 @@ auto action_with_retry(int max_attempts,
 
         if constexpr (std::is_void_v<R>) {
             co_await detail::retry_impl_(
-                max_attempts, predicate, next_delay, &timer, std::move(bound));
+                max_attempts, predicate, next_delay, &timer, std::move(bound), parent_tok);
             co_return;
         } else {
             co_return co_await detail::retry_impl_(
-                max_attempts, predicate, next_delay, &timer, std::move(bound));
+                max_attempts, predicate, next_delay, &timer, std::move(bound), parent_tok);
         }
     };
 }

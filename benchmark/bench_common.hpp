@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <iomanip>
 #include <iostream>
@@ -15,7 +16,7 @@
 
 namespace aria_bench {
 
-using clk = std::chrono::high_resolution_clock;
+using clk = std::chrono::steady_clock;
 
 /// Accumulator that keeps a benchmarked expression from being optimised
 /// away, without `volatile`.
@@ -68,11 +69,10 @@ inline void banner(const std::string& title) {
 // ─────────────────────────────────────────────────────────────────────
 //  Percentile-aware measurement.
 //
-//  measure_ns above gives us the *mean* over `iterations` ops, which
-//  is great for tracking general drift but completely hides tail
-//  latency. Nightly thresholds care about P99 — a regression in the
-//  long tail (extra allocation, lock contention, scheduler hiccup)
-//  rarely shows up in the mean until it has done substantial damage.
+//  measure_ns gives one mean over all operations. Percentiles below
+//  expose variation between repeated sample averages; they do not
+//  measure individual-operation tail latency. Nightly P99 ceilings
+//  apply to these batch averages, with clock overhead amortized.
 //
 //  measure_percentiles records one timestamp pair per logical "batch"
 //  of `ops_per_sample` operations and folds the measured ns/op into a
@@ -117,15 +117,15 @@ inline PercentileStats measure_percentiles(int samples, int ops_per_sample, Fn&&
     PercentileStats out;
     out.samples        = samples;
     out.ops_per_sample = ops_per_sample;
-    out.mean_ns        = double(total_ns) / double(samples * ops_per_sample);
+    out.mean_ns        = double(total_ns) / (double(samples) * double(ops_per_sample));
 
     if (!ns_per_op.empty()) {
         std::sort(ns_per_op.begin(), ns_per_op.end());
         auto pick = [&](double q) {
-            // Nearest-rank percentile (pin to last element on overflow).
-            const double scale =
-                static_cast<double>(ns_per_op.size() - 1);
-            std::size_t idx = static_cast<std::size_t>(q * scale);
+            // Nearest rank: ceil(q * N), converted to a zero-based index.
+            const auto rank = static_cast<std::size_t>(
+                std::ceil(q * static_cast<double>(ns_per_op.size())));
+            const auto idx = std::min(ns_per_op.size() - 1, rank - 1);
             return ns_per_op[idx];
         };
         out.p50_ns = pick(0.50);

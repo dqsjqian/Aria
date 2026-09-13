@@ -168,3 +168,24 @@ TEST_CASE("LO-6: map can change the value type") {
     REQUIRE(out.has_value());
     CHECK(*out.value() == "42");
 }
+
+namespace {
+struct OpaqueLoadValue { int value; };
+static_assert(!std::equality_comparable<Loadable<OpaqueLoadValue>>);
+struct ConstructOnlyValue {
+    int value;
+    explicit ConstructOnlyValue(int v) : value(v) {}
+    ConstructOnlyValue(ConstructOnlyValue&&) = default;
+    ConstructOnlyValue& operator=(ConstructOnlyValue&&) = delete;
+};
+}
+
+TEST_CASE("Loadable: factories accept move-constructible non-assignable payloads") {
+    auto value = Loadable<ConstructOnlyValue>::success(ConstructOnlyValue{7});
+    REQUIRE(value.has_value());
+    CHECK(value.value()->value == 7);
+    auto refreshing = Loadable<ConstructOnlyValue>::refreshing(ConstructOnlyValue{9});
+    CHECK(refreshing.value()->value == 9);
+    auto error = Loadable<ConstructOnlyValue>::error(Error::timeout(), ConstructOnlyValue{11});
+    CHECK(error.value()->value == 11);
+}

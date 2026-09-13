@@ -27,9 +27,11 @@
 //       vm.movies_shared(), [](const Movie& m){ return m.year >= 2000; });
 //   ObservableListModel<Movie> model{*active, roles, role_fn};
 //
-// The model holds a non-owning pointer to the source — the source must
-// outlive the model.
+// Construction snapshots and observes the source on its graph thread.
+// Subsequent owning events are queued to the model's Qt owner thread;
+// the model never reads the source while replaying them.
 
+#include "aria/callback_boundary.hpp"
 #include "aria/list_source.hpp"
 #include "aria/observable_list.hpp"
 #include "aria/subscription.hpp"
@@ -39,10 +41,15 @@
 #include <QHash>
 #include <QMetaObject>
 #include <QModelIndex>
+#include <QPointer>
 #include <QThread>
 #include <QVariant>
 
+#include <deque>
 #include <functional>
+#include <limits>
+#include <mutex>
+#include <stdexcept>
 #include <memory>
 #include <type_traits>
 #include <utility>
@@ -57,8 +64,8 @@ public:
     using RoleFn  = std::function<QVariant(const T&, int role)>;
 
     /// Generic constructor: accepts any list source whose element
-    /// type matches `T`. The source is held by raw pointer; lifetime
-    /// is the caller's responsibility.
+    /// type matches `T`. Source reads happen only during construction;
+    /// subsequent Insert/Replace/Reset events own the replayed payload.
     template<class L>
         requires ::aria::ListSourceOf<L, T>
     ObservableListModel(L& source,
@@ -67,42 +74,27 @@ public:
                         QObject* parent = nullptr)
         : QAbstractListModel(parent),
           roles_(std::move(roles)),
-          role_fn_(std::move(role_fn)),
-          snapshot_(source.snapshot()),
-          size_fn_([&source]() { return source.size(); }),
-          at_fn_([&source](std::size_t i) { return source.at(i); }) {
-        // The observe callback may fire on ANY thread (some producers push
-        // from worker threads). Qt's model APIs (beginInsertRows etc.)
-        // must only be called on the thread that owns `this`. We bounce
-        // the change to our owning thread via QMetaObject::invokeMethod,
-        // which queues it to this QObject's event loop.
-        //
-        // IMPORTANT: by the time the queued lambda runs, the source may
-        // have mutated further. We capture whatever extra data the
-        // change applier needs RIGHT NOW — while the change is fresh —
-        // instead of calling `source.at(ch.index)` from inside the
-        // queued lambda. Otherwise rapid back-to-back mutations observe
-        // an inconsistent view.
-        sub_ = source.observe([this](const ::aria::ListChange<T>& ch) {
-            std::shared_ptr<T> resolved;
-            using K = ::aria::ListChangeKind;
-            if (ch.kind == K::Insert
-                || ch.kind == K::Replace
-                || ch.kind == K::Move) {
-                if (ch.index < size_fn_()) {
-                    resolved = at_fn_(ch.index);
-                }
-            }
-
-            if (QThread::currentThread() == this->thread()) {
-                apply_change_(ch, std::move(resolved));
-            } else {
-                auto captured = std::move(resolved);
-                QMetaObject::invokeMethod(this, [this, ch, captured]() {
-                    apply_change_(ch, captured);
-                }, Qt::QueuedConnection);
-            }
+          role_fn_(std::make_shared<RoleFn>(std::move(role_fn))),
+          snapshot_(source.snapshot()) {
+        check_size_(snapshot_.size());
+        delivery_->model = this;
+        std::weak_ptr<Delivery> weak = delivery_;
+        sub_ = source.observe([weak](const ::aria::ListChange<T>& change) {
+            if (auto delivery = weak.lock()) enqueue_(delivery, change);
         });
+    }
+
+    ~ObservableListModel() override {
+        Q_ASSERT(QThread::currentThread() == thread());
+        std::deque<::aria::ListChange<T>> retired;
+        {
+            std::lock_guard lock(delivery_->mutex);
+            delivery_->model = nullptr;
+            retired.swap(delivery_->pending);
+        }
+        // Both subscriptions and payloads can release application objects.
+        // Their destructors must run after the lifetime lock is released.
+        sub_.release();
     }
 
     int rowCount(const QModelIndex& parent = QModelIndex{}) const override {
@@ -112,51 +104,112 @@ public:
 
     QVariant data(const QModelIndex& index,
                   int role = Qt::DisplayRole) const override {
-        if (!index.isValid()) return {};
-        auto row = index.row();
+        if (!index.isValid() || index.model() != this || index.column() != 0) return {};
+        const auto row = index.row();
         if (row < 0 || row >= rowCount()) return {};
         auto item = snapshot_[static_cast<std::size_t>(row)];
         if (!item) return {};
-        return role_fn_(*item, role);
+        try {
+            // A role callback can release the model itself. Keep its target
+            // and the item alive independently until invocation returns.
+            auto project = role_fn_;
+            return (*project)(*item, role);
+        } catch (...) {
+            ::aria::report_callback_failure("qt.list_model.role", std::current_exception());
+            return {};
+        }
     }
 
     QHash<int, QByteArray> roleNames() const override {
         return roles_;
     }
 
-    /// Rebuild snapshot from the source list and emit model reset.
-    /// Falls back to using the captured `size_fn_` / `at_fn_` so a
-    /// reload also works for derived lists.
+    /// Re-notify Qt views using the current event-maintained snapshot.
+    /// No source lookup is needed, so queued events cannot be duplicated.
     void reload() {
+        Q_ASSERT(QThread::currentThread() == thread());
+        QPointer<ObservableListModel> alive(this);
         beginResetModel();
-        const auto n = size_fn_();
-        snapshot_.clear();
-        snapshot_.reserve(n);
-        for (std::size_t i = 0; i < n; ++i) {
-            snapshot_.push_back(at_fn_(i));
-        }
-        endResetModel();
+        if (alive) endResetModel();
     }
 
 private:
-    /// Apply a single change to the local snapshot and emit the matching
-    /// Qt model signals. `resolved_item` is the item that was live at the
-    /// moment the change was emitted on the source list — passed in so a
-    /// racy `source.at(ch.index)` inside this function (which may run
-    /// arbitrarily later on the queued event loop) cannot see a different
-    /// value than the one we promised observers.
-    ///
-    /// For Remove / ItemChanged / Reset we don't need the resolved item;
-    /// the snapshot already knows what to evict, and ItemChanged just
-    /// re-renders using `data()` which reads from `snapshot_`.
-    void apply_change_(const ::aria::ListChange<T>& ch,
-                       std::shared_ptr<T> resolved_item = {}) {
+    struct Delivery {
+        std::mutex mutex;
+        ObservableListModel* model = nullptr;
+        std::deque<::aria::ListChange<T>> pending;
+        bool scheduled = false;
+    };
+
+    static void check_size_(std::size_t size) {
+        if (size > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+            throw std::length_error("ObservableListModel: row count exceeds Qt's int range");
+    }
+
+    static void enqueue_(const std::shared_ptr<Delivery>& delivery,
+                         const ::aria::ListChange<T>& change) {
+        std::unique_lock lock(delivery->mutex);
+        auto* model = delivery->model;
+        if (!model) return;
+        delivery->pending.push_back(change);
+        if (delivery->scheduled) return;
+        delivery->scheduled = true;
+        if (QThread::currentThread() == model->thread()) {
+            lock.unlock();
+            drain_(delivery);
+        } else {
+            // Lifetime lock prevents QObject destruction while registering
+            // the delivery. Qt drops the functor if its context dies later.
+            QMetaObject::invokeMethod(model, [weak = std::weak_ptr<Delivery>(delivery)] {
+                if (auto current = weak.lock()) drain_(current);
+            }, Qt::QueuedConnection);
+        }
+    }
+
+    static void drain_(const std::shared_ptr<Delivery>& delivery) noexcept {
+        for (;;) {
+            ::aria::ListChange<T> change{};
+            ObservableListModel* model;
+            {
+                std::lock_guard lock(delivery->mutex);
+                model = delivery->model;
+                if (!model || delivery->pending.empty()) {
+                    delivery->scheduled = false;
+                    return;
+                }
+                change = std::move(delivery->pending.front());
+                delivery->pending.pop_front();
+            }
+            // Queuing also serialises reentrant model notifications, so a
+            // second begin/end pair never interrupts the current change.
+            try { model->apply_change_(change); }
+            catch (...) {
+                ::aria::report_callback_failure("qt.list_model.change", std::current_exception());
+            }
+        }
+    }
+
+    void apply_change_(const ::aria::ListChange<T>& ch) {
+        Q_ASSERT(QThread::currentThread() == thread());
+        QPointer<ObservableListModel> alive(this);
         switch (ch.kind) {
         case ::aria::ListChangeKind::Insert: {
+            if (ch.index > snapshot_.size())
+                throw std::out_of_range("ObservableListModel: invalid insert index");
+            check_size_(snapshot_.size() + 1);
+            // Reserve before beginInsertRows: allocation failure must not
+            // leave Qt inside an unmatched structural notification pair.
+            if (snapshot_.size() == snapshot_.capacity()) {
+                const auto capacity = snapshot_.capacity();
+                constexpr auto maximum = static_cast<std::size_t>(std::numeric_limits<int>::max());
+                snapshot_.reserve(capacity > maximum / 2
+                    ? maximum : (capacity == 0 ? 1 : capacity * 2));
+            }
             auto row = static_cast<int>(ch.index);
             beginInsertRows(QModelIndex{}, row, row);
+            if (!alive) return;
             snapshot_.insert(snapshot_.begin() + static_cast<std::ptrdiff_t>(ch.index),
-                             std::move(resolved_item));
+                             ch.item);
             endInsertRows();
             break;
         }
@@ -164,6 +217,7 @@ private:
             auto row = static_cast<int>(ch.index);
             if (ch.index >= snapshot_.size()) return;
             beginRemoveRows(QModelIndex{}, row, row);
+            if (!alive) return;
             snapshot_.erase(snapshot_.begin() + static_cast<std::ptrdiff_t>(ch.index));
             endRemoveRows();
             break;
@@ -171,9 +225,8 @@ private:
         case ::aria::ListChangeKind::Replace:
         case ::aria::ListChangeKind::ItemChanged: {
             if (ch.index >= snapshot_.size()) return;
-            if (ch.kind == ::aria::ListChangeKind::Replace) {
-                snapshot_[ch.index] = std::move(resolved_item);
-            }
+            auto retired = std::move(snapshot_[ch.index]);
+            snapshot_[ch.index] = ch.item;
             auto idx = createIndex(static_cast<int>(ch.index), 0);
             Q_EMIT dataChanged(idx, idx, roles_.keys());
             break;
@@ -192,7 +245,7 @@ private:
             const auto to   = static_cast<int>(ch.index);
             const int  dest = (to > from) ? to + 1 : to;
 
-            beginMoveRows(QModelIndex{}, from, from, QModelIndex{}, dest);
+            if (!beginMoveRows(QModelIndex{}, from, from, QModelIndex{}, dest) || !alive) return;
             auto moved = snapshot_[ch.from_index];
             snapshot_.erase(snapshot_.begin()
                                 + static_cast<std::ptrdiff_t>(ch.from_index));
@@ -202,17 +255,24 @@ private:
             endMoveRows();
             break;
         }
-        case ::aria::ListChangeKind::Reset:
-            reload();
+        case ::aria::ListChangeKind::Reset: {
+            if (!ch.snapshot)
+                throw std::invalid_argument("ObservableListModel: Reset requires its snapshot");
+            check_size_(ch.snapshot->size());
+            auto next = *ch.snapshot;
+            beginResetModel();
+            if (!alive) return;
+            snapshot_.swap(next);
+            endResetModel();
             break;
+        }
         }
     }
 
     RoleMap                          roles_;
-    RoleFn                           role_fn_;
+    std::shared_ptr<RoleFn>           role_fn_;
     std::vector<std::shared_ptr<T>>  snapshot_;
-    std::function<std::size_t()>            size_fn_;
-    std::function<std::shared_ptr<T>(std::size_t)> at_fn_;
+    std::shared_ptr<Delivery> delivery_ = std::make_shared<Delivery>();
     ::aria::Subscription             sub_;
 };
 

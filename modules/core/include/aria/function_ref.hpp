@@ -41,8 +41,8 @@
 //   the call site are visible.
 // * Construction from a function pointer (e.g. `int(*)(int)`) is supported
 //   directly, including via implicit decay from a function reference.
-// * Construction from a member function or a callable wrapping `nullptr` is
-//   intentionally rejected at compile time.
+// * Member pointers are rejected; a null free-function pointer produces a
+//   disengaged view. Function pointers are stored by value.
 // * `function_ref` is trivially copyable, so copying it is free.
 // * Disengaged ("default constructed") `function_ref` invokes UB if called;
 //   the type contract treats default construction as a placeholder for later
@@ -70,10 +70,21 @@ public:
 
     constexpr function_ref(std::nullptr_t) noexcept {}
 
-    // Construct from a free function pointer.
+    // The exact-signature overload also resolves overloaded function names.
     function_ref(R (*fp)(Args...)) noexcept
-        : obj_(reinterpret_cast<const void*>(fp)),
-          invoke_(&invoke_function_pointer_) {}
+        : target_{.function = reinterpret_cast<ErasedFunction>(fp)},
+          invoke_(fp ? &invoke_function_pointer_<decltype(fp)> : nullptr) {}
+
+    // Store function pointers by value, including implicit function decay
+    // and noexcept functions. The generic object path must never retain a
+    // pointer to the temporary pointer object at a construction/assignment.
+    template<class Fp,
+             std::enable_if_t<std::is_pointer_v<Fp> &&
+                              std::is_function_v<std::remove_pointer_t<Fp>> &&
+                              std::is_invocable_r_v<R, Fp, Args...>, int> = 0>
+    function_ref(Fp fp) noexcept
+        : target_{.function = reinterpret_cast<ErasedFunction>(fp)},
+          invoke_(fp ? &invoke_function_pointer_<Fp> : nullptr) {}
 
     // Construct from any non-`function_ref` callable invocable as
     // `R(Args...)`. The callable is referenced — not copied — so the caller
@@ -81,9 +92,12 @@ public:
     template<class Fn,
              class = std::enable_if_t<
                  !std::is_same_v<std::remove_cvref_t<Fn>, function_ref> &&
+                 !std::is_pointer_v<std::remove_cvref_t<Fn>> &&
+                 !std::is_function_v<std::remove_reference_t<Fn>> &&
+                 !std::is_member_pointer_v<std::remove_cvref_t<Fn>> &&
                  std::is_invocable_r_v<R, Fn&, Args...>>>
     function_ref(Fn&& fn) noexcept
-        : obj_(static_cast<const void*>(std::addressof(fn))),
+        : target_{.object = static_cast<const void*>(std::addressof(fn))},
           invoke_(&invoke_callable_<std::remove_reference_t<Fn>>) {}
 
     // Trivially copyable — implicit copy/move is correct.
@@ -91,17 +105,36 @@ public:
     constexpr function_ref& operator=(const function_ref&) noexcept = default;
 
     constexpr function_ref& operator=(std::nullptr_t) noexcept {
-        obj_    = nullptr;
+        target_.object = nullptr;
         invoke_ = nullptr;
+        return *this;
+    }
+
+    function_ref& operator=(R (*fp)(Args...)) noexcept {
+        target_.function = reinterpret_cast<ErasedFunction>(fp);
+        invoke_ = fp ? &invoke_function_pointer_<decltype(fp)> : nullptr;
+        return *this;
+    }
+
+    template<class Fp,
+             std::enable_if_t<std::is_pointer_v<Fp> &&
+                              std::is_function_v<std::remove_pointer_t<Fp>> &&
+                              std::is_invocable_r_v<R, Fp, Args...>, int> = 0>
+    function_ref& operator=(Fp fp) noexcept {
+        target_.function = reinterpret_cast<ErasedFunction>(fp);
+        invoke_ = fp ? &invoke_function_pointer_<Fp> : nullptr;
         return *this;
     }
 
     template<class Fn,
              class = std::enable_if_t<
                  !std::is_same_v<std::remove_cvref_t<Fn>, function_ref> &&
+                 !std::is_pointer_v<std::remove_cvref_t<Fn>> &&
+                 !std::is_function_v<std::remove_reference_t<Fn>> &&
+                 !std::is_member_pointer_v<std::remove_cvref_t<Fn>> &&
                  std::is_invocable_r_v<R, Fn&, Args...>>>
     function_ref& operator=(Fn&& fn) noexcept {
-        obj_    = static_cast<const void*>(std::addressof(fn));
+        target_.object = static_cast<const void*>(std::addressof(fn));
         invoke_ = &invoke_callable_<std::remove_reference_t<Fn>>;
         return *this;
     }
@@ -110,10 +143,9 @@ public:
     explicit constexpr operator bool() const noexcept { return invoke_ != nullptr; }
 
     R operator()(Args... args) const {
-        // UB to call when disengaged — same contract as a moved-from
-        // std::function. Asserting here would impose a runtime cost on every
+        // UB to call when disengaged. Asserting here would impose a cost on every
         // call; callers are expected to guard with `if (fr)` when relevant.
-        return invoke_(obj_, std::forward<Args>(args)...);
+        return invoke_(target_, std::forward<Args>(args)...);
     }
 
     friend constexpr bool operator==(const function_ref& a, std::nullptr_t) noexcept {
@@ -130,24 +162,38 @@ public:
     }
 
 private:
-    using Invoker = R (*)(const void*, Args...);
+    using ErasedFunction = void (*)();
+    union Target {
+        const void* object = nullptr;
+        ErasedFunction function;
+    };
+    using Invoker = R (*)(Target, Args...);
 
     template<class Fn>
-    static R invoke_callable_(const void* obj, Args... args) {
-        // const_cast because the stored pointer is `const void*` for a
-        // strictly read-only handle representation, but the underlying
-        // callable might be a mutable lambda or non-const operator().
-        auto* p = const_cast<Fn*>(static_cast<const Fn*>(obj));
-        return std::invoke(*p, std::forward<Args>(args)...);
+    static R invoke_callable_(Target target, Args... args) {
+        // Preserve const targets while allowing mutable non-const callables.
+        auto* p = const_cast<Fn*>(static_cast<const Fn*>(target.object));
+        if constexpr (std::is_void_v<R>) {
+            std::invoke(*p, std::forward<Args>(args)...);
+        } else {
+            return std::invoke(*p, std::forward<Args>(args)...);
+        }
     }
 
-    static R invoke_function_pointer_(const void* obj, Args... args) {
-        auto fp = reinterpret_cast<R (*)(Args...)>(const_cast<void*>(obj));
-        return fp(std::forward<Args>(args)...);
+    template<class Fp>
+    static R invoke_function_pointer_(Target target, Args... args) {
+        // Function-pointer conversions are standard reversible conversions;
+        // no assumption that an object pointer can represent a function.
+        auto fp = reinterpret_cast<Fp>(target.function);
+        if constexpr (std::is_void_v<R>) {
+            std::invoke(fp, std::forward<Args>(args)...);
+        } else {
+            return std::invoke(fp, std::forward<Args>(args)...);
+        }
     }
 
-    const void* obj_    = nullptr;
-    Invoker     invoke_ = nullptr;
+    Target target_{};
+    Invoker invoke_ = nullptr;
 };
 
 // Deduction guide: enables `aria::function_ref f = some_lambda;` for the

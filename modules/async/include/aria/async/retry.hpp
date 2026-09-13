@@ -27,9 +27,15 @@
 #include "aria/async/executor.hpp"
 #include "aria/async/virtual_time_executor.hpp"  // also serves as IDelayedScheduler
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <exception>
 #include <functional>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
@@ -52,6 +58,50 @@ namespace detail {
         void await_resume() const noexcept {}
     };
 
+    /// A timer and cancellation may race while await_suspend is still
+    /// registering callbacks. Only the winner after the suspension commit
+    /// resumes the handle; an early winner makes await_suspend return false.
+    struct CancellableDelayAwaiter {
+        struct State {
+            // 0 = registering, 1 = suspended, 2 = signalled.
+            std::atomic<int> phase{0};
+            std::coroutine_handle<> handle;
+
+            void signal(bool from_cancellation) {
+                if (phase.exchange(2, std::memory_order_acq_rel) != 1) return;
+                if (from_cancellation) schedule_deferred_resume(handle);
+                else handle.resume();
+            }
+        };
+        IDelayedScheduler& scheduler;
+        std::chrono::milliseconds delay;
+        CancellationToken token;
+        std::shared_ptr<State> state = std::make_shared<State>();
+
+        bool await_ready() const noexcept { return token.is_cancelled(); }
+        bool await_suspend(std::coroutine_handle<> h) {
+            auto shared = state;
+            shared->handle = h;
+            scheduler.post_after(delay, [shared] { shared->signal(false); });
+            token.on_cancel([shared] { shared->signal(true); });
+            int expected = 0;
+            return shared->phase.compare_exchange_strong(
+                expected, 1, std::memory_order_acq_rel);
+        }
+        void await_resume() const { token.throw_if_cancelled(); }
+    };
+
+    inline std::chrono::milliseconds retry_delay_(
+        std::chrono::milliseconds initial, int attempt) noexcept {
+        using Rep = std::chrono::milliseconds::rep;
+        if (initial.count() <= 0) return std::chrono::milliseconds{0};
+        const auto multiplier = Rep{1} << std::clamp(attempt, 0, 20);
+        constexpr auto maximum = std::numeric_limits<Rep>::max();
+        return std::chrono::milliseconds{
+            initial.count() > maximum / multiplier
+                ? maximum : initial.count() * multiplier};
+    }
+
     /// Single implementation backing all three public retry overloads.
     ///
     /// `should_retry` decides, given the just-thrown `std::exception&`,
@@ -66,13 +116,18 @@ namespace detail {
                      ShouldRetry should_retry,
                      NextDelay next_delay,
                      IDelayedScheduler* timer,
-                     Factory factory)
+                     Factory factory,
+                     std::optional<CancellationToken> token = std::nullopt)
         -> Task<factory_value_t<Factory>>
     {
         using R = factory_value_t<Factory>;
+        if (max_attempts <= 0) {
+            throw std::invalid_argument("retry: max_attempts must be positive");
+        }
         std::exception_ptr last;
         for (int attempt = 0; attempt < max_attempts; ++attempt) {
             try {
+                if (token) token->throw_if_cancelled();
                 if constexpr (std::is_void_v<R>) {
                     co_await factory();
                     co_return;
@@ -104,7 +159,11 @@ namespace detail {
             if (timer) {
                 const auto delay = next_delay(attempt);
                 if (delay.count() > 0) {
-                    co_await DelayAwaiter{*timer, delay};
+                    if (token) {
+                        co_await CancellableDelayAwaiter{*timer, delay, *token};
+                    } else {
+                        co_await DelayAwaiter{*timer, delay};
+                    }
                 }
             }
         }
@@ -150,23 +209,7 @@ auto retry_with_backoff(int max_attempts,
         max_attempts,
         [](const std::exception&) { return true; },
         [initial](int attempt) {
-            // attempt is 0-based; doubling per failure.
-            //
-            // Two things are guarded here:
-            //
-            //   * `1 << attempt` on a plain `int` is signed-overflow UB from
-            //     attempt 31 onward, and `max_attempts` is caller-supplied
-            //     with no ceiling. The shift is therefore done in
-            //     `unsigned long long`.
-            //   * A doubling sequence reaches absurd delays long before it
-            //     reaches the width of the type: with a 100ms base, attempt
-            //     31 is already ~6.8 years. Clamping the exponent at 20 caps
-            //     the multiplier at ~1e6 (100ms base → ~29 hours), which is
-            //     far beyond any sensible retry window while keeping every
-            //     later attempt well-defined and finite.
-            constexpr int kMaxShift = 20;
-            const int shift = attempt < kMaxShift ? attempt : kMaxShift;
-            return initial * (1ull << shift);
+            return detail::retry_delay_(initial, attempt);
         },
         &timer,
         std::move(factory));

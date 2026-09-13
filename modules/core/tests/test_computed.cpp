@@ -7,6 +7,26 @@
 
 using namespace aria;
 
+TEST_CASE("Computed: copyable values need no default constructor") {
+    struct Value {
+        Value() = delete;
+        explicit Value(int n) : number(n) {}
+        int number;
+        bool operator==(const Value&) const = default;
+    };
+    static_assert(PropertyValue<Value>);
+    Property<int> source{7};
+    Computed<Value> result{[&] { return Value{source.get()}; }};
+    CHECK(result.get().number == 7);
+    int seen = 0;
+    auto subscription = result.on_changed([&](const Value& v) { seen = v.number; });
+    source.set(9);
+    CHECK(result.get_ref().number == 9);
+    CHECK(result.peek().number == 9);
+    CHECK(result.peek_ref().number == 9);
+    CHECK(seen == 9);
+}
+
 TEST_CASE("Computed: basic dependency") {
     Property<int> a(3), b(4);
     Computed<int> sum([&]{ return a.get() + b.get(); });

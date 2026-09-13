@@ -34,38 +34,32 @@ using namespace aria::reactive;
 // ============================================================================
 //  L-13: unsubscribe-during-emit on signal-backed observers
 //
-//  Slots disconnected during emit MUST still be invoked for the current
-//  emit (snapshot semantics), but MUST NOT be invoked on subsequent
-//  emits. New slots added during emit MUST NOT be invoked for the
-//  current emit.
+//  Slots disconnected during emit MUST be skipped if their callback has
+//  not started. New slots added during emit begin with the next emission.
 // ============================================================================
 
-TEST_CASE("L-13: unsubscribe inside emit still receives current emit") {
+TEST_CASE("L-13: unsubscribe inside emit skips a later callback") {
     aria::detail::TypedSignal<int> sig;
     int hit_a = 0;
     int hit_b = 0;
 
-    // We need a place to drop B's subscription from inside A's handler.
-    // Wrap it in shared_ptr so the lambda can release it.
-    auto sub_b_holder = std::make_shared<Subscription>();
+    Subscription sub_b;
 
     auto sub_a = sig.connect([&](const int& v) {
         hit_a += v;
-        // Disconnect B mid-emit. Per L-13, B will still be invoked
-        // for THIS emit because we already snapshotted the slot list
-        // before invoking A.
-        sub_b_holder->release();
+        // B is in the snapshot, but has not started; cancellation skips it.
+        sub_b.release();
     });
-    *sub_b_holder = sig.connect([&](const int& v) { hit_b += v; });
+    sub_b = sig.connect([&](const int& v) { hit_b += v; });
 
     sig.emit(1);
     CHECK(hit_a == 1);
-    CHECK(hit_b == 1);  // snapshot semantics: B was in the snapshot
+    CHECK(hit_b == 0);
     CHECK(sig.slot_count() == 1);
 
     sig.emit(10);
     CHECK(hit_a == 11);
-    CHECK(hit_b == 1);  // B already disconnected before this emit
+    CHECK(hit_b == 0);
 }
 
 TEST_CASE("L-13: connect inside emit does not fire for current emit") {
@@ -101,11 +95,8 @@ TEST_CASE("L-15: signal destruction during own emit is safe") {
     // alive past sig.reset(), so `hit += v` after reset stays safe.
     auto sub = sig->connect([&](const int& v) {
         hit += v;
-        // NOTE: we cannot actually destroy `sig` while the signal's
-        // weak handle is still resolved by the running emit, because
-        // the emit() call frame holds the control block via shared_ptr
-        // through the snapshot. Reset here merely drops the user-side
-        // strong ref; the control block survives until emit returns.
+        // The signal object is destroyed immediately. The running emit
+        // retains its control block and callback storage until it returns.
         sig.reset();
     });
 
@@ -220,31 +211,23 @@ TEST_CASE("L-20: re-entrant set inside Effect rolls into next round") {
     CHECK(b.get() == 13);
 }
 
-TEST_CASE("L-20: self-writing Effect converges (clear_sources prevents loop)") {
-    // An Effect that reads `p` and writes `p` does NOT loop. Per L-17,
-    // each recompute starts with `clear_sources()`, so the inner `set`
-    // happens while `p` has no observers — it cannot re-enqueue this
-    // effect into the same flush. After the body finishes, fresh edges
-    // are reattached and the effect parks until the next external write.
-    Property<int> p{0};
-
-    int run_count = 0;
-    Effect e{[&] {
-        ++run_count;
-        if (p.get() < 3) {
-            p.set(p.get() + 1);
-        }
+TEST_CASE("L-20: self-writes do not reschedule the currently computing Effect") {
+    Property<int> property{0};
+    int runs = 0;
+    Effect effect{[&] {
+        ++runs;
+        if (property.get() < 3) property.set(property.get() + 1);
     }};
-
-    // Eager first run: reads p=0, writes 1. Reattach happens after fn.
-    // External writes drive subsequent runs until the body short-circuits.
-    CHECK(run_count >= 1);
-    CHECK(p.get() >= 1);
-    // Drive externally so the body re-runs and stabilises at p == 3.
-    p.set(p.get());  // no-op (equality gate) — but ensure no exception
-    // Force at least one external advance to trigger the next round.
-    p.set(p.get() + 1);
-    CHECK(p.get() >= 1);
+    CHECK(runs == 1);
+    CHECK(property.get() == 1);
+    property.set(1);
+    CHECK(runs == 1);
+    property.set(2);
+    CHECK(runs == 2);
+    CHECK(property.get() == 3);
+    property.set(2);
+    CHECK(runs == 3);
+    CHECK(property.get() == 3);
 }
 
 // ============================================================================

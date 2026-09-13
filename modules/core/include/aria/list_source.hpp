@@ -56,6 +56,8 @@ namespace aria {
 namespace detail {
 
 template<typename L>
+    requires (requires { typename L::value_type; } ||
+              requires { typename L::element_type; })
 struct list_source_value_impl {
     template<typename U>
     static auto probe(int) -> typename U::value_type;

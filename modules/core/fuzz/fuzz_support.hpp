@@ -24,10 +24,14 @@
 //  a different region of the state space.
 // ============================================================================
 
+#include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <random>
 #include <string>
+#include <string_view>
+#include <system_error>
 
 namespace aria::fuzz {
 
@@ -55,14 +59,20 @@ namespace {
 
 }  // unnamed namespace
 
-[[nodiscard]] inline std::size_t iters() noexcept {
-    if (const char* env = read_env("ARIA_FUZZ_ITERS")) {
-        try {
-            const auto v = std::stoull(env);
-            if (v > 0) return static_cast<std::size_t>(v);
-        } catch (...) { /* fall through to default */ }
-    }
+/// Invalid configuration keeps the positive default, including zero,
+/// negative counts, partial numbers and values not representable by size_t.
+[[nodiscard]] inline std::size_t parse_iters(std::string_view text) noexcept {
+    if (text.empty()) return kDefaultIters;
+    std::size_t value = 0;
+    const auto end = text.data() + text.size();
+    const auto result = std::from_chars(text.data(), end, value);
+    if (result.ec == std::errc{} && result.ptr == end && value > 0) return value;
     return kDefaultIters;
+}
+
+[[nodiscard]] inline std::size_t iters() noexcept {
+    const auto* env = read_env("ARIA_FUZZ_ITERS");
+    return env ? parse_iters(env) : kDefaultIters;
 }
 
 [[nodiscard]] inline std::uint64_t seed(std::uint64_t fallback) noexcept {

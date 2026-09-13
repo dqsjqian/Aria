@@ -39,7 +39,7 @@
 
 #include <atomic>
 #include <memory>
-#include <mutex>
+#include <latch>
 #include <thread>
 #include <variant>
 #include <vector>
@@ -53,7 +53,14 @@ namespace {
 /// after destruction — the exact failure D-21 forbids.
 struct SinkGuard {
     std::atomic<bool> dead{false};
-    ~SinkGuard() { dead.store(true, std::memory_order_release); }
+};
+
+// The test keeps only SinkGuard alive. This separate owner belongs solely
+// to the callback, so retaining the guard cannot mask callback destruction.
+struct SinkLifetime {
+    explicit SinkLifetime(std::shared_ptr<SinkGuard> state) : guard(std::move(state)) {}
+    ~SinkLifetime() { guard->dead.store(true, std::memory_order_release); }
+    std::shared_ptr<SinkGuard> guard;
 };
 
 }  // namespace
@@ -76,12 +83,12 @@ TEST_CASE("D-21 fuzz: install/clear never lets publish touch a destroyed sink") 
     // whether freed memory happens to still read true.
     std::vector<std::shared_ptr<SinkGuard>> guards;
     guards.reserve(64);
-    std::mutex guards_mu;
 
     auto make_sink = [&](std::shared_ptr<SinkGuard> guard) {
-        return [guard = std::move(guard), &delivered, &use_after_free,
+        auto lifetime = std::make_shared<SinkLifetime>(std::move(guard));
+        return [lifetime = std::move(lifetime), &delivered, &use_after_free,
                 &malformed](const TraceEvent& ev) {
-            if (guard->dead.load(std::memory_order_acquire)) {
+            if (lifetime->guard->dead.load(std::memory_order_acquire)) {
                 use_after_free.fetch_add(1, std::memory_order_relaxed);
                 return;
             }
@@ -99,14 +106,20 @@ TEST_CASE("D-21 fuzz: install/clear never lets publish touch a destroyed sink") 
     // Publisher: unconditional publish_trace (the gated variant is
     // covered by the zero-overhead bench). Uses the List payload
     // because it is the cheapest to build.
+    guards.push_back(std::make_shared<SinkGuard>());
+    install_trace_sink(make_sink(guards.back()));
+    std::latch first_delivery{1};
     std::thread publisher([&] {
         std::size_t n = 0;
+        publish_trace(TraceCategory::List, trace::List{"Insert", 0, 0, 1});
+        first_delivery.count_down();
         while (!stop.load(std::memory_order_relaxed)) {
             publish_trace(TraceCategory::List,
                           trace::List{"Insert", n % 8, 0, (n % 8) + 1});
             ++n;
         }
     });
+    first_delivery.wait();
 
     // Installer: swap / clear / re-install under the race.
     std::thread installer([&] {
@@ -116,10 +129,7 @@ TEST_CASE("D-21 fuzz: install/clear never lets publish touch a destroyed sink") 
                 clear_trace_sink();
             } else if (pick == 1) {
                 auto guard = std::make_shared<SinkGuard>();
-                {
-                    std::lock_guard lk(guards_mu);
-                    guards.push_back(guard);
-                }
+                guards.push_back(guard);
                 install_trace_sink(make_sink(std::move(guard)));
             } else {
                 // Nested scoped sink: installs, then restores whatever
@@ -127,10 +137,7 @@ TEST_CASE("D-21 fuzz: install/clear never lets publish touch a destroyed sink") 
                 // ends inside this iteration, so a publish in flight
                 // must not follow the dangling one.
                 auto guard = std::make_shared<SinkGuard>();
-                {
-                    std::lock_guard lk(guards_mu);
-                    guards.push_back(guard);
-                }
+                guards.push_back(guard);
                 ScopedTraceSink scoped{make_sink(std::move(guard))};
             }
         }
@@ -147,4 +154,5 @@ TEST_CASE("D-21 fuzz: install/clear never lets publish touch a destroyed sink") 
     // Sanity: the race actually exercised the delivery path. If this
     // trips, the fuzzer is passing vacuously.
     CHECK(delivered.load() > 0);
+    for (const auto& guard : guards) CHECK(guard->dead.load());
 }

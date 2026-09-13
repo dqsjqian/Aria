@@ -45,6 +45,8 @@
 #include "aria/error.hpp"
 
 #include <optional>
+#include <concepts>
+#include <functional>
 #include <type_traits>
 #include <utility>
 
@@ -87,14 +89,14 @@ public:
     [[nodiscard]] static Loadable refreshing(T prior) {
         Loadable l;
         l.state_ = LoadState::Refreshing;
-        l.value_ = std::move(prior);
+        l.value_.emplace(std::move(prior));
         return l;
     }
 
     [[nodiscard]] static Loadable success(T v) {
         Loadable l;
         l.state_ = LoadState::Success;
-        l.value_ = std::move(v);
+        l.value_.emplace(std::move(v));
         return l;
     }
 
@@ -110,7 +112,7 @@ public:
         Loadable l;
         l.state_ = LoadState::Error;
         l.error_ = std::move(err);
-        l.value_ = std::move(prior);
+        l.value_.emplace(std::move(prior));
         return l;
     }
 
@@ -148,7 +150,7 @@ public:
         return value_.has_value() ? &*value_ : nullptr;
     }
 
-    /// Returns the value or `fallback` if absent. Never throws.
+    /// Returns a copy of the value, or constructs T from fallback if absent.
     template<class U>
     [[nodiscard]] T value_or(U&& fallback) const {
         return value_.has_value() ? *value_ : T{std::forward<U>(fallback)};
@@ -164,18 +166,9 @@ public:
     // Loadable<T> is equality-comparable iff T is. This is required
     // for `Property<Loadable<T>>` to drop redundant `set()` writes
     // per L-21 / E-11.
-    friend bool operator==(const Loadable& a, const Loadable& b) {
-        if (a.state_ != b.state_) return false;
-        if (a.value_.has_value() != b.value_.has_value()) return false;
-        if constexpr (std::equality_comparable<T>) {
-            if (a.value_.has_value() && *a.value_ != *b.value_) return false;
-        }
-        if (a.error_.has_value() != b.error_.has_value()) return false;
-        if (a.error_.has_value() && !(*a.error_ == *b.error_)) return false;
-        return true;
-    }
-    friend bool operator!=(const Loadable& a, const Loadable& b) {
-        return !(a == b);
+    friend bool operator==(const Loadable& a, const Loadable& b)
+        requires std::equality_comparable<T> {
+        return a.state_ == b.state_ && a.value_ == b.value_ && a.error_ == b.error_;
     }
 
     // ── Functor / monad-ish helpers (LO-6) -----------------------------

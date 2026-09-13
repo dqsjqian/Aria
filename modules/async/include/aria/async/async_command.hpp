@@ -164,7 +164,7 @@ inline void check_executor_safety_runtime(IExecutor& ui, IExecutor& worker) {
             "invariant. Remedy: install a real main-thread executor "
             "BEFORE constructing this view model -- MainThreadExecutor "
             "in tests / console apps, or "
-            "aria::runtime::DispatcherExecutor{main_dispatcher()} in a "
+            "aria::runtime::DispatcherExecutor{*main_dispatcher()} in a "
             "GUI host (aria/runtime/dispatcher_executor.hpp). See "
             "docs/reference/lifecycle.md for the startup ordering "
             "contract.");
@@ -437,6 +437,22 @@ public:
         }
         for (auto& s : victims) s->cancel();
     }
+
+    void cancel_on_destruction() {
+        // Keep the shared state and each invocation source alive independently
+        // of callbacks that synchronously resume and destroy their frames.
+        // Swap rather than copy: teardown does not need to allocate a snapshot.
+        auto keep_alive = state;
+        std::vector<std::shared_ptr<CancellationSource>> victims;
+        {
+            std::lock_guard lk(keep_alive->m_sources);
+            victims.swap(keep_alive->invocation_sources);
+        }
+        keep_alive->cancel.cancel();
+        // The action receives the invocation token, not the command token.
+        // Cancel outside m_sources: resumed Invocation destructors take it.
+        for (auto& source : victims) source->cancel();
+    }
 };
 
 }  // namespace detail
@@ -529,7 +545,7 @@ public:
         // Signal every in-flight coroutine to bail on its next probe.
         // state lives on as long as some coroutine still references it,
         // so Property writes inside those coroutines remain safe.
-        core_.state->cancel.cancel();
+        core_.cancel_on_destruction();
     }
 
     AsyncCommand(const AsyncCommand&) = delete;
@@ -702,7 +718,7 @@ public:
         detail::check_executor_safety_runtime(ui, worker);
     }
 
-    ~AsyncCommand() { core_.state->cancel.cancel(); }
+    ~AsyncCommand() { core_.cancel_on_destruction(); }
 
     AsyncCommand(const AsyncCommand&) = delete;
     AsyncCommand& operator=(const AsyncCommand&) = delete;

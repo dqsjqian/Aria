@@ -27,7 +27,9 @@ public:
     void set_level(LogLevel level) noexcept;
     [[nodiscard]] LogLevel level() const noexcept;
 
-    void log(LogLevel level, std::string_view category, std::string_view message);
+    /// Invoke the current sink without copying its captures. Sink exceptions
+    /// and recursive logging fall back to stderr.
+    void log(LogLevel level, std::string_view category, std::string_view message) noexcept;
 
     // Shorthands
     void trace(std::string_view category, std::string_view m) { log(LogLevel::Trace, category, m); }

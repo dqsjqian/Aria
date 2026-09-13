@@ -18,21 +18,29 @@ namespace aria::binding {
 
 // ── Constructors ──────────────────────────────────────────────────────────
 BindingEngine::BindingEngine(std::shared_ptr<IViewAdapter> adapter)
-    : adapter_(std::move(adapter)) {}
+    : adapter_(std::move(adapter)) {
+    if (!adapter_) throw std::invalid_argument("BindingEngine: adapter is null");
+}
 
 BindingEngine::BindingEngine(std::shared_ptr<IViewAdapter> adapter,
                               std::shared_ptr<runtime::IDispatcher> ui_dispatcher,
                               DispatchPolicy policy)
     : adapter_(std::move(adapter)),
       dispatcher_(std::move(ui_dispatcher)),
-      policy_(policy) {}
+      policy_(policy) {
+    if (!adapter_) throw std::invalid_argument("BindingEngine: adapter is null");
+    if (!dispatcher_ && policy_ != DispatchPolicy::Direct) {
+        throw std::invalid_argument("BindingEngine: marshalling requires a dispatcher");
+    }
+}
 
 // Out-of-line on purpose: keeps the destructors of the private container
-// members from being expanded inline in every consumer TU, which would make
-// their layout part of the effective ABI. See the declaration in
-// binding_engine.hpp for the full rationale. The body is empty — member
-// destructors do all the work, they just run inside the library now.
-BindingEngine::~BindingEngine() = default;
+// members from being expanded inline in every consumer TU. Clear explicitly
+// retires lifetime gates before subscription destructors invoke user code.
+BindingEngine::~BindingEngine() {
+    closing_ = true;
+    clear();
+}
 
 // ── Text ──────────────────────────────────────────────────────────────────
 void BindingEngine::bind_text_oneway(Property<std::string>& prop, IView& view) {
@@ -128,103 +136,44 @@ void BindingEngine::bind_enabled(Property<bool>& prop, IView& view) {
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────
-//
-// `clear()` must release every active binding *and* sever every
-// in-flight VM→View callable that has already been handed to the
-// dispatcher. The latter is guaranteed by also releasing the
-// per-view alive sentinels: posted lambdas hold a `weak_ptr<int>`
-// to that sentinel and weak-lock it before touching the view, so
-// once we drop our last strong ref here, every queued lambda
-// becomes a no-op the moment the dispatcher pumps it.
-//
-// Order matters: drop the per-view buckets first (those hold one
-// strong ref to each sentinel), then drop the alive-sentinel map
-// (which holds the only other strong ref), then drop
-// `engine_holders_`. This order keeps any concurrent observer from
-// briefly seeing a "bucket cleared but sentinel alive" state.
 void BindingEngine::clear() noexcept {
-    per_view_.clear();
-    view_alive_.clear();
-    engine_holders_.clear();
+    // Detach the entire registry and retire all gates before a Subscription
+    // destructor invokes user code. Reentrant bindings go into a fresh map.
+    decltype(per_view_) retired;
+    retired.swap(per_view_);
+    for (auto& [view, bucket] : retired) bucket->active = false;
 }
 
-// ── Private helpers ───────────────────────────────────────────────────────
 BindingEngine::AliveToken BindingEngine::ensure_alive_token_(IView& view) {
-    ViewBucket& bucket = bucket_for_(view);
-    auto it = view_alive_.find(&view);
-    if (it != view_alive_.end()) {
-        return AliveToken{it->second};
-    }
-    auto sentinel = std::make_shared<int>(0);
-    view_alive_.emplace(&view, sentinel);
-    bucket->push_back(Subscription{sentinel});
-    return AliveToken{sentinel};
+    return bucket_for_(view);
 }
 
 void BindingEngine::add_view_sub_(IView& view, Subscription sub) {
-    ViewBucket& bucket = bucket_for_(view);
-    bucket->push_back(std::move(sub));
+    bucket_for_(view)->subscriptions.push_back(std::move(sub));
 }
 
-BindingEngine::ViewBucket& BindingEngine::bucket_for_(IView& view) {
-    if (auto it = per_view_.find(&view); it != per_view_.end()) {
-        return it->second;
-    }
+std::shared_ptr<BindingEngine::ViewBucket> BindingEngine::bucket_for_(IView& view) {
+    if (closing_) throw std::logic_error("BindingEngine: binding during destruction");
+    if (auto it = per_view_.find(&view); it != per_view_.end()) return it->second;
 
-    // Build everything in local variables FIRST so a partially-failing
-    // sequence (allocation, on_destroy connect, sub bag push_back ...)
-    // can never leave the engine in a state where `per_view_` already
-    // has an entry but its bucket is null or its destroy listener is
-    // missing. We only mutate engine state once every fallible step
-    // has succeeded.
-    auto bucket_local = std::make_shared<std::vector<Subscription>>();
-
-    Subscription bucket_holder{bucket_local};
-    Subscription destroy_holder;
-    {
-        std::weak_ptr<std::vector<Subscription>> weak_bucket = bucket_local;
-        IView* view_ptr = &view;
-        destroy_holder = view.on_destroy(
-            [this, view_ptr, weak_bucket]() noexcept {
-                if (::aria::has_trace_sink()) {
-                    try {
-                        ::aria::publish_trace_unchecked(::aria::TraceCategory::Binding,
-                            ::aria::trace::Binding{
-                                std::string{adapter_->platform_name()},
-                                std::string{},
-                                "view_destroyed",
-                            });
-                    } catch (...) { /* never propagate from noexcept callback */ }
-                }
-                if (auto bucket = weak_bucket.lock()) {
-                    bucket->clear();
-                }
-                view_alive_.erase(view_ptr);
-                per_view_.erase(view_ptr);
-            });
-    }
-
-    // From here on we mutate the engine. `try_emplace` won't insert a
-    // null bucket because `bucket_local` is already a real shared_ptr,
-    // and we only commit `engine_holders_` after the map insertion
-    // succeeds (so a `bad_alloc` during emplace can't leave a dangling
-    // SubscriptionBag entry pointing at a never-mapped bucket).
-    auto [it, inserted] = per_view_.try_emplace(&view, bucket_local);
-    if (!inserted) {
-        // A concurrent (or recursive) caller already created the bucket.
-        // Drop our locals — they auto-disconnect the still-uncommitted
-        // on_destroy listener, no leftover state.
-        return it->second;
-    }
-    try {
-        engine_holders_ += std::move(bucket_holder);
-        engine_holders_ += std::move(destroy_holder);
-    } catch (...) {
-        // SubscriptionBag::add can throw on push_back. Roll back the
-        // map insertion so subsequent calls retry from a clean slate.
-        per_view_.erase(it);
-        throw;
-    }
+    auto bucket = std::make_shared<ViewBucket>();
+    std::weak_ptr<ViewBucket> weak = bucket;
+    bucket->destroy_listener = view.on_destroy([this, view_ptr = &view, weak] {
+        auto retired = weak.lock();
+        if (!retired || !retired->active) return;
+        retired->active = false;
+        auto adapter = adapter_;
+        per_view_.erase(view_ptr);
+        // No engine access follows: the trace/disconnectors may destroy it.
+        if (::aria::has_trace_sink()) {
+            trace_binding_(adapter->platform_name(), "view_destroyed");
+        }
+        // Detach the listener before releasing arbitrary subscriptions; the
+        // emitter retains the currently executing callback until it returns.
+        retired->destroy_listener.release();
+        auto subscriptions = std::move(retired->subscriptions);
+    });
+    auto [it, inserted] = per_view_.try_emplace(&view, bucket);
     return it->second;
 }
 
@@ -270,4 +219,3 @@ void IView::fire_destroy_() noexcept {
 IViewAdapter::~IViewAdapter() = default;
 }  // namespace aria::binding
 #endif
-

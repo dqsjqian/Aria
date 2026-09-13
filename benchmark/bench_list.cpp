@@ -104,8 +104,8 @@ int main() {
     // -------------------------------------------------------------------
     {
         ObservableList<Plain> list;
-        // Pre-grow once so the percentile run does not include the
-        // initial vector growth allocations.
+        // Seed the list; subsequent growth allocations remain part of the
+        // measured append workload.
         for (int i = 0; i < 1024; ++i) list.push_back(make(i));
 
         constexpr int kSamples      = 256;

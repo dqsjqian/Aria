@@ -2,13 +2,13 @@
 
 #include "aria/abi/export.hpp"
 
-#define ARIA_VERSION_MAJOR 1
-#define ARIA_VERSION_MINOR 2
-#define ARIA_VERSION_PATCH 1
+#define ARIA_VERSION_MAJOR 2
+#define ARIA_VERSION_MINOR 0
+#define ARIA_VERSION_PATCH 0
 
-#define ARIA_VERSION_STRING "1.2.1"
+#define ARIA_VERSION_STRING "2.0.0"
 
-#define ARIA_ABI_VERSION 1
+#define ARIA_ABI_VERSION 2
 
 namespace aria::abi {
 
@@ -34,7 +34,7 @@ constexpr const char* version_string = ARIA_VERSION_STRING;
 /// `ARIA_ABI_VERSION` your translation unit was compiled with.
 [[nodiscard]] ARIA_ABI_API int runtime_abi_version() noexcept;
 
-/// Release version string of the loaded aria library ("1.2.1").
+/// Release version string of the loaded aria library ("2.0.0").
 [[nodiscard]] ARIA_ABI_API const char* runtime_version_string() noexcept;
 
 /// True iff the loaded library's ABI version matches the headers this

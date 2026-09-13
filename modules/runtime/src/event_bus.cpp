@@ -16,10 +16,17 @@ struct EventBus::Impl {
     // 4-thread publish microbench in `benchmark/`.
     mutable std::shared_mutex mutex_;
     std::unordered_map<std::type_index, std::any> signals_;
+    bool closing_ = false;
 };
 
 EventBus::EventBus() : impl_(std::make_unique<Impl>()) {}
-EventBus::~EventBus() = default;
+EventBus::~EventBus() {
+    {
+        std::unique_lock lock(impl_->mutex_);
+        impl_->closing_ = true;
+    }
+    clear();
+}
 
 EventBus& EventBus::global() noexcept {
     static EventBus inst;
@@ -27,8 +34,11 @@ EventBus& EventBus::global() noexcept {
 }
 
 void EventBus::clear() {
-    std::unique_lock lk(impl_->mutex_);
-    impl_->signals_.clear();
+    decltype(Impl::signals_) removed;
+    {
+        std::unique_lock lock(impl_->mutex_);
+        removed.swap(impl_->signals_);
+    }
 }
 
 std::any EventBus::do_find_signal_(std::type_index ti) {
@@ -42,6 +52,7 @@ std::any EventBus::do_find_signal_(std::type_index ti) {
 
 std::any EventBus::do_try_emplace_signal_(std::type_index ti, std::any sig) {
     std::unique_lock lk(impl_->mutex_);
+    if (impl_->closing_) return sig;
     auto it = impl_->signals_.find(ti);
     if (it != impl_->signals_.end()) {
         return it->second;

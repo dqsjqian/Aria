@@ -16,6 +16,23 @@ public:
 };
 }  // namespace
 
+TEST_CASE("ViewModel: child activation can append another child") {
+    struct AppendingVM : ViewModel {
+        std::function<void()> activate_hook;
+        void on_activate() override { if (activate_hook) activate_hook(); }
+    };
+    auto parent = std::make_shared<ViewModel>();
+    auto first = std::make_shared<AppendingVM>();
+    auto last = std::make_shared<HomeVM>();
+    parent->add_child(first);
+    parent->add_child(last);
+    first->activate_hook = [&] {
+        for (int i = 0; i < 100; ++i) parent->add_child(std::make_shared<ViewModel>());
+    };
+    parent->activate();
+    CHECK(last->is_active().get());
+}
+
 TEST_CASE("ViewModel: activate/deactivate lifecycle") {
     auto vm = std::make_shared<HomeVM>();
     CHECK_FALSE(vm->is_active().get());

@@ -86,10 +86,9 @@ using FlushTraceFn = std::function<void(int phase,
                                         int round,
                                         bool changed)>;
 
-inline FlushTraceFn& flush_trace_hook_() {
-    static FlushTraceFn hook;
-    return hook;
-}
+// Registration and use are confined to the graph thread. Shared ownership
+// preserves a running tracer and its state across replacement/reentrant clear.
+ARIA_ABI_API std::shared_ptr<FlushTraceFn>& flush_trace_hook_() noexcept;
 
 /// One "upstream read" record. Produced by every reactive read that happens
 /// while a Derivation is computing — `Property::get()` / `Computed::get()`
@@ -103,21 +102,37 @@ struct ReadRecord {
 /// Per-recompute tracking context for a single Derivation evaluation.
 class TrackingContext {
 public:
+    using Buffer = std::vector<detail::NodeHandle>;
+
+    TrackingContext() = default;
+    explicit TrackingContext(Buffer& reusable) noexcept : reusable_(&reusable) {
+        reads_.swap(reusable);
+    }
+    ~TrackingContext() {
+        if (reusable_) {
+            reads_.clear();
+            reads_.swap(*reusable_);
+        }
+    }
+    TrackingContext(const TrackingContext&) = delete;
+    TrackingContext& operator=(const TrackingContext&) = delete;
+
     /// Records one upstream read. Called by `Property`/`Computed` getters
     /// during tracked evaluation, and by `dep(prop)`.
     void record_read(Node& src) {
         // Small read sets -- linear de-dup is more than fast enough.
-        for (Node* n : reads_) {
-            if (n == &src) return;
+        for (const auto& n : reads_) {
+            if (n.get() == &src) return;
         }
-        reads_.push_back(&src);
+        reads_.emplace_back(&src);
     }
 
-    [[nodiscard]] const std::vector<Node*>& reads() const noexcept { return reads_; }
+    [[nodiscard]] const std::vector<detail::NodeHandle>& reads() const noexcept { return reads_; }
     void                                     clear() noexcept      { reads_.clear(); }
 
 private:
-    std::vector<Node*> reads_;
+    Buffer reads_;
+    Buffer* reusable_ = nullptr;
 };
 
 /// Process-wide singleton reactive graph (accessed via `Node::graph()`).
@@ -186,7 +201,9 @@ public:
     /// Typical use: a Reaction node has no value but must still run on
     /// flush.
     void enqueue_dirty(Node& n) {
-        pending_.push_back(&n);
+        if (n.queued_) return;
+        pending_.emplace_back(&n);
+        n.queued_ = true;
     }
 
     // ------------------------------------------------------------------
@@ -253,15 +270,16 @@ private:
 
     int batch_depth_ = 0;
 
-    // Nodes colored dirty in the current round. De-duplication is
-    // implicitly handled by `state_` (Clean entries skipped).
-    std::vector<Node*> pending_;
+    // A node has at most one entry in pending_. Snapshotting the next
+    // round resets queued_ before user code runs, permitting a new pulse.
+    std::vector<detail::NodeHandle> pending_;
+    std::vector<detail::NodeHandle> round_;
 
     // Active recursive `pull()` stack. When a cycle trips the
     // `Computing` re-entry check we use this to format a full
     // A → B → C → A path in the error message — vastly more useful
     // than just "node X is re-entering itself".
-    std::vector<Node*> pulling_stack_;
+    std::vector<detail::NodeHandle> pulling_stack_;
 
     // Tracker stack. `nullptr` entries denote untracked scopes.
     std::vector<TrackingContext*> tracker_stack_;

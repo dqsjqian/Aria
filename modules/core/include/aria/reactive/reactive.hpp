@@ -13,7 +13,7 @@
 //    * reactive::Property<T>           -- observable source
 //    * reactive::Computed<T>           -- derived value (auto-tracked)
 //    * reactive::Effect                -- side-effect reaction (auto-tracked)
-//    * reactive::Observer              -- RAII handle returned by subscribe
+//    * aria::Subscription                -- RAII handle returned by observe
 //    * reactive::batch / BatchScope    -- coalesce multiple writes
 //    * reactive::untracked / UntrackedScope -- opt out of tracking
 //    * reactive::dep(x)                -- explicit dependency declaration
@@ -22,9 +22,8 @@
 //  Design rationale: every piece of state that participates in reactivity
 //  is a Node in a single process-wide DAG. Writes propagate in two
 //  phases (push coloring, pull evaluation) so that computations are
-//  evaluated at most once per batch and always after their upstreams,
-//  yielding a glitch-free reactive system comparable in guarantees to
-//  MobX / SolidJS / Svelte 5's $state + $derived + $effect.
+//  evaluated after their upstreams. Reentrant writes can schedule later
+//  flush rounds; cycle detection bounds non-converging dependencies.
 // ============================================================================
 
 // Include order matters -- see the notes above each sub-header. In short:
@@ -47,7 +46,7 @@
 //  declarations below. Per `docs/api-style.md` S-1/S-2, public code MUST
 //  use the unqualified `aria::` form -- the `aria::reactive::` qualified
 //  names exist only as an implementation locator (e.g. for users who
-//  reach into `Graph::is_on_graph_thread()` for low-level diagnostics).
+//  reach into `Graph::assert_on_graph_thread()` for low-level diagnostics).
 // ============================================================================
 namespace aria {
 

@@ -75,7 +75,7 @@ public:
     using value_type = T;
     /// Owning, heap-free key extractor (capacity 32 bytes).
     using KeyOf      = aria::inplace_function<Key(const T&), 32>;
-    using Signal     = detail::TypedSignal<ListChange<T>>;
+    using Signal     = detail::ListSignal<T>;
 
     /// Construct a DistinctList. The default `key_of` projects T to
     /// itself, which works as long as T is hashable + equality-
@@ -178,6 +178,7 @@ private:
         std::unordered_map<const T*, Key>        item_key;
 
         SlotId                                   next_slot_id{1};
+        std::vector<std::shared_ptr<T>> source_items;
     };
 
     std::shared_ptr<Source> source_;
@@ -203,26 +204,36 @@ private:
     /// each new key is appended to `visible_slots` (the previous slot
     /// ids are strictly smaller, preserving derived ordering).
     void rebuild_initial_() {
-        auto snap = source_->snapshot();
-        std::unique_lock lk(state_->m);
-        state_->slots.reserve(snap.size());
-        state_->visible_slots.reserve(snap.size());
-        state_->key_to_slot.reserve(snap.size());
-        state_->item_key.reserve(snap.size());
-        state_->item_to_slot.reserve(snap.size());
-        for (const auto& sp_ : snap) {
-            const Key k = state_->key_of(*sp_);
-            state_->item_key[sp_.get()] = k;
-            auto it = state_->key_to_slot.find(k);
-            if (it == state_->key_to_slot.end()) {
-                const SlotId sid = state_->next_slot_id++;
-                state_->key_to_slot.emplace(k, sid);
-                state_->slots.emplace(sid, Slot{k, sp_, {}});
-                state_->visible_slots.push_back(sid);
-                state_->item_to_slot[sp_.get()] = sid;
+        rebuild_(*state_, source_->snapshot());
+    }
+
+    static void rebuild_(SharedState& st, std::vector<std::shared_ptr<T>> snap) {
+        std::unique_lock lk(st.m);
+        st.slots.clear();
+        st.visible_slots.clear();
+        st.key_to_slot.clear();
+        st.item_key.clear();
+        st.item_to_slot.clear();
+        st.next_slot_id = 1;
+        st.source_items = std::move(snap);
+        st.slots.reserve(st.source_items.size());
+        st.visible_slots.reserve(st.source_items.size());
+        st.key_to_slot.reserve(st.source_items.size());
+        st.item_key.reserve(st.source_items.size());
+        st.item_to_slot.reserve(st.source_items.size());
+        for (const auto& sp_ : st.source_items) {
+            const Key k = st.key_of(*sp_);
+            st.item_key[sp_.get()] = k;
+            auto it = st.key_to_slot.find(k);
+            if (it == st.key_to_slot.end()) {
+                const SlotId sid = st.next_slot_id++;
+                st.key_to_slot.emplace(k, sid);
+                st.slots.emplace(sid, Slot{k, sp_, {}});
+                st.visible_slots.push_back(sid);
+                st.item_to_slot[sp_.get()] = sid;
             } else {
-                state_->slots[it->second].dups.push_back(sp_);
-                state_->item_to_slot[sp_.get()] = it->second;
+                st.slots[it->second].dups.push_back(sp_);
+                st.item_to_slot[sp_.get()] = it->second;
             }
         }
     }
@@ -241,16 +252,16 @@ private:
     /// the implementation easy to audit; the cost is on par with
     /// FilteredList's projection map (LD-2 / FL-3).
     static std::size_t derived_pos_for_new_rep_(SharedState& st,
-                                                Source& src,
                                                 std::size_t source_idx) {
         // Count: how many visible representatives sit at source
         // positions strictly before source_idx? That count IS the
         // derived position where the new representative belongs.
+        std::unordered_map<SlotId, bool> counted;
         std::size_t count = 0;
         const std::size_t bound =
-            std::min<std::size_t>(source_idx, src.size());
+            std::min<std::size_t>(source_idx, st.source_items.size());
         for (std::size_t i = 0; i < bound; ++i) {
-            auto sp_ = src.at(i);
+            auto sp_ = st.source_items[i];
             auto it = st.item_to_slot.find(sp_.get());
             if (it == st.item_to_slot.end()) continue;
             const SlotId sid = it->second;
@@ -259,7 +270,7 @@ private:
             // the same slot but slot.rep != them.
             auto sl_it = st.slots.find(sid);
             if (sl_it == st.slots.end()) continue;
-            if (sl_it->second.rep.get() == sp_.get()) ++count;
+            if (sl_it->second.rep.get() == sp_.get() && counted.emplace(sid, true).second) ++count;
         }
         return count;
     }
@@ -375,23 +386,55 @@ private:
 
     static constexpr SlotId kSlotIdStep = 1024;
 
-    static void handle_source_change_(SharedState& st, Signal& sig,
-                                      Source& src,
-                                      const ListChange<T>& ch) {
+    static void handle_source_change_(SharedState& st, Signal& sig, Source&, ListChange<T> ch) {
+        std::shared_ptr<T> previous;
+        {
+            std::unique_lock lk(st.m);
+            auto& items = st.source_items;
+            const auto pos = static_cast<std::ptrdiff_t>(ch.index);
+            switch (ch.kind) {
+            case ListChangeKind::Insert: items.insert(items.begin() + pos, ch.item); break;
+            case ListChangeKind::Remove:
+                previous = items.at(ch.index);
+                items.erase(items.begin() + pos);
+                break;
+            case ListChangeKind::Replace:
+                previous = items.at(ch.index);
+                items[ch.index] = ch.item;
+                break;
+            case ListChangeKind::Move: {
+                auto moved = items.at(ch.from_index);
+                items.erase(items.begin() + static_cast<std::ptrdiff_t>(ch.from_index));
+                items.insert(items.begin() + pos, std::move(moved));
+                return;
+            }
+            default: break;
+            }
+        }
         switch (ch.kind) {
-        case ListChangeKind::Insert:      handle_insert_(st, sig, src, ch);  return;
-        case ListChangeKind::Remove:      handle_remove_(st, sig, ch);       return;
-        case ListChangeKind::Replace:     handle_replace_(st, sig, src, ch); return;
+        case ListChangeKind::Insert: handle_insert_(st, sig, ch, ch.item); return;
+        case ListChangeKind::Remove:
+            ch.item = previous;
+            handle_remove_(st, sig, ch);
+            return;
+        case ListChangeKind::Replace: {
+            ListChange<T> removed{ListChangeKind::Remove, ch.index, previous, 0};
+            handle_remove_(st, sig, removed);
+            handle_insert_(st, sig, ch, ch.item);
+            return;
+        }
         case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, ch); return;
-        case ListChangeKind::Reset:       handle_reset_(st, sig);            return;
-        case ListChangeKind::Move:        /* derived order unchanged */      return;
+        case ListChangeKind::Reset:
+            rebuild_(st, *ch.snapshot);
+            sig.emit(reset_event_(st));
+            return;
+        case ListChangeKind::Move: return;
         }
     }
 
     static void handle_insert_(SharedState& st, Signal& sig,
-                               Source& src,
-                               const ListChange<T>& ch) {
-        auto sp_ = src.at(ch.index);
+                               const ListChange<T>& ch,
+                               std::shared_ptr<T> sp_) {
         const Key k = st.key_of(*sp_);
 
         std::optional<std::size_t> emit_at;
@@ -407,13 +450,13 @@ private:
                 // the source tail, the new derived slot is at the
                 // visible tail too (no need to walk the source).
                 std::size_t derived_pos;
-                if (ch.index >= src.size() - 1) {
+                if (ch.index >= st.source_items.size() - 1) {
                     derived_pos = st.visible_slots.size();
                 } else if (ch.index == 0) {
                     derived_pos = 0;
                 } else {
                     derived_pos =
-                        derived_pos_for_new_rep_(st, src, ch.index);
+                        derived_pos_for_new_rep_(st, ch.index);
                 }
                 const SlotId sid =
                     allocate_ordered_slot_id_(st, derived_pos);
@@ -436,7 +479,7 @@ private:
         }
         if (emit_at.has_value()) {
             sig.emit(ListChange<T>{ListChangeKind::Insert, *emit_at,
-                                   sp_.get(), 0});
+                                   sp_, 0});
             (void)emit_sid;
         }
     }
@@ -450,21 +493,25 @@ private:
         std::optional<std::size_t> emit_replace_at;
         {
             std::unique_lock lk(st.m);
-            auto its_it = st.item_to_slot.find(ch.item);
+            auto its_it = st.item_to_slot.find(ch.item.get());
             if (its_it == st.item_to_slot.end()) return;
             const SlotId sid = its_it->second;
-            st.item_to_slot.erase(its_it);
-            st.item_key.erase(ch.item);
+            const bool survives = std::any_of(st.source_items.begin(), st.source_items.end(),
+                [&](const auto& item) { return item.get() == ch.item.get(); });
+            if (!survives) {
+                st.item_to_slot.erase(its_it);
+                st.item_key.erase(ch.item.get());
+            }
 
             auto sl_it = st.slots.find(sid);
             if (sl_it == st.slots.end()) return;
             Slot& slot = sl_it->second;
 
-            if (slot.rep.get() != ch.item) {
+            if (slot.rep.get() != ch.item.get()) {
                 // Hidden duplicate -- drop it from the bag (linear
                 // in the bag's size, typically very small).
                 for (auto bi = slot.dups.begin(); bi != slot.dups.end(); ++bi) {
-                    if (bi->get() == ch.item) { slot.dups.erase(bi); break; }
+                    if (bi->get() == ch.item.get()) { slot.dups.erase(bi); break; }
                 }
                 return;
             }
@@ -492,154 +539,64 @@ private:
         }
         if (emit_remove_at.has_value()) {
             sig.emit(ListChange<T>{ListChangeKind::Remove, *emit_remove_at,
-                                   removed_sp.get(), 0});
+                                   removed_sp, 0});
         }
         if (emit_replace_at.has_value()) {
             sig.emit(ListChange<T>{ListChangeKind::Replace, *emit_replace_at,
-                                   promoted_sp.get(), 0});
+                                   promoted_sp, 0});
         }
     }
 
-    static void handle_replace_(SharedState& st, Signal& sig,
-                                Source& src,
-                                const ListChange<T>& ch) {
-        // Decompose into Remove(old)+Insert(new) at the same source
-        // index. The two halves already enforce PD-2 + PD-3.
-        ListChange<T> rm{ListChangeKind::Remove, ch.index, ch.item, 0};
-        handle_remove_(st, sig, rm);
-        ListChange<T> ins{ListChangeKind::Insert, ch.index, nullptr, 0};
-        handle_insert_(st, sig, src, ins);
+    static ListChange<T> reset_event_(const SharedState& st) {
+        std::shared_lock lock(st.m);
+        std::vector<std::shared_ptr<T>> items;
+        items.reserve(st.visible_slots.size());
+        for (const auto sid : st.visible_slots) items.push_back(st.slots.at(sid).rep);
+        return ListChange<T>::reset(std::move(items));
     }
 
     static void handle_item_changed_(SharedState& st, Signal& sig,
                                      const ListChange<T>& ch) {
-        if (ch.item == nullptr) return;
-        Key  old_key{};
-        Key  new_key{};
-        bool was_visible = false;
-        SlotId old_sid = 0;
-        std::shared_ptr<T> sp_;
+        if (!ch.item) return;
+        std::shared_ptr<T> item;
+        std::vector<std::size_t> occurrences;
+        std::optional<std::size_t> visible;
+        bool key_changed;
         {
             std::shared_lock lk(st.m);
-            auto kit = st.item_key.find(ch.item);
-            if (kit == st.item_key.end()) return;
-            old_key = kit->second;
-            new_key = st.key_of(*ch.item);
-            auto its_it = st.item_to_slot.find(ch.item);
-            if (its_it == st.item_to_slot.end()) return;
-            old_sid = its_it->second;
-            auto sl_it = st.slots.find(old_sid);
-            if (sl_it == st.slots.end()) return;
-            const Slot& slot = sl_it->second;
-            was_visible = (slot.rep.get() == ch.item);
-            if (was_visible) sp_ = slot.rep;
-            if (!sp_) {
-                for (const auto& cand : slot.dups) {
-                    if (cand.get() == ch.item) { sp_ = cand; break; }
+            auto found = st.item_key.find(ch.item.get());
+            if (found == st.item_key.end()) return;
+            key_changed = found->second != st.key_of(*ch.item);
+            const auto sid = st.item_to_slot.at(ch.item.get());
+            const auto& slot = st.slots.at(sid);
+            if (slot.rep.get() == ch.item.get()) visible = derived_pos_of_slot_(st, sid);
+            for (std::size_t i = 0; i < st.source_items.size(); ++i) {
+                if (st.source_items[i].get() == ch.item.get()) {
+                    item = st.source_items[i];
+                    if (key_changed) occurrences.push_back(i);
                 }
             }
         }
-        if (old_key == new_key) {
-            if (was_visible) {
-                std::shared_lock lk(st.m);
-                const std::size_t pos = derived_pos_of_slot_(st, old_sid);
-                if (pos < st.visible_slots.size()) {
-                    sig.emit(ListChange<T>{ListChangeKind::ItemChanged,
-                                           pos, ch.item, 0});
-                }
-            }
+        if (!key_changed) {
+            if (visible) sig.emit(ListChange<T>{ListChangeKind::ItemChanged, *visible, item, 0});
             return;
         }
-        if (!sp_) return;
-        // Key changed -> remove from old slot, insert into new slot.
-        // We do this without a corresponding source change so we
-        // synthesise the events here.
-        std::shared_ptr<T> removed_sp;
-        std::shared_ptr<T> promoted_sp;
-        std::optional<std::size_t> emit_remove_at;
-        std::optional<std::size_t> emit_replace_at;
-        std::optional<std::size_t> emit_insert_at;
+        // Every occurrence refers to the same mutable object. Move all of
+        // them together; updating only the reported (last) source index
+        // leaves an old-key duplicate behind indefinitely.
+        for (const auto index : occurrences) {
+            handle_remove_(st, sig, ListChange<T>{ListChangeKind::Remove, index, item, 0});
+        }
         {
             std::unique_lock lk(st.m);
-            // Remove from old slot.
-            auto sl_it = st.slots.find(old_sid);
-            if (sl_it == st.slots.end()) return;
-            Slot& old_slot = sl_it->second;
-            if (was_visible) {
-                removed_sp = old_slot.rep;
-                if (!old_slot.dups.empty()) {
-                    promoted_sp = std::move(old_slot.dups.front());
-                    old_slot.dups.erase(old_slot.dups.begin());
-                    old_slot.rep = promoted_sp;
-                    emit_replace_at = derived_pos_of_slot_(st, old_sid);
-                } else {
-                    const std::size_t pos = derived_pos_of_slot_(st, old_sid);
-                    if (pos < st.visible_slots.size()) {
-                        st.visible_slots.erase(
-                            st.visible_slots.begin()
-                                + static_cast<std::ptrdiff_t>(pos));
-                    }
-                    st.key_to_slot.erase(old_slot.key);
-                    st.slots.erase(sl_it);
-                    emit_remove_at = pos;
-                }
-            } else {
-                for (auto bi = old_slot.dups.begin();
-                     bi != old_slot.dups.end(); ++bi) {
-                    if (bi->get() == ch.item) {
-                        old_slot.dups.erase(bi);
-                        break;
-                    }
-                }
-            }
-            // Update item_key + item_to_slot + insert into new slot.
-            st.item_key[ch.item] = new_key;
-            auto kit = st.key_to_slot.find(new_key);
-            if (kit == st.key_to_slot.end()) {
-                // New slot -- placement: append. We do not know the
-                // source index of `sp_` here without scanning, so we
-                // place the new representative at the END to keep
-                // the path O(1). PD-2 still holds for the common
-                // mutation pattern (steady-state user edit).
-                const std::size_t derived_pos = st.visible_slots.size();
-                const SlotId sid =
-                    allocate_ordered_slot_id_(st, derived_pos);
-                st.key_to_slot.emplace(new_key, sid);
-                st.slots.emplace(sid, Slot{new_key, sp_, {}});
-                st.item_to_slot[ch.item] = sid;
-                st.visible_slots.push_back(sid);
-                emit_insert_at = derived_pos;
-            } else {
-                st.slots[kit->second].dups.push_back(sp_);
-                st.item_to_slot[ch.item] = kit->second;
-            }
+            st.item_key.erase(item.get());
+            st.item_to_slot.erase(item.get());
         }
-        if (emit_remove_at.has_value()) {
-            sig.emit(ListChange<T>{ListChangeKind::Remove, *emit_remove_at,
-                                   removed_sp.get(), 0});
-        }
-        if (emit_replace_at.has_value()) {
-            sig.emit(ListChange<T>{ListChangeKind::Replace, *emit_replace_at,
-                                   promoted_sp.get(), 0});
-        }
-        if (emit_insert_at.has_value()) {
-            sig.emit(ListChange<T>{ListChangeKind::Insert, *emit_insert_at,
-                                   sp_.get(), 0});
+        for (const auto index : occurrences) {
+            handle_insert_(st, sig, ListChange<T>{ListChangeKind::Insert, index, item, 0}, item);
         }
     }
 
-    static void handle_reset_(SharedState& st, Signal& sig) {
-        {
-            std::unique_lock lk(st.m);
-            st.slots.clear();
-            st.visible_slots.clear();
-            st.key_to_slot.clear();
-            st.item_to_slot.clear();
-            st.item_key.clear();
-            st.next_slot_id = 1;
-        }
-        sig.emit(ListChange<T>{ListChangeKind::Reset, 0, nullptr, 0});
-    }
 };
 
 // ---------------------------------------------------------------------------

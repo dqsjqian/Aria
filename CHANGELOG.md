@@ -20,8 +20,73 @@ These changes are implemented on this branch and are not part of the
 published `1.2.1` release. Release validation is tracked separately from
 implementation status.
 
+### 2.0 foundation and API changes
+
+- `ARIA_ABI_VERSION` is 2; rebuild all consumers and adapters. Shared builds
+  now include `aria_abi` as a shared foundation alongside runtime and binding.
+  Core-only targets resolve their complete dependency graph, diagnostic
+  storage, and delayed scheduler base without linking runtime services.
+  The reactive graph is shared across dynamic libraries rather than being
+  duplicated by header-local static storage.
+- `ListChange<T>::item` owns a `shared_ptr<T>`; Reset carries a non-null owning
+  snapshot. Batch indices describe incremental receiver mirrors, while the
+  producer may already hold final batch state. Consumers must use event
+  payloads instead of rereading source indices. Nested edits follow the
+  current batch; new subscribers skip previously committed queued events.
+- Signal cancellation skips callbacks that have not started, including later
+  callbacks in the current fanout. An already executing callback may finish.
+  Capture destruction during disconnect/clear happens outside registry locks.
+- `main_dispatcher()` returns an owning `shared_ptr<IDispatcher>` snapshot.
+  `SimpleDispatcher::pump/run_one` require the creating thread. Extreme
+  delays saturate, and callbacks may safely destroy their dispatcher.
+- `Subscription::detach()` was removed; use `release()`. Disconnect callbacks
+  support move-only captures directly. Bags explicitly disconnect in reverse
+  insertion order and permit reentrant clear. `inplace_function` requires a
+  copy-constructible target at construction.
+- Container re-registration replaces both value and lifetime mode. Factories
+  retain mutable state between resolves and execute outside the registry
+  lock; concurrently invoked factories synchronize their own state.
+
+### Added
+
+- Stable-ID QComboBox selection with changing options and optional selection;
+  integer-converted bindings for enum controls.
+- Real cross-library dependency tracking and core-only linking acceptance
+  tests, alongside the existing type-erased IProperty test.
+- Explicit C++23 build selection while retaining C++20 as the baseline.
+- Android native-test CI and simulator runner, broader Windows adapter and
+  installed-SDK consumption tests, and repeatable API reference publication.
+
 ### Fixed
 
+- Reactive pending work and tracked reads tolerate node destruction during
+  callbacks and batch flushes. Initial Property binding tolerates source
+  destruction; failed Computed cache construction leaves no dangling edges,
+  and failed cache assignment retains the previous dependency set.
+- Reactive graph tracing, diagnostic registration and fallback node IDs are
+  shared across dynamic libraries. Throwing trace callbacks are reported
+  without interrupting propagation.
+- Collection events own their payloads and replay correctly through chained
+  filter/sort/map/distinct/group/page views. Repeated item handles retain
+  their multiplicity, including batched sort-key changes. Range operations
+  and unchanged-order reconciliation avoid repeated vector shifts. Source
+  moves preserve the source order of equivalent keys in SortedList.
+- Coroutine scope joins account for suspended children, timer/timeout paths
+  retain their completion state, and command destruction cancels every
+  in-flight invocation token. Executor queue clearing releases captures
+  outside locks; extreme delays saturate instead of overflowing.
+- Stateful callable and converter objects retain their identity across
+  invocations. Empty function pointers are represented consistently;
+  failed callable construction leaves wrappers disengaged.
+- Qt, AppKit and UIKit view teardown invalidates queued callbacks and list
+  notifications. JNI calls manage thread attachment, references, UTF-8/UTF-16
+  conversion and pending Java exceptions explicitly.
+- HTTP state/click notifications preserve admission order, bound queued work
+  and support teardown from callbacks. The installed HTTP target supplies
+  matching dependency headers, definitions and optional link dependencies.
+- Build scripts select Qt libraries matching their compiler and explicitly
+  reset optional Qt/sanitizer cache state. Editor tasks work with Bash 3.2;
+  validation scripts reject incomplete benchmark output and analyzer failure.
 - BindingEngine marshals scalar, converted-text, and command input from
   worker threads according to its dispatcher policy. Queued callbacks own
   their event data and are cancelled on view destruction, engine clear, or
@@ -41,6 +106,9 @@ implementation status.
 - HTTP heartbeat waiting is interruptible. Start/stop operations are
   serialized, startup waits for listening readiness, and stopping resets the
   reported port to zero.
+- The browser SDK separates visibility/enabled channels from view IDs,
+  preventing collisions with dotted names. Subscription release is idempotent,
+  independent per registration, and removes empty callback buckets.
 - The browser SDK reflects disconnects, reports successful reconnections,
   settles pending connection attempts on error/close, ignores stale connection
   callbacks, and rejects unsuccessful HTTP responses.
@@ -68,16 +136,15 @@ implementation status.
   Channel interleavings, binding dispatcher/lifetime coverage, and an actual
   QComboBox text two-way binding test. HTTP and SDK tests are enabled in
   the Linux Release/sanitizer and macOS Release CI configurations.
-- Condensed the roadmap, corrected the enum text-converter guidance, and
-  separated shipped QComboBox text binding from pending option/selection work.
-  Stable API-reference publication remains pending; CI currently uploads an
-  artifact.
+- Condensed the roadmap, corrected enum converter guidance, and documented
+  implemented option/selection support, C++23 evaluation, and actual operation
+  complexity. The Pages workflow builds and checks a generated API reference
+  before deployment; the first public deployment remains a release gate.
 
-## 1.2.1 — current snapshot
+## 1.2.1 — published baseline
 
 Aria is a modern C++20 MVVM framework — cross-platform, layered,
-coroutine-first. Everything below is implemented, tested and shipped in
-the current tree.
+coroutine-first. The following describes the published 1.2.1 baseline.
 
 ### 2026-09-03 — release 1.2.1
 

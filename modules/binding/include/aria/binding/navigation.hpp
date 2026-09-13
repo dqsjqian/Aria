@@ -341,7 +341,10 @@ private:
     }
 
     void deactivate_top_() {
-        if (!stack_.empty()) stack_.back().vm->deactivate();
+        if (!stack_.empty()) {
+            auto vm = stack_.back().vm;
+            vm->deactivate();
+        }
     }
 
     /// Tear down the topmost entry: deactivate the VM, fire the
@@ -350,13 +353,16 @@ private:
     /// topmost (if any) and calling publish_().
     void tear_down_top_(std::optional<std::any> result_payload) {
         if (stack_.empty()) return;
-        auto& e = stack_.back();
-        e.vm->deactivate();
+        // Remove storage before running hooks/cancellation. A callback may
+        // navigate again, reallocating the stack or installing a new top.
+        auto e = std::move(stack_.back());
+        stack_.pop_back();
+        try { e.vm->deactivate(); }
+        catch (...) { ::aria::report_callback_failure("navigation.deactivate", std::current_exception()); }
         if (e.result_setter) {
             try { e.result_setter(std::move(result_payload)); } catch (...) {}
         }
         try { e.cancel.cancel(); } catch (...) {}
-        stack_.pop_back();
     }
 
     /// Match a `pattern` against `path`. `{name}` segments capture

@@ -94,12 +94,14 @@ TEST_CASE("E-13: from_exception maps invalid_argument to UserError") {
     CHECK(err.kind    == ErrorKind::UserError);
     CHECK(err.source  == "Test");
     CHECK(err.message == "bad arg");
+    CHECK(err.inner == ex);
 }
 
 TEST_CASE("E-13: from_exception maps out_of_range to UserError") {
     auto ex = std::make_exception_ptr(std::out_of_range{"oor"});
     auto err = Error::from_exception(ex, "Test");
     CHECK(err.kind == ErrorKind::UserError);
+    CHECK(err.inner == ex);
 }
 
 TEST_CASE("E-13: from_exception maps generic std::exception to AsyncFailure") {

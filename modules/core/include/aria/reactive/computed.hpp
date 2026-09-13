@@ -47,6 +47,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -72,7 +73,7 @@ namespace aria::reactive {
 // ---------------------------------------------------------------------------
 template<class Reactive>
     requires ::aria::ReactiveNode<Reactive>
-void dep(Reactive& r) noexcept {
+void dep(Reactive& r) {
     if (auto* t = Node::graph().current_tracker()) {
         t->record_read(static_cast<Node&>(r));
     }
@@ -121,7 +122,7 @@ public:
     /// `clear_sources()` and dereference the already-freed list head ->
     /// classic use-after-free SIGSEGV.
     ~Computed() noexcept override {
-        clear_sources();
+        retire_();
         // `edge_pool_` will now destroy safely: each Edge slot is no
         // longer referenced by any source node's intrusive list.
     }
@@ -144,7 +145,7 @@ public:
         if (auto* t = g.current_tracker()) {
             t->record_read(const_cast<Computed&>(*this));
         }
-        return cached_;
+        return *cached_;
     }
 
     /// Read by const reference. Same semantics as `get()` (auto-tracking
@@ -157,17 +158,17 @@ public:
         if (auto* t = g.current_tracker()) {
             t->record_read(const_cast<Computed&>(*this));
         }
-        return cached_;
+        return *cached_;
     }
 
     /// Non-tracking snapshot read. `noexcept` is conditional on T's
     /// copy ctor; if T may throw we still don't want to terminate.
     [[nodiscard]] T peek() const noexcept(std::is_nothrow_copy_constructible_v<T>) {
-        return cached_;
+        return *cached_;
     }
 
     /// Non-tracking snapshot read by const reference.
-    [[nodiscard]] const T& peek_ref() const noexcept { return cached_; }
+    [[nodiscard]] const T& peek_ref() const noexcept { return *cached_; }
 
     operator T() const { return get(); }
 
@@ -197,15 +198,16 @@ public:
         //    propagate the exception with our previous dependency set
         //    fully intact — the graph will continue to wake us up on
         //    the next upstream change.
-        TrackingContext ctx;
-        T              new_val;
-        {
+        TrackingContext ctx{read_buffer_};
+        T new_val = [&] {
             TrackerScope guard(ctx);
-            new_val = compute_();
-        }
+            return compute_();
+        }();
 
-        // 2. Compute succeeded. Now swap dependency sets: detach old
-        //    edges, then re-attach from `ctx.reads()`.
+        // 2. Prepare storage and commit the value before replacing edges.
+        //    Equality and value assignment may throw as well as compute_().
+        //    Those failures must preserve our previous dependencies. During
+        //    construction, no edges may outlive a failed initial cache move.
         //
         //    Edge storage is REUSED across recomputes. `clear_sources()`
         //    only unlinks the Edge objects from their upstreams' intrusive
@@ -218,41 +220,35 @@ public:
         //    ZERO heap allocation per recompute. This is what makes the
         //    "no hidden allocations on the hot path" contract hold for
         //    Derivation re-evaluation, not just Property set/get.
+        const auto& reads = ctx.reads();
+        // Grow before detaching. Allocation failure preserves the previous
+        // dependency set so a later source change can retry this evaluation.
+        while (edge_pool_.size() < reads.size()) edge_pool_.emplace_back();
+        const bool changed = !cached_ || !(*cached_ == new_val);
+        if (changed) cached_ = std::move(new_val);
+
+        // 3. Only non-throwing graph bookkeeping remains. Reconcile edges
+        // even when the value is equal: conditional dependencies may change.
         clear_sources();
-
-        const std::vector<Node*>& reads = ctx.reads();
-
-        // Reset depth so it can shrink as well as grow when the
-        // dependency set shifts (otherwise depth is monotonically
-        // non-decreasing across recomputes, which inflates the cost
-        // of `flush()`'s topological sort over time).
         set_depth(0);
-
-        // Grow the pool only when this recompute needs more edges than
-        // we have ever needed before. Existing slots are reused in place.
-        while (edge_pool_.size() < reads.size()) {
-            edge_pool_.emplace_back();
-        }
-        for (std::size_t i = 0; i < reads.size(); ++i) {
+        active_edges_ = 0;
+        for (const auto& read : reads) {
             // `attach_as_observer_of` fully (re)initialises the Edge's
             // source/observer/version and link pointers, so a recycled
             // slot is safe to reuse without an explicit reset.
-            attach_as_observer_of(*reads[i], edge_pool_[i]);
+            if (read) attach_as_observer_of(*read, edge_pool_[active_edges_++]);
         }
-        active_edges_ = reads.size();
 
-        // 3. Commit and report change-or-not to the Graph.
-        // eq-gate: if value did not move, downstream propagation stops.
-        if (cached_ == new_val) return false;
-        cached_ = std::move(new_val);
-        bump_version_();
-        return true;
+        if (changed) bump_version_();
+        return changed;
     }
 
     /// Number of upstreams currently in use. Exposed for diagnostics /
     /// tests; not part of the user-facing API surface.
     [[nodiscard]] std::size_t dependency_count() const noexcept {
-        return active_edges_;
+        std::size_t count = 0;
+        for_each_source([&](const Edge&) { ++count; });
+        return count;
     }
 
 private:
@@ -264,7 +260,7 @@ private:
     }
 
     std::function<T()>                  compute_;
-    T                                   cached_{};
+    std::optional<T>                    cached_;
     /// Edge storage pool. Reused across recomputes — see `recompute()`.
     /// `std::deque` is chosen over `std::vector` because the graph stores
     /// `&edge` (Edge addresses) in intrusive linked lists, so the storage
@@ -273,6 +269,7 @@ private:
     /// first `active_edges_` slots are live at any moment.
     std::deque<Edge>                    edge_pool_;
     std::size_t                         active_edges_ = 0;
+    TrackingContext::Buffer             read_buffer_;
 };
 
 }  // namespace aria::reactive

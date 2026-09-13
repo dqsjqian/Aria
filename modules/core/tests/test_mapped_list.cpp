@@ -98,7 +98,7 @@ TEST_CASE("MappedList: source Insert maps the new item and emits Insert") {
     REQUIRE(log.events.size() == 1);
     CHECK(log.events[0].kind == ListChangeKind::Insert);
     CHECK(log.events[0].index == 0);
-    CHECK(log.events[0].item == mapped.at(0).get());
+    CHECK(log.events[0].item == mapped.at(0));
 }
 
 TEST_CASE("MappedList: source Remove emits Remove and drops the target slot") {
@@ -121,7 +121,9 @@ TEST_CASE("MappedList: source Remove emits Remove and drops the target slot") {
     CHECK(log.events[0].kind == ListChangeKind::Remove);
     CHECK(log.events[0].index == 0);
     CHECK(mapped.size() == 1);
-    CHECK(weak_vm.expired());  // slot erase drops the last strong ref
+    CHECK_FALSE(weak_vm.expired()); // the recorded Remove owns its payload
+    log.events.clear();
+    CHECK(weak_vm.expired());
     CHECK(PersonVM::live_count.load() == baseline + 1);
 }
 
@@ -188,7 +190,7 @@ TEST_CASE("MappedList: ItemChanged with remap_on_change=true re-runs mapper") {
     rp->name = "alice2";
 
     REQUIRE(log.events.size() == 1);
-    CHECK(log.events[0].kind == ListChangeKind::ItemChanged);
+    CHECK(log.events[0].kind == ListChangeKind::Replace);
     CHECK(mapped.at(0).get() != t_before.get());  // identity CHANGED
     CHECK(mapped.at(0)->n == "alice2");
 }

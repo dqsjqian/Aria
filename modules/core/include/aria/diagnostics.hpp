@@ -17,7 +17,7 @@
 //
 //  Design pillars
 //  --------------
-//   1. Zero overhead when no sink is installed: the publish path costs
+//   1. A cheap disabled path: the has_trace_sink gate costs
 //      one atomic load + one branch. No string is built, no allocation
 //      is done.
 //
@@ -41,6 +41,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -201,8 +202,8 @@ struct TraceEvent {
     TraceCategory                  category;
     /// Per-category payload.
     TracePayload                   payload;
-    /// Wall-clock timestamp at publish time. Useful for log
-    /// correlation; consumers that don't need it pay only one
+    /// Monotonic timestamp at publish time. Useful for event
+    /// ordering; consumers that don't need it pay only one
     /// `steady_clock::now()` per publish (cheap on commodity CPUs).
     std::chrono::steady_clock::time_point time =
         std::chrono::steady_clock::now();
@@ -230,10 +231,13 @@ using TraceSink = std::function<void(const TraceEvent&)>;
 
 namespace detail {
 
-// Global trace sink storage lives in aria_runtime DLL so all modules
-// (exe + DLLs) share one instance.  See src/diagnostics_sink.cpp.
-ARIA_CORE_API std::shared_ptr<TraceSink>& global_sink_storage_() noexcept;
-ARIA_CORE_API std::mutex& global_sink_mutex_() noexcept;
+// Shared trace storage lives in aria_abi, which is linked by core-only
+// consumers and platform modules. See modules/abi/src/diagnostics.cpp.
+ARIA_ABI_API std::shared_ptr<TraceSink>& global_sink_storage_() noexcept;
+ARIA_ABI_API std::mutex& global_sink_mutex_() noexcept;
+ARIA_ABI_API std::atomic<bool>& trace_sink_present_() noexcept;
+ARIA_ABI_API void dispatch_trace_(const std::shared_ptr<TraceSink>& sink,
+                                   const TraceEvent& event) noexcept;
 
 /// Atomically swap the global sink. Returns the previous one
 /// (`nullptr` if none). Used by `install_trace_sink` /
@@ -244,6 +248,7 @@ swap_global_sink_(std::shared_ptr<TraceSink> next) noexcept {
     auto& slot = global_sink_storage_();
     auto prev = std::move(slot);
     slot = std::move(next);
+    trace_sink_present_().store(static_cast<bool>(slot), std::memory_order_release);
     return prev;
 }
 
@@ -279,100 +284,52 @@ inline void clear_trace_sink() noexcept {
 /// that want to skip building a payload entirely when no one is
 /// listening.
 [[nodiscard]] inline bool has_trace_sink() noexcept {
-    return static_cast<bool>(detail::snapshot_global_sink_());
+    return detail::trace_sink_present_().load(std::memory_order_acquire);
 }
 
-/// Publish an already-built event.
-///
-/// **Performance contract (D-1)**: this function performs exactly
-/// **one** `shared_ptr` load (the sink snapshot). When no sink is
-/// installed the load yields nullptr and we return immediately --
-/// hence the famed "one load + null check" zero-cost happy path.
-///
-/// Hot-path call sites that already gated on `has_trace_sink()`
-/// should prefer `publish_trace_unchecked(...)` to avoid the
-/// redundant second load on the slow path. The call site keeps
-/// **one** load total in the slow path; the unchecked overload
-/// trusts the caller's gate and just dispatches.
-inline void publish_trace(const TraceEvent& ev) noexcept {
+/// Publish an already-built event using one owning sink snapshot. Callers
+/// normally gate expensive payload construction with has_trace_sink(). This
+/// overload remains safe if the sink is removed after that check.
+inline void publish_trace_unchecked(const TraceEvent& event) noexcept {
     auto sink = detail::snapshot_global_sink_();
-    if (!sink || !*sink) return;
-    try {
-        (*sink)(ev);
-    } catch (...) {
-        // Sinks are diagnostic; never propagate.
-    }
+    if (sink && *sink) detail::dispatch_trace_(sink, event);
 }
 
-/// Slow-path companion to `publish_trace`. Skips the internal
-/// has_trace_sink() check entirely and trusts the caller to have
-/// already gated. Used by hot-path call sites that follow the
-/// idiom:
-///
-///     if (::aria::has_trace_sink()) {
-///         ::aria::publish_trace_unchecked(...);   // D-1: one load total
-///     }
-///
-/// Performs exactly one `shared_ptr` load. Safe to call even when
-/// no sink is installed -- it is just a wasted load + null check
-/// (no UB).
-inline void publish_trace_unchecked(const TraceEvent& ev) noexcept {
-    auto sink = detail::snapshot_global_sink_();
-    if (!sink || !*sink) return;
-    try {
-        (*sink)(ev);
-    } catch (...) {
-    }
+/// Publish an already-built event. With no sink, only the atomic presence
+/// flag is read. An enabled sink is retained under the registry mutex and
+/// invoked outside it. Recursive traces are suppressed; sink exceptions are
+/// reported through the callback-failure boundary.
+inline void publish_trace(const TraceEvent& event) noexcept {
+    if (has_trace_sink()) publish_trace_unchecked(event);
 }
 
-/// Variadic convenience that builds a TraceEvent in place. Avoids
-/// the extra std::optional / chrono noise at the call site.
-///
-/// **NOTE (D-1)**: this overload contains its own
-/// `has_trace_sink()` short-circuit so it can be called
-/// unconditionally from cold paths without the caller worrying
-/// about gating. Hot paths that already gated should use the
-/// unchecked counterpart below.
+namespace detail {
 template<class Payload>
-    requires (
-        std::is_same_v<Payload, trace::Reactive>   ||
-        std::is_same_v<Payload, trace::Async>      ||
-        std::is_same_v<Payload, trace::Binding>    ||
-        std::is_same_v<Payload, trace::Command>    ||
-        std::is_same_v<Payload, trace::Validation> ||
-        std::is_same_v<Payload, trace::List>)
-inline void publish_trace(TraceCategory cat, Payload payload,
-                          std::optional<::aria::Error> err = std::nullopt) {
+concept TracePayloadType =
+    std::same_as<Payload, trace::Reactive> || std::same_as<Payload, trace::Async> ||
+    std::same_as<Payload, trace::Binding> || std::same_as<Payload, trace::Command> ||
+    std::same_as<Payload, trace::Validation> || std::same_as<Payload, trace::List>;
+}  // namespace detail
+
+/// Build an event after taking one owning sink snapshot. Use after a
+/// has_trace_sink() gate to avoid building expensive payloads when disabled.
+template<detail::TracePayloadType Payload>
+inline void publish_trace_unchecked(TraceCategory category, Payload payload,
+                                    std::optional<::aria::Error> error = std::nullopt) {
     auto sink = detail::snapshot_global_sink_();
     if (!sink || !*sink) return;
-    TraceEvent ev{cat, TracePayload{std::move(payload)},
-                  std::chrono::steady_clock::now(), std::move(err)};
-    try {
-        (*sink)(ev);
-    } catch (...) {
-    }
+    const TraceEvent event{category, TracePayload{std::move(payload)},
+                           std::chrono::steady_clock::now(), std::move(error)};
+    detail::dispatch_trace_(sink, event);
 }
 
-/// Unchecked variadic counterpart -- builds the event and
-/// dispatches with **one** sink snapshot. Trusts caller gating.
-template<class Payload>
-    requires (
-        std::is_same_v<Payload, trace::Reactive>   ||
-        std::is_same_v<Payload, trace::Async>      ||
-        std::is_same_v<Payload, trace::Binding>    ||
-        std::is_same_v<Payload, trace::Command>    ||
-        std::is_same_v<Payload, trace::Validation> ||
-        std::is_same_v<Payload, trace::List>)
-inline void publish_trace_unchecked(TraceCategory cat, Payload payload,
-                                    std::optional<::aria::Error> err = std::nullopt) {
-    auto sink = detail::snapshot_global_sink_();
-    if (!sink || !*sink) return;
-    TraceEvent ev{cat, TracePayload{std::move(payload)},
-                  std::chrono::steady_clock::now(), std::move(err)};
-    try {
-        (*sink)(ev);
-    } catch (...) {
-    }
+/// Convenience form for callers that already have a payload. To defer its
+/// construction, place has_trace_sink() before constructing the argument.
+template<detail::TracePayloadType Payload>
+inline void publish_trace(TraceCategory category, Payload payload,
+                          std::optional<::aria::Error> error = std::nullopt) {
+    if (has_trace_sink())
+        publish_trace_unchecked(category, std::move(payload), std::move(error));
 }
 
 // ---------------------------------------------------------------------------

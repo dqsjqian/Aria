@@ -53,7 +53,7 @@ namespace aria::reactive {
 // ---------------------------------------------------------------------------
 namespace detail {
 
-class AutoReactionNode final : public Node {
+class AutoReactionNode final : public Node, public std::enable_shared_from_this<AutoReactionNode> {
 public:
     explicit AutoReactionNode(std::function<void()> fn)
         : Node(NodeKind::Reaction), fn_(std::move(fn)) {
@@ -67,7 +67,11 @@ public:
         // members (`edge_pool_`) are destroyed before the `Node` base, so
         // we must detach upstream edges here, while the backing storage is
         // still alive, to avoid a use-after-free in `~Node`.
-        clear_sources();
+        retire_();
+    }
+
+    [[nodiscard]] std::shared_ptr<Node> retain_for_recompute() noexcept override {
+        return weak_from_this().lock();
     }
 
     /// Drop current edges, re-run body under a fresh tracker, reconcile
@@ -83,27 +87,23 @@ public:
     /// on every upstream change does ZERO heap allocation per run. The
     /// pool is a std::deque so Edge addresses stay stable while it grows.
     bool recompute() override {
-        TrackingContext ctx;
+        TrackingContext ctx{read_buffer_};
         {
             TrackerScope guard(ctx);
             if (fn_) fn_();
         }
 
         // User body succeeded — swap dependency sets, reusing edge slots.
+        const auto& reads = ctx.reads();
+        // Grow before detaching. Allocation failure preserves the previous
+        // dependency set so a later source change can retry this evaluation.
+        while (edge_pool_.size() < reads.size()) edge_pool_.emplace_back();
         clear_sources();
-
-        const std::vector<Node*>& reads = ctx.reads();
-
-        // Reset depth so it can shrink, not just grow, across
-        // recomputes whose dependency set narrowed.
         set_depth(0);
-        while (edge_pool_.size() < reads.size()) {
-            edge_pool_.emplace_back();
+        active_edges_ = 0;
+        for (const auto& read : reads) {
+            if (read) attach_as_observer_of(*read, edge_pool_[active_edges_++]);
         }
-        for (std::size_t i = 0; i < reads.size(); ++i) {
-            attach_as_observer_of(*reads[i], edge_pool_[i]);
-        }
-        active_edges_ = reads.size();
 
         // Reactions do not have a value, so they never need to propagate
         // any further. Returning `false` stops the graph cleanly.
@@ -115,6 +115,7 @@ private:
     /// Reused edge storage — see Computed::edge_pool_ for why std::deque.
     std::deque<Edge>      edge_pool_;
     std::size_t           active_edges_ = 0;
+    TrackingContext::Buffer read_buffer_;
 };
 
 }  // namespace detail

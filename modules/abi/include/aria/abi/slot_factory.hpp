@@ -34,12 +34,11 @@
 //    slot-invoke failure hook has been installed (typically by `core`
 //    via `aria::abi::set_slot_invoke_failure_hook`), the captured
 //    exception is reported through the hook before the trampoline
-//    returns; otherwise the exception is silently dropped to preserve
-//    the legacy ABI contract for hosts that have not opted in.
+//    returns; otherwise it is reported through the unified callback-failure
+//    boundary, whose default sink writes to stderr.
 //
 //    The hook itself is **not** allowed to throw — it is invoked from a
-//    noexcept boundary. Any exception escaping the hook is silently
-//    dropped here as well.
+//    noexcept boundary. A throwing hook falls back to the unified reporter.
 //
 //  Allocation:
 //    State is stored on the heap (one allocation) because we cannot
@@ -63,11 +62,9 @@ namespace aria::abi {
 /// Hook invoked when the slot trampoline catches an exception escaping
 /// the user callable. The implementation is provided by upper layers
 /// (`core`'s `callback_boundary`) at process startup. Installing
-/// `nullptr` reverts to the legacy silent-drop behaviour. The hook is
-/// invoked from a `noexcept` ABI boundary; it must not throw, and the
-/// trampoline catches any exception escaping it as a defensive
-/// guarantee.
-using SlotInvokeFailureHook = void (*)(std::exception_ptr) noexcept;
+/// `nullptr` uses the unified callback-failure reporter. Hooks should avoid
+/// throwing; exceptions from a hook fall back to the unified reporter.
+using SlotInvokeFailureHook = void (*)(std::exception_ptr);
 
 namespace detail {
 
@@ -75,15 +72,7 @@ namespace detail {
 // reaches the same physical slot. See callback_boundary.cpp.
 ARIA_ABI_API std::atomic<SlotInvokeFailureHook>& slot_invoke_failure_hook() noexcept;
 
-inline void report_slot_invoke_failure_(std::exception_ptr eptr) noexcept {
-    auto* h = slot_invoke_failure_hook().load(std::memory_order_acquire);
-    if (h == nullptr) return;
-    try {
-        h(std::move(eptr));
-    } catch (...) {
-        // Hook itself misbehaved; ABI contract says we must not propagate.
-    }
-}
+ARIA_ABI_API void report_slot_invoke_failure_(std::exception_ptr exception) noexcept;
 
 }  // namespace detail
 
@@ -108,9 +97,8 @@ inline constexpr SlotErased::Invoker raw_invoker_v =
     };
 
 // Trampoline for the typed-bag flavor: F is invoked with `const Bag&`.
-// `args` may legitimately be null when callers emit "void" signals; we
-// keep the contract simple: if Bag is non-empty the caller MUST pass a
-// valid pointer, otherwise behavior is undefined.
+// `args` must point to a valid Bag, including when Bag is an empty type.
+// Signals with no payload can instead use the raw void* flavor.
 template <class F, class Bag>
 inline constexpr SlotErased::Invoker bag_invoker_v =
     [](void* state, void* args) noexcept {

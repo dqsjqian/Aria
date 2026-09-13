@@ -8,6 +8,7 @@
 #import <UIKit/UIKit.h>
 
 #include <memory>
+#include <limits>
 #include <string>
 
 namespace conformance = ::aria::binding::testing::conformance;
@@ -132,6 +133,76 @@ public:
 };
 
 }  // namespace
+
+TEST_CASE("UIKitAdapter: integer slider events use the slider float ABI") {
+    UISlider* slider = [[UISlider alloc] initWithFrame:CGRectZero];
+    slider.maximumValue = 100;
+    UIKitAdapter adapter;
+    auto& view = adapter.view_for(slider);
+    int observed = 0;
+    auto sub = adapter.on_int_changed(view, [&](int value) { observed = value; });
+    slider.value = 42.5f;
+    fire_actions(slider, UIControlEventValueChanged);
+    CHECK(observed == 42);
+    CHECK(adapter.get_int(view) == 42);
+}
+
+TEST_CASE("UIKitAdapter: native integer conversion saturates out-of-range values") {
+    UIStepper* stepper = [[UIStepper alloc] initWithFrame:CGRectZero];
+    stepper.minimumValue = -1e20;
+    stepper.maximumValue = 1e20;
+    UIKitAdapter adapter;
+    auto& view = adapter.view_for(stepper);
+    int observed = 0;
+    auto sub = adapter.on_int_changed(view, [&](int value) { observed = value; });
+    stepper.value = 1e19;
+    fire_actions(stepper, UIControlEventValueChanged);
+    CHECK(observed == std::numeric_limits<int>::max());
+    CHECK(adapter.get_int(view) == std::numeric_limits<int>::max());
+    stepper.value = -1e19;
+    fire_actions(stepper, UIControlEventValueChanged);
+    CHECK(observed == std::numeric_limits<int>::min());
+    CHECK(adapter.get_int(view) == std::numeric_limits<int>::min());
+}
+
+TEST_CASE("UIKitAdapter: a retained native target is inert after adapter destruction") {
+    UIButton* button = [UIButton buttonWithType:UIButtonTypeSystem];
+    AriaUIClickTarget* retained_target = nil;
+    int calls = 0;
+    aria::Subscription sub;
+    {
+        UIKitAdapter adapter;
+        sub = adapter.on_click(adapter.view_for(button), [&] { ++calls; });
+        retained_target = button.allTargets.anyObject;
+    }
+    REQUIRE((retained_target != nil));
+    [retained_target fire:button];
+    CHECK(calls == 0);
+}
+
+TEST_CASE("UIKitAdapter: releasing a view during an action cancels later observers") {
+    UIButton* button = [UIButton buttonWithType:UIButtonTypeSystem];
+    UIKitAdapter adapter;
+    auto& view = adapter.view_for(button);
+    int later_calls = 0;
+    auto first = adapter.on_click(view, [&] { adapter.release_view(button); });
+    auto later = adapter.on_click(view, [&] { ++later_calls; });
+    fire_actions(button, UIControlEventTouchUpInside);
+    CHECK(later_calls == 0);
+}
+
+TEST_CASE("UIKitAdapter: text preserves embedded NUL bytes") {
+    UITextField* field = [[UITextField alloc] initWithFrame:CGRectZero];
+    UIKitAdapter adapter;
+    auto& view = adapter.view_for(field);
+    const std::string value{"a\0b", 3};
+    std::string observed;
+    auto sub = adapter.on_text_changed(view, [&](std::string_view text) { observed = text; });
+    adapter.set_text(view, value);
+    CHECK(adapter.get_text(view) == value);
+    fire_actions(field, UIControlEventEditingChanged);
+    CHECK(observed == value);
+}
 
 TEST_CASE("UIKitAdapter conforms: text two-way") {
     UIKitHarness h; conformance::run_text_two_way(h);

@@ -112,8 +112,8 @@ public:
 
     // ── Inspection ────────────────────────────────────────────────────
 
-    [[nodiscard]] CancellationToken token() const noexcept { return src_.token(); }
-    [[nodiscard]] bool is_cancelled() const noexcept { return src_.is_cancelled(); }
+    [[nodiscard]] CancellationToken token() const noexcept { return src_->token(); }
+    [[nodiscard]] bool is_cancelled() const noexcept { return src_->is_cancelled(); }
 
     /// Number of coroutines currently in flight (launched but not yet
     /// returned). Useful for tests and diagnostics.
@@ -126,7 +126,8 @@ public:
     /// Request cancellation. Non-blocking: in-flight coroutines will
     /// observe the cancellation at their next probe / co_await.
     void cancel() noexcept {
-        try { src_.cancel(); } catch (...) {}
+        auto source = src_;
+        try { source->cancel(); } catch (...) {}
     }
 
     /// Synchronously: cancel + wait for all in-flight coroutines to
@@ -144,20 +145,10 @@ public:
         if (!drained) {
             const auto leaked =
                 state_->inflight.load(std::memory_order_acquire);
-            // Hand back any joiner coroutines still parked in
-            // `drain_waiters`. On the drained path `decrement_inflight_`
-            // has already swapped the vector out and resumed them, but on
-            // the timeout path nobody ever will: `inflight` never reaches
-            // zero, so the last-one-out branch cannot fire. Leaving the
-            // handles parked leaks a coroutine frame per joiner *on top of*
-            // the tasks we are already reporting as leaked. Resume them so
-            // the awaiting frames unwind and their destructors run.
-            std::vector<std::function<void()>> stranded;
-            stranded.swap(state_->drain_waiters);
+            // A bounded synchronous wait must not complete asynchronous
+            // joiners early. Their shared state remains alive until the last
+            // task exits and resumes them through decrement_inflight_.
             lk.unlock();
-            for (auto& w : stranded) {
-                try { w(); } catch (...) {}
-            }
             report_async_error(
                 std::string("CoroutineScope: dtor leaked ") +
                 std::to_string(leaked) +
@@ -398,70 +389,17 @@ private:
     /// scope's state so the callback is a no-op if the child scope was
     /// destroyed first.
     void register_parent_link_(CancellationToken parent) {
-        // Hold a weak handle to our own bookkeeping, and a copy of the
-        // cancellation source's state via a small helper. We can't
-        // weak-ref the `CancellationSource` itself, so we instead
-        // schedule a deferred `cancel()` on a snapshot of the source's
-        // shared state by going through our own token's `on_cancel`.
-        //
-        // Implementation note: we expose this via a tiny static helper
-        // that captures a shared_ptr to a "parent linker" record which
-        // outlives the parent token but holds a weak_ptr to our state.
-        struct Linker {
-            std::weak_ptr<detail::ScopeState> w_state;
-            std::weak_ptr<CancellationSourceProxy> w_src;
-        };
-        if (!src_proxy_) {
-            src_proxy_ = std::make_shared<CancellationSourceProxy>(&src_);
-        }
-        auto linker = std::make_shared<Linker>(
-            Linker{std::weak_ptr<detail::ScopeState>(state_),
-                   std::weak_ptr<CancellationSourceProxy>(src_proxy_)});
-        parent.on_cancel([linker]() mutable {
-            if (auto p = linker->w_src.lock()) p->cancel_safely();
+        // Keep the source alive for the entire broadcast, even if a child
+        // cancellation callback destroys the scope. No proxy lock may be held
+        // while invoking callbacks supplied by the application.
+        parent.on_cancel([weak = std::weak_ptr<CancellationSource>(src_)] {
+            if (auto source = weak.lock()) source->cancel();
         });
     }
 
-    /// Tiny indirection so `register_parent_link_` can hold a weak_ptr
-    /// to "the live source". Direct `weak_ptr<CancellationSource>` is
-    /// not possible (the source is a value member). The proxy is owned
-    /// by `src_proxy_` and zeroed in our destructor *before* the source
-    /// itself goes away.
-    struct CancellationSourceProxy {
-        explicit CancellationSourceProxy(CancellationSource* s) : src_(s) {}
-        void cancel_safely() noexcept {
-            std::lock_guard lk(m_);
-            if (src_) {
-                try { src_->cancel(); } catch (...) {}
-            }
-        }
-        void detach() noexcept {
-            std::lock_guard lk(m_);
-            src_ = nullptr;
-        }
-        std::mutex m_;
-        CancellationSource* src_;
-    };
-
-    // ── Members ───────────────────────────────────────────────────────
-
-    CancellationSource src_;
+    std::shared_ptr<CancellationSource> src_ =
+        std::make_shared<CancellationSource>();
     std::shared_ptr<detail::ScopeState> state_;
-    std::shared_ptr<CancellationSourceProxy> src_proxy_;
-
-    // Detach the proxy *before* `src_` is destroyed, so any late parent
-    // cancellation finds a safely-zeroed pointer.
-    struct ProxyDetacher {
-        std::shared_ptr<CancellationSourceProxy>* p;
-        ~ProxyDetacher() {
-            if (p && *p) (*p)->detach();
-        }
-    };
-    // Order of declaration matters: `proxy_detacher_` is destroyed
-    // BEFORE `src_proxy_` and `src_` (members destroyed in reverse
-    // declaration order). That lets us null out the proxy's raw pointer
-    // while the source is still alive — no UAF window.
-    ProxyDetacher proxy_detacher_{&src_proxy_};
 };
 
 /// Awaitable that suspends the current coroutine until cancellation

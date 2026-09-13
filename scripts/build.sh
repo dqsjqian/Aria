@@ -92,6 +92,7 @@ case "$MODE" in
             -DARIA_ENABLE_TSAN=ON \
             -DARIA_ENABLE_ASAN=OFF \
             -DARIA_ENABLE_UBSAN=OFF \
+            -DARIA_BUILD_TESTS=ON \
             -DARIA_BUILD_QT6=OFF
         cmake --build "${TSAN_BUILD_DIR}" \
             --target test_async test_binding test_core test_abi test_runtime \
@@ -161,6 +162,9 @@ case "$MODE" in
             -DARIA_BUILD_JNI=ON \
             -DARIA_BUILD_SHARED=OFF \
             -DARIA_BUILD_TESTS=ON \
+            -DARIA_ENABLE_ASAN=OFF \
+            -DARIA_ENABLE_UBSAN=OFF \
+            -DARIA_ENABLE_TSAN=OFF \
             -DARIA_BUILD_QT6=OFF
         "$ARIA_ANDROID_CMAKE" --build "${BUILD_DIR}" -j "${JOBS}"
         echo "✓ android cross-build done"
@@ -218,28 +222,41 @@ case "$MODE" in
         ;;
 esac
 
+# Configure all sanitizer flags even when reusing an existing flavor tree.
+CMAKE_OPTS=(-DARIA_ENABLE_ASAN=OFF -DARIA_ENABLE_UBSAN=OFF -DARIA_ENABLE_TSAN=OFF "${CMAKE_OPTS[@]}")
+
 # ── Adapter auto-enable (adapter conformance tests are framework-core) ───────
 # Set ARIA_NO_QT6=1 / ARIA_NO_APPKIT=1 to disable.
 
 # Qt6 adapter — probe Homebrew Qt (macOS) or QT_DIR
+CMAKE_OPTS+=('-UQt6*_DIR')
+QT_DIR_FINAL=""
 if [[ "${ARIA_NO_QT6:-}" != "1" ]]; then
     QT_DIR_DEFAULT=""
     if [[ "$(uname)" == "Darwin" ]]; then
-        for c in "/opt/homebrew/opt/qt" "/usr/local/opt/qt" "/opt/homebrew/opt/qt@6"; do
-            if [[ -d "$c" ]]; then QT_DIR_DEFAULT="$c"; break; fi
+        for c in /opt/homebrew/opt/qt /opt/homebrew/opt/qt@6 /opt/homebrew/opt/qtbase /usr/local/opt/qt /usr/local/opt/qt@6 /usr/local/opt/qtbase; do
+            if [[ -f "$c/lib/cmake/Qt6/Qt6Config.cmake" ]]; then QT_DIR_DEFAULT="$c"; break; fi
         done
     fi
     QT_DIR_FINAL="${QT_DIR:-$QT_DIR_DEFAULT}"
-    if [[ -n "$QT_DIR_FINAL" && -d "$QT_DIR_FINAL" ]]; then
-        CMAKE_OPTS+=(-DARIA_BUILD_QT6=ON -DCMAKE_PREFIX_PATH="$QT_DIR_FINAL")
-        echo "▶ Qt6 detected at ${QT_DIR_FINAL} — adapter + qt6_tests enabled"
+    if [[ -n "$QT_DIR_FINAL" && ! -f "$QT_DIR_FINAL/lib/cmake/Qt6/Qt6Config.cmake" ]]; then
+        echo "✗ QT_DIR has no Qt6 package configuration: $QT_DIR_FINAL" >&2
+        exit 1
     fi
+fi
+if [[ -n "$QT_DIR_FINAL" ]]; then
+    CMAKE_OPTS+=(-DARIA_BUILD_QT6=ON -DCMAKE_PREFIX_PATH="$QT_DIR_FINAL" -DQt6_DIR="$QT_DIR_FINAL/lib/cmake/Qt6")
+    echo "▶ Qt6 detected at ${QT_DIR_FINAL} — adapter + qt6_tests enabled"
+else
+    CMAKE_OPTS+=(-DARIA_BUILD_QT6=OFF)
 fi
 
 # AppKit adapter — host-side conformance tests on macOS
 if [[ "$(uname)" == "Darwin" && "${ARIA_NO_APPKIT:-}" != "1" ]]; then
     CMAKE_OPTS+=(-DARIA_BUILD_APPKIT=ON)
     echo "▶ macOS — AppKit adapter + appkit_conformance enabled"
+else
+    CMAKE_OPTS+=(-DARIA_BUILD_APPKIT=OFF)
 fi
 
 # On MSYS2 / MinGW prefer Ninja if present (avoids accidental MSVC pickup).

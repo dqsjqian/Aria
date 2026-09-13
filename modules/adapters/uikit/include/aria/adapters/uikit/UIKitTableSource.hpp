@@ -17,22 +17,13 @@
 // Header is .mm-only (UIKit imports). Header-only template — same
 // distribution model as the AppKit / Qt6 adapters.
 //
-// Threading
-// ---------
-// UIKit table mutation MUST happen on the main thread. Off-main-thread
-// changes are queued onto `dispatch_get_main_queue()`. The
-// `shared_ptr<T>` for events that need it is RESOLVED at emit time
-// (before the dispatch hop), mirroring the Qt / AppKit contract.
-//
-// Lifetime
-// --------
-// The bridge holds a non-owning ref to the source list (caller keeps
-// it alive) and a non-owning weak ref to the `UITableView`.
-// Destruction order:
-//   1. detach `Subscription`,
-//   2. mark `state_->detached` so any in-flight queued block bails,
-//   3. zero the table's dataSource/delegate iff still our object.
+// Construct and read on the main thread. Events own their payloads and
+// enter one FIFO queue, so a worker event cannot be overtaken by a later
+// main-thread event. Idle main-thread delivery remains synchronous.
+// Destruction retires pending work immediately; native data-source cleanup
+// is transferred to the main queue when destroyed from another thread.
 
+#include "aria/callback_boundary.hpp"
 #include "aria/list_source.hpp"
 #include "aria/observable_list.hpp"
 #include "aria/subscription.hpp"
@@ -42,6 +33,9 @@
 #include <atomic>
 #include <cstddef>
 #include <functional>
+#include <deque>
+#include <mutex>
+#include <stdexcept>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -68,13 +62,17 @@ public:
                                                         NSIndexPath*)>;
 
     /// Construct a binding between an aria list source and a
-    /// `UITableView`. The source must outlive `*this`.
+    /// `UITableView`. Source writes must be serialized with construction
+    /// so snapshot capture and observer registration see one coherent state.
     template<class L>
         requires ::aria::ListSourceOf<L, T>
     ObservableTableSource(UITableView* tableView,
                           L& source,
                           CellForRowFn cell_for_row)
         : state_(std::make_shared<State>()) {
+        if (![NSThread isMainThread]) throw std::logic_error("table bridge construction requires the main thread");
+        state_->events = std::make_shared<EventQueue>();
+        state_->events->target = state_;
         state_->table        = tableView;
         state_->cell_for_row = std::move(cell_for_row);
         state_->snapshot     = source.snapshot();
@@ -82,7 +80,7 @@ public:
         std::weak_ptr<State> weak_state = state_;
 
         auto row_count_fn = [weak_state]() -> NSInteger {
-            if (auto s = weak_state.lock()) {
+            if (auto s = weak_state.lock(); s && !s->detached.load(std::memory_order_acquire)) {
                 return static_cast<NSInteger>(s->snapshot.size());
             }
             return 0;
@@ -90,7 +88,7 @@ public:
         auto cell_for_fn = [weak_state](UITableView* tv,
                                         NSIndexPath* indexPath) -> UITableViewCell* {
             auto s = weak_state.lock();
-            if (!s) return nil;
+            if (!s || s->detached.load(std::memory_order_acquire)) return nil;
             const NSInteger row = indexPath.row;
             if (row < 0
                 || static_cast<std::size_t>(row) >= s->snapshot.size()) {
@@ -110,39 +108,31 @@ public:
         state_->ds = [[AriaUITableDataSource alloc]
                           initWithRowCount:std::move(row_count_fn)
                                  cellForFn:std::move(cell_for_fn)];
+        sub_ = source.observe([events = state_->events](const ::aria::ListChange<T>& change) {
+            enqueue_(events, change);
+        });
         tableView.dataSource = state_->ds;
-        tableView.delegate   = state_->ds;
+        tableView.delegate = state_->ds;
         [tableView reloadData];
-
-        sub_ = source.observe(
-            [weak_state, &source](const ::aria::ListChange<T>& ch) {
-                auto s = weak_state.lock();
-                if (!s) return;
-                if (s->detached.load(std::memory_order_acquire)) return;
-
-                std::shared_ptr<T> resolved;
-                using K = ::aria::ListChangeKind;
-                if (ch.kind == K::Insert
-                    || ch.kind == K::Replace
-                    || ch.kind == K::Move) {
-                    if (ch.index < source.size()) {
-                        resolved = source.at(ch.index);
-                    }
-                }
-
-                apply_on_main_(weak_state, ch, std::move(resolved));
-            });
     }
 
     ~ObservableTableSource() {
-        sub_ = ::aria::Subscription{};
-        if (state_) {
-            state_->detached.store(true, std::memory_order_release);
-            UITableView* tv = state_->table;
-            if (tv) {
-                if (tv.dataSource == state_->ds) tv.dataSource = nil;
-                if (tv.delegate   == state_->ds) tv.delegate   = nil;
-            }
+        state_->detached.store(true, std::memory_order_release);
+        {
+            std::lock_guard lock(state_->events->mutex);
+            state_->events->stopped = true;
+        }
+        sub_.release();
+        if ([NSThread isMainThread]) {
+            cleanup_(*state_);
+        } else {
+            // Transfer the sole wrapper owner, not a temporary shared copy:
+            // the native data-source and renderer captures are released on main.
+            auto* owner = new std::shared_ptr<State>(std::move(state_));
+            dispatch_async_f(dispatch_get_main_queue(), owner, [](void* context) {
+                std::unique_ptr<std::shared_ptr<State>> state{static_cast<std::shared_ptr<State>*>(context)};
+                cleanup_(**state);
+            });
         }
     }
 
@@ -160,47 +150,83 @@ public:
     }
 
 private:
+    struct State;
+    struct EventQueue {
+        std::mutex mutex;
+        std::deque<::aria::ListChange<T>> changes;
+        std::weak_ptr<State> target;
+        bool scheduled = false;
+        bool stopped = false;
+    };
     struct State {
-        UITableView* __weak              table = nil;
-        AriaUITableDataSource* __strong  ds    = nil;
-        CellForRowFn                     cell_for_row;
-        std::vector<std::shared_ptr<T>>  snapshot;
-        std::atomic<bool>                detached{false};
+        UITableView* __weak table = nil;
+        AriaUITableDataSource* __strong ds = nil;
+        CellForRowFn cell_for_row;
+        std::vector<std::shared_ptr<T>> snapshot;
+        std::atomic<bool> detached{false};
+        std::shared_ptr<EventQueue> events;
     };
 
-    static void apply_on_main_(std::weak_ptr<State> weak_state,
-                               ::aria::ListChange<T> ch,
-                               std::shared_ptr<T> resolved) {
-        auto run_now = [weak_state, ch, resolved]() {
-            auto s = weak_state.lock();
-            if (!s) return;
-            if (s->detached.load(std::memory_order_acquire)) return;
-            apply_change_(*s, ch, resolved);
-        };
-        if ([NSThread isMainThread]) {
-            run_now();
-        } else {
-            __block auto blk = run_now;
-            dispatch_async(dispatch_get_main_queue(), ^{ blk(); });
+    static void cleanup_(State& state) {
+        std::deque<::aria::ListChange<T>> discarded;
+        {
+            std::lock_guard lock(state.events->mutex);
+            discarded.swap(state.events->changes);
+        }
+        UITableView* table = state.table;
+        if (table.dataSource == state.ds) table.dataSource = nil;
+        if (table.delegate == state.ds) table.delegate = nil;
+    }
+
+    static void enqueue_(const std::shared_ptr<EventQueue>& events, const ::aria::ListChange<T>& change) {
+        {
+            std::lock_guard lock(events->mutex);
+            if (events->stopped) return;
+            events->changes.push_back(change);
+            if (events->scheduled) return;
+            events->scheduled = true;
+        }
+        if ([NSThread isMainThread]) drain_(events);
+        else {
+            auto pending = events; // Copy ownership into the block, not the reference parameter.
+            dispatch_async(dispatch_get_main_queue(), ^{ drain_(pending); });
+        }
+    }
+
+    static void drain_(const std::shared_ptr<EventQueue>& events) {
+        auto state = events->target.lock(); // Native State is only retained on main.
+        if (!state) return;
+        for (;;) {
+            ::aria::ListChange<T> change{};
+            {
+                std::lock_guard lock(events->mutex);
+                if (events->stopped || events->changes.empty()) {
+                    events->scheduled = false;
+                    return;
+                }
+                change = std::move(events->changes.front());
+                events->changes.pop_front();
+            }
+            if (state->detached.load(std::memory_order_acquire)) return;
+            try { apply_change_(*state, change); }
+            catch (...) { ::aria::report_callback_failure("uikit.table", std::current_exception()); }
         }
     }
 
     static NSIndexPath* ip_(std::size_t row) {
-        return [NSIndexPath indexPathForRow:static_cast<NSInteger>(row)
-                                  inSection:0];
+        return [NSIndexPath indexPathForRow:static_cast<NSInteger>(row) inSection:0];
     }
 
     static void apply_change_(State& s,
-                              const ::aria::ListChange<T>& ch,
-                              const std::shared_ptr<T>& resolved) {
+                              const ::aria::ListChange<T>& ch) {
         using K = ::aria::ListChangeKind;
         switch (ch.kind) {
-        case K::Insert:      apply_insert_(s, ch.index, resolved);      return;
+        case K::Insert:      apply_insert_(s, ch.index, ch.item);      return;
         case K::Remove:      apply_remove_(s, ch.index);                return;
-        case K::Replace:     apply_replace_(s, ch.index, resolved);     return;
+        case K::Replace:     apply_replace_(s, ch.index, ch.item);     return;
         case K::ItemChanged: apply_item_changed_(s, ch.index);          return;
         case K::Move:        apply_move_(s, ch.from_index, ch.index);   return;
-        case K::Reset:       apply_reset_(s);                           return;
+        case K::Reset:       apply_reset_(s, ch);                           return;
         }
     }
 
@@ -251,12 +277,9 @@ private:
         [s.table moveRowAtIndexPath:ip_(from) toIndexPath:ip_(to)];
     }
 
-    static void apply_reset_(State& s) {
-        // Drop our snapshot and reload the table. The source will
-        // subsequently emit Inserts to repopulate (this matches
-        // `ObservableList::clear`, which leaves the list empty and
-        // emits a single Reset event).
-        s.snapshot.clear();
+    static void apply_reset_(State& s, const ::aria::ListChange<T>& change) {
+        if (!change.snapshot) throw std::logic_error("Reset requires an owned snapshot");
+        s.snapshot = *change.snapshot;
         if (s.table) [s.table reloadData];
     }
 

@@ -50,6 +50,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -107,6 +108,15 @@ struct AsyncValidatorState
     // Validator pointer is cleared when the Subscription detaches; a
     // subsequent stale-rule completion sees nullptr and drops.
     ::aria::Validator<T>*             target{nullptr};
+    std::weak_ptr<void>               target_lifetime;
+    ::aria::Subscription              source_subscription;
+    std::uint64_t                     attachment{0};
+
+    // These fields are accessed only on the graph/UI thread. The worker
+    // observes only its captured token and the atomic generation counter.
+    [[nodiscard]] bool has_target() const noexcept {
+        return target && !target_lifetime.expired();
+    }
 
     AsyncValidatorState(IExecutor& u, IExecutor& w, Factory f)
         : ui(&u), worker(&w), factory(std::move(f)) {}
@@ -116,20 +126,21 @@ template<class T>
 Task<void> async_validator_run_one_(
     std::shared_ptr<AsyncValidatorState<T>> self,
     T                                       value,
-    std::uint64_t                           my_gen)
+    std::uint64_t                           my_gen,
+    CancellationToken                       tok)
 {
-    auto tok = self->cancel.token();
-
     std::optional<AsyncRuleResult> outcome;
     std::optional<::aria::Error>   failure;
+    bool cancelled = false;
     try {
         co_await schedule_on(*self->worker);
         tok.throw_if_cancelled();
         outcome = co_await self->factory(std::move(value), tok);
         tok.throw_if_cancelled();
     } catch (const OperationCancelled&) {
-        // V-3 -- silent.
-        co_return;
+        // V-3: a current run must leave pending, preserving prior errors.
+        // Superseded runs are discarded by the same generation guard below.
+        cancelled = true;
     } catch (...) {
         // V-3 -- arbitrary throws map to AsyncFailure under the
         // validator's source tag. The error message follows
@@ -138,6 +149,7 @@ Task<void> async_validator_run_one_(
             std::current_exception(), "AsyncValidator");
     }
 
+    if (self->gen.load(std::memory_order_acquire) != my_gen) co_return;
     co_await schedule_on(*self->ui);
 
     // Stale-result guard (V-1). Mirrors AsyncResource R-1: a stale
@@ -146,8 +158,12 @@ Task<void> async_validator_run_one_(
     if (self->gen.load(std::memory_order_acquire) != my_gen) {
         co_return;
     }
-    if (!self->target) {
+    if (!self->has_target()) {
         // Detached mid-flight; nothing to settle.
+        co_return;
+    }
+    if (cancelled || tok.is_cancelled()) {
+        self->target->cancel_pending();
         co_return;
     }
 
@@ -188,6 +204,8 @@ Task<void> async_validator_run_one_(
 /// On every change of `source_property` the AsyncValidator cancels
 /// the previous rule, fires a new one, and surfaces the result via
 /// `validator.begin_pending()` / `end_pending(...)`.
+/// Attach, detach, move assignment and destruction run on the graph thread.
+/// Both executors must outlive their queued coroutine work.
 template<class T>
 class AsyncValidator {
 public:
@@ -198,63 +216,101 @@ public:
               ui, worker, std::move(factory))) {}
 
     ~AsyncValidator() {
-        if (state_) state_->cancel.cancel();
+        auto retired = std::move(state_);
+        detach_(retired);
     }
 
     AsyncValidator(const AsyncValidator&)            = delete;
     AsyncValidator& operator=(const AsyncValidator&) = delete;
     AsyncValidator(AsyncValidator&&) noexcept        = default;
-    AsyncValidator& operator=(AsyncValidator&&) noexcept = default;
+    AsyncValidator& operator=(AsyncValidator&& other) noexcept {
+        if (this != &other) {
+            auto retired = std::exchange(state_, std::move(other.state_));
+            detach_(retired);
+        }
+        return *this;
+    }
 
     /// Attach to a Validator + its source Property. The returned
     /// Subscription owns the lifetime: destroying it detaches the
     /// validator and cancels any in-flight rule (V-6).
     [[nodiscard]] ::aria::Subscription attach_to(::aria::Validator<T>& v,
                                                  ::aria::Property<T>&  source) {
-        auto state    = state_;
+        auto state = state_;
+        if (!state) throw std::logic_error("AsyncValidator: cannot attach a moved-from driver");
+        auto lifetime = v.lifetime_token_();
+        const auto attachment = detach_(state);
+        if (state->attachment != attachment) return {}; // Reattached during teardown.
         state->target = &v;
-
-        // Initial fire on the current value, so binding immediately
-        // produces a pending state for the user (matches the sync
-        // `Validator::rule` behaviour, which runs on attach).
+        state->target_lifetime = std::move(lifetime);
         state->last_value.reset();
-        fire_(state, source.get());
 
-        auto inner = source.on_changed(
-            [state](const T& value) { fire_(state, value); });
-
-        return ::aria::Subscription{std::function<void()>{
-            [state, holder = std::make_shared<::aria::Subscription>(
-                std::move(inner))]() mutable {
-                state->cancel.cancel();
-                state->target = nullptr;
-                if (holder) {
-                    holder->detach();
-                    holder.reset();
+        // The state owns the connection; its callback is weak to avoid a
+        // cycle. Install it before begin_pending can notify user observers.
+        std::weak_ptr<detail::AsyncValidatorState<T>> weak = state;
+        state->source_subscription = source.on_changed(
+            [weak, attachment](const T& value) {
+                if (auto current = weak.lock(); current && current->attachment == attachment) {
+                    fire_(current, value);
                 }
-            }}};
+            });
+        ::aria::Subscription connection{std::function<void()>{[weak, attachment] {
+            if (auto current = weak.lock(); current && current->attachment == attachment) {
+                detach_(current);
+            }
+        }}};
+        // Initial fire on the current value, as for synchronous rules.
+        fire_(state, source.get());
+        return connection;
     }
 
 private:
+    static std::uint64_t detach_(
+        const std::shared_ptr<detail::AsyncValidatorState<T>>& state) noexcept {
+        if (!state) return 0;
+        const auto attachment = ++state->attachment;
+        state->gen.fetch_add(1, std::memory_order_acq_rel);
+        auto* target = std::exchange(state->target, nullptr);
+        auto lifetime = std::move(state->target_lifetime);
+        auto cancellation = std::move(state->cancel);
+        state->source_subscription.release();
+        // Invalidate before invoking observers/cancellation callbacks. A
+        // reentrant attach then owns a fresh generation and cancellation source.
+        if (target && !lifetime.expired()) {
+            try { target->cancel_pending(); }
+            catch (...) {
+                ::aria::report_callback_failure("AsyncValidator.detach", std::current_exception());
+            }
+        }
+        try { cancellation.cancel(); }
+        catch (...) {
+            ::aria::report_callback_failure("AsyncValidator.cancel", std::current_exception());
+        }
+        return attachment;
+    }
+
     static void fire_(const std::shared_ptr<detail::AsyncValidatorState<T>>& state,
                       const T& value)
     {
+        if (!state->has_target()) return;
         if (state->last_value.has_value() && *state->last_value == value) {
             // V-5 -- identical to last fire, no-op.
             return;
         }
-        state->last_value = value;
+        T snapshot = value;
+        state->last_value = snapshot;
 
-        // V-1 -- cancel any prior in-flight rule, then mint a fresh
-        // CancellationSource for the new run.
-        state->cancel.cancel();
-        state->cancel = ::aria::async::CancellationSource{};
-
-        if (state->target) state->target->begin_pending();   // V-2
-
+        CancellationSource next;
+        auto previous = std::move(state->cancel);
+        state->cancel = std::move(next);
+        auto token = state->cancel.token();
         const auto my_gen =
             state->gen.fetch_add(1, std::memory_order_acq_rel) + 1;
-        detail::async_validator_run_one_<T>(state, value, my_gen)
+        previous.cancel();
+        if (state->gen.load(std::memory_order_acquire) != my_gen || !state->has_target()) return;
+        state->target->begin_pending(); // May synchronously change the source or detach.
+        if (state->gen.load(std::memory_order_acquire) != my_gen || !state->has_target()) return;
+        detail::async_validator_run_one_<T>(state, std::move(snapshot), my_gen, std::move(token))
             .start_detached();
     }
 

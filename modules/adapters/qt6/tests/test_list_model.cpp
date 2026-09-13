@@ -6,11 +6,15 @@
 #include "aria/derived/mapped_list.hpp"
 #include "aria/adapters/qt6/qt_list_model_adapter.hpp"
 
+#include <QCoreApplication>
 #include <QHash>
 #include <QString>
 #include <QVariant>
 
+#include <atomic>
 #include <memory>
+#include <stdexcept>
+#include <thread>
 #include <string>
 
 using namespace aria;
@@ -241,4 +245,115 @@ TEST_CASE("ObservableListModel: drives MappedList — Target identity preserved"
     REQUIRE(model.rowCount() == 2);
     CHECK(model.data(model.index(0)).toString() == "vm:there");
     CHECK(model.data(model.index(1)).toString() == "vm:hi");
+}
+
+namespace {
+// Models an observer already copied into an upstream delivery queue before
+// its subscription is released, and a source that commits a batch up front.
+struct QueuedListSource {
+    using value_type = Item;
+    std::vector<std::shared_ptr<Item>> rows;
+    std::function<void(const ListChange<Item>&)> callback;
+    Subscription observe(std::function<void(const ListChange<Item>&)> fn) {
+        callback = std::move(fn);
+        return {};
+    }
+    std::size_t size() const { return rows.size(); }
+    std::shared_ptr<Item> at(std::size_t index) const { return rows.at(index); }
+    auto snapshot() const { return rows; }
+};
+int model_role_failures = 0;
+void model_failure_sink(const CallbackFailure& failure) {
+    if (failure.category == "qt.list_model.role") ++model_role_failures;
+}
+}
+
+TEST_CASE("ObservableListModel: in-flight source callbacks cannot access a destroyed model") {
+    QueuedListSource source;
+    auto model = std::make_unique<ObservableListModel<Item>>(source, roles(), role_fn);
+    auto in_flight = source.callback;
+    model.reset();
+    CHECK_NOTHROW(in_flight({ListChangeKind::Insert, 0, std::make_shared<Item>(Item{"late"})}));
+}
+
+TEST_CASE("ObservableListModel: queued Reset replays its own snapshot before later inserts") {
+    QueuedListSource source;
+    source.rows.push_back(std::make_shared<Item>(Item{"old"}));
+    ObservableListModel<Item> model{source, roles(), role_fn};
+    std::thread producer([&] {
+        source.rows.clear();
+        source.callback(ListChange<Item>::cleared());
+        auto next = std::make_shared<Item>(Item{"new"});
+        source.rows.push_back(next);
+        source.callback({ListChangeKind::Insert, 0, next});
+    });
+    producer.join();
+    CHECK(model.rowCount() == 1); // queued deliveries have not run yet
+    QCoreApplication::processEvents();
+    REQUIRE(model.rowCount() == 1);
+    CHECK(model.data(model.index(0)).toString() == "new");
+}
+
+TEST_CASE("ObservableListModel: committed batches use event items rather than source indexes") {
+    QueuedListSource source;
+    ObservableListModel<Item> model{source, roles(), role_fn};
+    auto first = std::make_shared<Item>(Item{"first"});
+    auto second = std::make_shared<Item>(Item{"second"});
+    source.rows = {first, second};
+    source.callback({ListChangeKind::Insert, 0, second});
+    source.callback({ListChangeKind::Insert, 0, first});
+    REQUIRE(model.rowCount() == 2);
+    CHECK(model.data(model.index(0)).toString() == "first");
+    CHECK(model.data(model.index(1)).toString() == "second");
+}
+
+TEST_CASE("ObservableListModel: role failures stay inside the Qt callback boundary") {
+    QueuedListSource source;
+    source.rows.push_back(std::make_shared<Item>(Item{"row"}));
+    ObservableListModel<Item> model{source, roles(), [](const Item&, int) -> QVariant {
+        throw std::runtime_error("projection failure");
+    }};
+    model_role_failures = 0;
+    auto previous = set_callback_failure_sink(model_failure_sink);
+    QVariant value;
+    CHECK_NOTHROW(value = model.data(model.index(0)));
+    set_callback_failure_sink(previous);
+    CHECK_FALSE(value.isValid());
+    CHECK(model_role_failures == 1);
+}
+
+TEST_CASE("ObservableListModel: role and row stay alive if projection destroys the model") {
+    QueuedListSource source;
+    source.rows.push_back(std::make_shared<Item>(Item{"row"}));
+    std::unique_ptr<ObservableListModel<Item>> model;
+    auto held = std::make_shared<int>(42);
+    model = std::make_unique<ObservableListModel<Item>>(source, roles(),
+        [&, held](const Item& item, int) {
+            model.reset();
+            return QString::fromStdString(item.title) + QString::number(*held);
+        });
+    auto value = model->data(model->index(0));
+    CHECK_FALSE(model);
+    CHECK(value.toString() == "row42");
+    CHECK(held.use_count() == 1);
+}
+
+TEST_CASE("ObservableListModel: producer delivery racing owner-thread destruction is safe") {
+    for (int round = 0; round < 64; ++round) {
+        QueuedListSource source;
+        auto model = std::make_unique<ObservableListModel<Item>>(source, roles(), role_fn);
+        auto in_flight = source.callback;
+        std::atomic<bool> ready{false};
+        std::thread producer([&] {
+            ready.store(true, std::memory_order_release);
+            for (int i = 0; i < 20; ++i)
+                in_flight({ListChangeKind::Insert, static_cast<std::size_t>(i),
+                           std::make_shared<Item>(Item{"row"})});
+        });
+        while (!ready.load(std::memory_order_acquire)) std::this_thread::yield();
+        model.reset();
+        producer.join();
+        QCoreApplication::processEvents();
+    }
+    CHECK(true); // ASan/UBSan cover receiver and queued-payload lifetimes.
 }

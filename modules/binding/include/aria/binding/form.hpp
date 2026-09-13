@@ -180,12 +180,17 @@ public:
 
     template<typename Field>
     void track(Field& f) {
-        track_(FieldHooks{
+        auto pending = [&f] {
+            if constexpr (requires { f.validator.state(); }) return f.validator.state().get().pending;
+            else return false;
+        };
+        fields_.push_back(FieldHooks{
             [&f] { return f.is_valid.get(); },
             [&f] { return f.dirty.get(); },
-            [] { return false; /* sync FormField has no pending */ },
+            std::move(pending),
             [&f] { return f.error_full.get(); },
         });
+        ++revision_;
         bag_ += f.is_valid.on_changed   ([this](bool) { recompute_(); });
         bag_ += f.dirty.on_changed      ([this](bool) { recompute_(); });
         bag_ += f.error_full.on_changed ([this](const std::optional<::aria::Error>&) {
@@ -193,6 +198,10 @@ public:
         });
         using ValueT = std::remove_reference_t<decltype(f.value.get())>;
         bag_ += f.value.on_changed([this](const ValueT&) { recompute_(); });
+        if constexpr (requires { f.validator.state(); }) {
+            bag_ += f.validator.state().on_changed([this](const ValidationState&) { recompute_(); });
+        }
+        recompute_();
     }
 
     /// Add a cross-field rule. `rule_id` defaults to
@@ -210,18 +219,22 @@ public:
             std::move(message),
             std::move(rule_id_value),
         });
+        ++revision_;
         recompute_();
     }
 
     void clear() {
+        ++revision_;
         fields_.clear();
         rules_.clear();
         bag_.clear();
-        is_valid          = true;
-        is_dirty          = false;
-        is_pending        = false;
-        first_error       = "";
-        first_error_full  = std::nullopt;
+        ::aria::reactive::batch([&] {
+            is_valid          = true;
+            is_dirty          = false;
+            is_pending        = false;
+            first_error       = "";
+            first_error_full  = std::nullopt;
+        });
     }
 
 private:
@@ -237,19 +250,18 @@ private:
         std::string           rule_id;
     };
 
-    void track_(FieldHooks h) {
-        fields_.push_back(std::move(h));
-        recompute_();
-    }
-
     void recompute_() {
+        const auto revision = revision_;
+        const auto rules = rules_; // A rule may clear or replace its own callable.
         bool all_valid   = true;
         bool any_dirty   = false;
         bool any_pending = false;
         std::optional<::aria::Error> headline;
 
-        for (auto& r : rules_) {
-            if (!r.predicate()) {
+        for (const auto& r : rules) {
+            const bool passed = r.predicate();
+            if (revision != revision_) return;
+            if (!passed) {
                 all_valid = false;
                 if (!headline) {
                     auto e = ::aria::Error::validation(
@@ -272,16 +284,19 @@ private:
             }
         }
 
-        is_valid          = all_valid;
-        is_dirty          = any_dirty;
-        is_pending        = any_pending;
-        first_error_full  = headline;
-        first_error       = headline ? headline->message : std::string{};
+        ::aria::reactive::batch([&] {
+            is_valid          = all_valid;
+            is_dirty          = any_dirty;
+            is_pending        = any_pending;
+            first_error_full  = headline;
+            first_error       = headline ? headline->message : std::string{};
+        });
     }
 
     std::vector<FieldHooks> fields_;
     std::vector<Rule>       rules_;
     SubscriptionBag         bag_;
+    std::size_t             revision_ = 0;
 };
 
 }  // namespace aria::binding

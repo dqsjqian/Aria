@@ -2,11 +2,11 @@
 //  host.cpp — the "host side" of the cross-dylib ABI smoke (ROADMAP P2-A).
 // ----------------------------------------------------------------------------
 //  The host instantiates the real `aria::Property<T>` objects (so the
-//  reactive Graph and all template symbols live here), then hands their
+//  property template is instantiated here), then hands their
 //  stable `aria::IProperty` interface to a plugin compiled into a separate
 //  shared library. After the plugin has driven the properties purely
 //  through that interface, the host verifies the mutations actually landed
-//  in its own reactive graph.
+//  in the shared reactive graph supplied by aria_abi.
 //
 //  Exit code 0 = PASS. Any other code identifies which side failed (the
 //  plugin's 1..11 codes, or the host's 100..102 post-conditions).

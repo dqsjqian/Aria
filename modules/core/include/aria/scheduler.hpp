@@ -149,7 +149,7 @@ public:
 // ────────────────────────────────────────────────────────────────────────
 // IScheduler
 // ────────────────────────────────────────────────────────────────────────
-class ARIA_CORE_API IScheduler {
+class ARIA_ABI_API IScheduler {
 public:
     virtual ~IScheduler() = default;
 

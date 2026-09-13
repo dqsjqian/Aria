@@ -19,7 +19,7 @@ int main() {
 
     banner("IProperty: type-erased vs. template-direct");
 
-aria::Property<int> p{0};
+    aria::Property<int> p{0};
 
     // ---------------------------------------------------------------
     //  GET path
@@ -61,7 +61,7 @@ aria::Property<int> p{0};
 
     {
         auto ns = measure_ns(N, [&](int i) {
-            p.set(i);   // equality-gated; alternates between two values
+            p.set(i);   // Each iteration supplies a different value.
         });
         row("Property<int>::set(i)", ns, N);
     }
@@ -97,31 +97,9 @@ aria::Property<int> p{0};
     //  Notes
     // ---------------------------------------------------------------
     //
-    // Measured on Apple Silicon (M-series), -O3 -DNDEBUG.
-    // bench_iproperty single-threaded run:
-    //
-    //   peek                  ~0.3 ns
-    //   get                   ~1.4 ns   (current_tracker() check)
-    //   get_any + any_cast    ~6.0 ns   (vcall + small-buffer any
-    //                                     copy + any_cast template;
-    //                                     the int payload fits in
-    //                                     std::any's SBO so there is
-    //                                     no heap traffic)
-    //   set                   ~180 ns   (graph notify_changed pulse,
-    //                                     dominated by reactive book-
-    //                                     keeping; the equality gate
-    //                                     keeps it cheap when alterna-
-    //                                     ting values).
-    //   set_any               ~187 ns   (~6 ns over set; the std::any
-    //                                     copy is negligible against
-    //                                     graph propagation cost).
-    //
-    // Takeaway: type-erasure adds ~5-7 ns over the template path on
-    // get / set. For larger payload types the std::any copy will
-    // grow (heap allocation kicks in past the SBO threshold), but
-    // that is still the right tool for plug-in / RPC / live-binding
-    // boundaries. For hot paths inside the host module, prefer
-    // template-direct.
+    // Report the current run instead of embedding machine-specific timings.
+    // Larger payloads may allocate inside std::any; compare the payload types
+    // and build settings used by the consumer before choosing an access path.
 
     return 0;
 }

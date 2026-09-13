@@ -23,7 +23,12 @@
 //       binding::ViewModelScope scope_;
 //   };
 //
-// When MyVm is destroyed: the scope's destroy-hook calls
+// Declare the scope after the VM members used by its work (members are
+// destroyed in reverse order). Its destructor cancels and joins before those
+// members are torn down. If work touches state destroyed by a custom VM
+// destructor body, call cancel_and_join() at the start of that body.
+//
+// When MyVm is destroyed: the scope calls
 // `cancel_and_join()` (bounded by `kJoinTimeoutMs`, default 5 s). It
 // cancels the source synchronously, then blocks until every wrapper
 // coroutine has decremented the inflight counter to zero. If any
@@ -52,53 +57,66 @@ public:
     /// process shutdown.
     static constexpr std::chrono::milliseconds kJoinTimeoutMs{5000};
 
-    ViewModelScope() : scope_(std::make_shared<async::CoroutineScope>()) {}
+    ViewModelScope() : state_(std::make_shared<State>()) {}
+
+    ~ViewModelScope() { shutdown_(*state_); }
+    ViewModelScope(const ViewModelScope&) = delete;
+    ViewModelScope& operator=(const ViewModelScope&) = delete;
+    ViewModelScope(ViewModelScope&&) = delete;
+    ViewModelScope& operator=(ViewModelScope&&) = delete;
 
     /// Tie this scope's lifetime to the ViewModel's destructor.
     /// Must be called from the VM's ctor body.
     ///
-    /// We capture the scope by *shared* ownership in the destroy-hook so
-    /// the cancel-and-join can still happen even when ViewModelScope
-    /// itself (a derived-class member) has already been destroyed
-    /// before the base ViewModel destructor runs.
+    /// The hook also covers scopes owned outside the ViewModel. A scope
+    /// member already cancels in its own destructor; attaching it remains
+    /// harmless because cancellation and joining are idempotent.
     void attach(ViewModel& vm) {
-        std::shared_ptr<async::CoroutineScope> keep = scope_;
+        auto keep = state_;
         vm.add_destroy_hook([keep]() noexcept {
             // Structured-concurrency boundary: cancel + wait. If any
             // coroutine is stuck, CoroutineScope reports the leak
             // through the async error sink (see scope.hpp).
-            keep->cancel_and_join(kJoinTimeoutMs);
+            shutdown_(*keep);
         });
     }
 
     [[nodiscard]] async::CancellationToken token() const noexcept {
-        return scope_->token();
+        return state_->scope.token();
     }
     [[nodiscard]] bool is_cancelled() const noexcept {
-        return scope_->is_cancelled();
+        return state_->scope.is_cancelled();
     }
     [[nodiscard]] std::size_t inflight_count() const noexcept {
-        return scope_->inflight_count();
+        return state_->scope.inflight_count();
     }
 
     /// Request cancellation only (non-blocking).
-    void cancel() noexcept { scope_->cancel(); }
+    void cancel() noexcept { state_->scope.cancel(); }
 
     /// Cancel + synchronously wait for all in-flight coroutines to
     /// exit, with the given timeout. Returns true on full drain.
     bool cancel_and_join(std::chrono::milliseconds timeout = kJoinTimeoutMs) noexcept {
-        return scope_->cancel_and_join(timeout);
+        return state_->scope.cancel_and_join(timeout);
     }
 
     template<typename Fn>
-    void launch(Fn factory) { scope_->launch(std::move(factory)); }
+    void launch(Fn factory) { state_->scope.launch(std::move(factory)); }
 
     void launch_simple(async::Task<void> task) {
-        scope_->launch_simple(std::move(task));
+        state_->scope.launch_simple(std::move(task));
     }
 
 private:
-    std::shared_ptr<async::CoroutineScope> scope_;
+    struct State {
+        async::CoroutineScope scope;
+        bool teardown_started = false;
+    };
+    static void shutdown_(State& state) noexcept {
+        if (std::exchange(state.teardown_started, true)) return;
+        state.scope.cancel_and_join(kJoinTimeoutMs);
+    }
+    std::shared_ptr<State> state_;
 };
 
 }  // namespace aria::binding

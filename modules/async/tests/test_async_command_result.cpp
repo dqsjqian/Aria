@@ -266,3 +266,14 @@ TEST_CASE("AsyncCommandResult::value_or returns fallback on non-completed") {
     auto ok = AsyncCommandResult<int>::completed_with(7);
     CHECK(ok.value_or(99) == 7);
 }
+
+TEST_CASE("AsyncCommandResult: default construction has no completed outcome") {
+    AsyncCommandResult<int> value_result;
+    CHECK(value_result.dropped());
+    CHECK_FALSE(static_cast<bool>(value_result));
+    CHECK_FALSE(value_result.value.has_value());
+    CHECK(value_result.value_or(42) == 42);
+    AsyncCommandResult<void> void_result;
+    CHECK(void_result.dropped());
+    CHECK_FALSE(static_cast<bool>(void_result));
+}

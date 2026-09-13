@@ -43,6 +43,9 @@ $OrigConsoleEncoding = [Console]::OutputEncoding
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
 
 try {
+    # This entry point selects Visual Studio, regardless of GNU compiler
+    # overrides inherited from a preceding MinGW invocation.
+    Remove-Item Env:CC, Env:CXX -ErrorAction SilentlyContinue
     # Remove MSYS2/GCC environment overrides that confuse MSVC
     foreach ($e in @("INCLUDE", "LIB", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH")) {
         $val = [Environment]::GetEnvironmentVariable($e)
@@ -117,16 +120,18 @@ try {
     $vsYear = $null
     if (Test-Path $vsWhere) {
         # Prefer a VS that actually has the VC tools component.
-        $vsPath = & $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+        $vsQuery = @("-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64")
+        $vsPath = & $vsWhere @vsQuery -property installationPath 2>$null
         if (-not $vsPath) {
             # No VC-tools VS found; fall back to any VS install.
-            $vsPath = & $vsWhere -latest -products * -property installationPath 2>$null
+            $vsQuery = @("-latest", "-products", "*")
+            $vsPath = & $vsWhere @vsQuery -property installationPath 2>$null
         }
         if ($vsPath) {
-            $vsVer = & $vsWhere -latest -products * -property installationVersion 2>$null
+            $vsVer = & $vsWhere @vsQuery -property installationVersion 2>$null
             if ($vsVer -match '^(\d+)') { $vsMajor = $matches[1] }
-            $vsName = & $vsWhere -latest -products * -property displayName 2>$null
-            if ($vsName -match '(\d{4})\s*$') { $vsYear = $matches[1] }
+            $vsName = & $vsWhere @vsQuery -property displayName 2>$null
+            if ($vsName -match '\b(20\d{2})\b') { $vsYear = $matches[1] }
         }
     }
 
@@ -249,7 +254,7 @@ switch ($Mode) {
         $DoCTest = $true
     }
     "asan" {
-        # MSVC's ASan requires the Debug configuration; UBSan/TSan are
+        # This ASan mode uses the Debug configuration; UBSan/TSan are
         # not provided on MSVC. The cmake side reads ARIA_ENABLE_ASAN
         # and emits /fsanitize=address.
         $CMakeOpts = @("-DARIA_BUILD_TESTS=ON", "-DARIA_ENABLE_ASAN=ON")
@@ -270,6 +275,9 @@ switch ($Mode) {
     }
 }
 
+# This Visual Studio tree is shared by modes, so Release must undo ASan.
+$CMakeOpts = @("-DARIA_ENABLE_ASAN=OFF", "-DARIA_ENABLE_UBSAN=OFF", "-DARIA_ENABLE_TSAN=OFF") + $CMakeOpts
+
 # -- CMake ---------------------------------------------------------------------
 $cmake = Get-Command cmake.exe -ErrorAction SilentlyContinue
 if (-not $cmake) { $cmake = Get-Command cmake -ErrorAction SilentlyContinue }
@@ -277,23 +285,32 @@ if (-not $cmake) { Write-Error "cmake not found. https://cmake.org/download/"; e
 $cmakePath = $cmake.Source
 
 # -- Qt6 (auto-detect, framework adapter + tests need it) ---------------------
+function Test-MSVCQt6Kit([string]$Prefix) {
+    if (-not (Test-Path (Join-Path $Prefix "lib\cmake\Qt6\Qt6Config.cmake"))) { return $false }
+    $msvc = (Test-Path (Join-Path $Prefix "lib\Qt6Core.lib")) -or
+            (Test-Path (Join-Path $Prefix "lib\Qt6Cored.lib"))
+    $gnu = (Test-Path (Join-Path $Prefix "lib\libQt6Core.dll.a")) -or
+           (Test-Path (Join-Path $Prefix "lib\libQt6Core.a"))
+    return $msvc -and -not $gnu
+}
+
 function Find-Qt6 {
     if ($env:ARIA_NO_QT6 -eq "1") { return $null }
     if ($env:QT_DIR) {
-        if (Test-Path (Join-Path $env:QT_DIR "lib\cmake\Qt6\Qt6Config.cmake")) {
-            return $env:QT_DIR
-        }
+        if (Test-MSVCQt6Kit $env:QT_DIR) { return $env:QT_DIR }
+        throw "QT_DIR must point to an MSVC Qt6 kit with Qt6Core .lib libraries: $env:QT_DIR"
     }
-    $roots = @("D:\worksoft\Qt", "C:\Qt", "D:\Qt")
-    $kitOrder = @("msvc2022_64", "msvc2019_64", "mingw_64")
+    $roots = @("D:\worksoft\Qt", "C:\Qt", "D:\Qt", "$env:USERPROFILE\Qt")
+    $kitOrder = @("msvc2022_64", "msvc2019_64")
     foreach ($root in $roots) {
         if (-not (Test-Path $root)) { continue }
         $versions = Get-ChildItem $root -Directory -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -match '^6\.' } | Sort-Object Name -Descending
+                    Where-Object { $_.Name -match '^6\.' } |
+                    Sort-Object { try { [version]$_.Name } catch { [version]'0.0' } } -Descending
         foreach ($v in $versions) {
             foreach ($kit in $kitOrder) {
                 $p = Join-Path $v.FullName $kit
-                if (Test-Path (Join-Path $p "lib\cmake\Qt6\Qt6Config.cmake")) {
+                if (Test-MSVCQt6Kit $p) {
                     return $p
                 }
             }
@@ -302,6 +319,7 @@ function Find-Qt6 {
     return $null
 }
 
+$CMakeOpts += @("-UQt6*_DIR")
 $Qt6Dir = Find-Qt6
 if ($Qt6Dir) {
     Write-Host "Qt6 detected at $Qt6Dir -- adapter enabled"
@@ -318,6 +336,8 @@ if ($Qt6Dir) {
         "-DCMAKE_PREFIX_PATH=$($Qt6Dir -replace '\\', '/')",
         "-DQt6_DIR=$Qt6ConfigDir"
     )
+} else {
+    $CMakeOpts += @("-DARIA_BUILD_QT6=OFF")
 }
 
 # -- Configure ----------------------------------------------------------------

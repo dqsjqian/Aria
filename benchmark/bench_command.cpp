@@ -171,9 +171,12 @@ int main() {
         (void)sink.value();
         row("Computed recompute, STABLE deps (8/8 same)", ns_stable, N);
 
+        // An independent trigger keeps the stable node out of the churn
+        // measurement's dirty-propagation path.
+        Property<int> churn_tick(0);
         int window = 0;
         Computed<long long> churn([&]{
-            (void)tick.get();
+            (void)churn_tick.get();
             long long s = 0;
             const int start = window;
             for (int k = 0; k < kDepsPerRun; ++k) {
@@ -185,7 +188,7 @@ int main() {
 
         double ns_churn = measure_ns(N, [&](int i) {
             window = (window + 1) % kPool;
-            tick.set(i);
+            churn_tick.set(i);
             sink.feed(churn.get());
         });
         (void)sink.value();

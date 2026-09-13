@@ -4,6 +4,7 @@
 
 #include "aria/abi/export.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -44,6 +45,17 @@ struct ARIA_HTTP_API HttpAdapterConfig {
     /// capped at worker_threads - 1. 0 removes only this additional limit.
     int max_sse_clients{64};
 
+    /// Maximum queued SSE bytes per client (must be positive), excluding the
+    /// single frame currently being written to its socket. Overflow closes
+    /// that slow client; EventSource reconnects and receives a fresh snapshot.
+    /// The complete initial snapshot must fit, otherwise /stream returns 503.
+    std::size_t max_pending_sse_bytes{4 * 1024 * 1024};
+
+    /// Maximum queued state/click notification batches (must be positive).
+    /// A slow callback does not permit unbounded queued input: further
+    /// requests receive 503 before changing shadow state or emitting SSE.
+    std::size_t max_pending_notifications{1024};
+
     /// Enable CORS headers (Access-Control-Allow-Origin: *).
     /// Default false. Enable only for development; for production,
     /// set up a reverse proxy with proper CORS policy.
@@ -70,7 +82,8 @@ struct ARIA_HTTP_API HttpAdapterConfig {
     //
     // For production, use a real CA-issued cert (Let's Encrypt etc.).
 
-    /// Server certificate (PEM). Empty = no TLS (plain HTTP).
+    /// Server certificate (PEM). Set both cert/key or neither; TLS
+    /// configuration is rejected when the adapter was built without TLS.
     std::string tls_cert_file{};
 
     /// Server private key (PEM). Empty = no TLS.
