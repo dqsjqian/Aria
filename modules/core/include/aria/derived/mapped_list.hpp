@@ -126,7 +126,7 @@ public:
                 auto sig = weak_signal.lock();
                 auto src = weak_source.lock();
                 if (!st || !sig || !src) return;
-                dispatch_source_change_(*st, *sig, *src, ch);
+                dispatch_source_change_(*st, *sig, ch);
             });
     }
 
@@ -168,20 +168,18 @@ private:
 
     static void dispatch_source_change_(SharedState& st,
                                         Signal& sig,
-                                        SourceList& src,
                                         const ListChange<Source>& ch) {
         switch (ch.kind) {
-        case ListChangeKind::Insert:      handle_insert_(st, sig, src, ch);      return;
+        case ListChangeKind::Insert:      handle_insert_(st, sig, ch);           return;
         case ListChangeKind::Remove:      handle_remove_(st, sig, ch);           return;
-        case ListChangeKind::Replace:     handle_replace_(st, sig, src, ch);     return;
-        case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, src, ch);return;
+        case ListChangeKind::Replace:     handle_replace_(st, sig, ch);          return;
+        case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, ch);     return;
         case ListChangeKind::Move:        handle_move_(st, sig, ch);             return;
         case ListChangeKind::Reset:       handle_reset_(st, sig, ch);           return;
         }
     }
 
     static void handle_insert_(SharedState& st, Signal& sig,
-                               SourceList& src,
                                const ListChange<Source>& ch) {
         std::shared_ptr<Target> t;
         {
@@ -211,7 +209,6 @@ private:
     }
 
     static void handle_replace_(SharedState& st, Signal& sig,
-                                SourceList& src,
                                 const ListChange<Source>& ch) {
         std::shared_ptr<Target> t;
         {
@@ -229,7 +226,6 @@ private:
     }
 
     static void handle_item_changed_(SharedState& st, Signal& sig,
-                                     SourceList& src,
                                      const ListChange<Source>& ch) {
         std::shared_ptr<Target> t;
         {

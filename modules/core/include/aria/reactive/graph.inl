@@ -353,6 +353,8 @@ inline bool Graph::pull(Node& n) {
     // entered frame marks the active DFS path, so MaybeDirty cycles are
     // diagnosed before the worklist can grow without bound.
     struct Frame {
+        explicit Frame(Node* target) noexcept : node(target) {}
+
         detail::NodeHandle node;
         bool entered = false;
     };
@@ -365,7 +367,7 @@ inline bool Graph::pull(Node& n) {
             }
         }
     } visit_guard{work};
-    work.push_back({detail::NodeHandle{&n}, false});
+    work.emplace_back(&n);
     while (!work.empty()) {
         if (!work.back().node) { work.pop_back(); continue; }
         auto& frame = work.back();
@@ -392,7 +394,7 @@ inline bool Graph::pull(Node& n) {
             }
         });
         if (unresolved) {
-            work.push_back({detail::NodeHandle{unresolved}, false});
+            work.emplace_back(unresolved);
             continue;
         }
 

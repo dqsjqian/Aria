@@ -84,7 +84,7 @@
 //
 // The two `run_to_result_` bodies are kept separate on purpose: the
 // `co_return co_await` vs `co_await` syntactic split is intrinsic to
-// C++20 coroutines for `T` vs `void`, and forcing them into a single
+// C++ coroutines for `T` vs `void`, and forcing them into a single
 // `if constexpr` branch hurts readability more than the handful of
 // duplicated lines ever could. Both are noexcept-by-design — every
 // failure path folds into an `AsyncCommandResult<R>` outcome instead

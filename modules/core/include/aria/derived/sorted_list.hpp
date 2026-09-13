@@ -127,7 +127,7 @@ public:
                 auto sig = weak_signal.lock();
                 auto src = weak_source.lock();
                 if (!st || !sig || !src) return;
-                dispatch_source_change_(*st, *sig, *src, ch);
+                dispatch_source_change_(*st, *sig, ch);
             });
     }
 
@@ -231,13 +231,12 @@ private:
     // ── Translation: one source event -> zero or more derived events ──
     static void dispatch_source_change_(SharedState& st,
                                         Signal& sig,
-                                        Source& src,
                                         const ListChange<T>& ch) {
         switch (ch.kind) {
-        case ListChangeKind::Insert:      handle_insert_(st, sig, src, ch);      return;
+        case ListChangeKind::Insert:      handle_insert_(st, sig, ch);           return;
         case ListChangeKind::Remove:      handle_remove_(st, sig, ch);           return;
-        case ListChangeKind::Replace:     handle_replace_(st, sig, src, ch);     return;
-        case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, src, ch); return;
+        case ListChangeKind::Replace:     handle_replace_(st, sig, ch);          return;
+        case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, ch);     return;
         case ListChangeKind::Move:        handle_move_(st, sig, ch);             return;
         case ListChangeKind::Reset:       handle_reset_(st, sig, ch);           return;
         }
@@ -305,7 +304,6 @@ private:
     }
 
     static void handle_insert_(SharedState& st, Signal& sig,
-                               Source& src,
                                const ListChange<T>& ch) {
         std::unique_lock lk(st.m);
         const std::size_t src_idx = ch.index;
@@ -383,18 +381,16 @@ private:
     }
 
     static void handle_replace_(SharedState& st, Signal& sig,
-                                Source& src,
                                 const ListChange<T>& ch) {
-        handle_slot_changed_(st, sig, src, ch,
+        handle_slot_changed_(st, sig, ch,
                              /*new_ptr_from_src=*/true,
                              /*same_slot_kind=*/ListChangeKind::Replace,
                              /*cross_slot_use_move=*/false);
     }
 
     static void handle_item_changed_(SharedState& st, Signal& sig,
-                                     Source& src,
                                      const ListChange<T>& ch) {
-        handle_slot_changed_(st, sig, src, ch,
+        handle_slot_changed_(st, sig, ch,
                              /*new_ptr_from_src=*/false,
                              /*same_slot_kind=*/ListChangeKind::ItemChanged,
                              /*cross_slot_use_move=*/true);
@@ -491,10 +487,9 @@ private:
     ///     keeps the same shared_ptr (pointed-to object mutated in
     ///     place).
     ///   * When the item moves to a different derived slot:
-    ///       Replace    → Remove(d_old) + Insert(d_new)   (identity broke)
+    ///       Replace    → Move(d_old, d_new) + Replace(d_new, item)
     ///       ItemChanged→ Move(d_old, d_new, item) + ItemChanged(d_new)
     static void handle_slot_changed_(SharedState& st, Signal& sig,
-                                     Source& src,
                                      const ListChange<T>& ch,
                                      bool new_ptr_from_src,
                                      ListChangeKind same_slot_kind,

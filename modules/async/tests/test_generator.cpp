@@ -72,16 +72,34 @@ TEST_CASE("Generator: lazy — values produced on demand") {
 
 namespace {
 struct YieldMoveFailure {
+    std::atomic<bool>* fail = nullptr;
     YieldMoveFailure() = default;
+    explicit YieldMoveFailure(std::atomic<bool>& fail_assignment) : fail(&fail_assignment) {}
     YieldMoveFailure(YieldMoveFailure&&) = default;
-    YieldMoveFailure& operator=(YieldMoveFailure&&) {
-        throw std::runtime_error("yield move assignment");
+    YieldMoveFailure& operator=(YieldMoveFailure&& other) {
+        if (other.fail != nullptr && other.fail->load()) {
+            throw std::runtime_error("yield move assignment");
+        }
+        fail = other.fail;
+        return *this;
     }
 };
-Generator<YieldMoveFailure> yield_move_failure() { co_yield YieldMoveFailure{}; }
+// The test owns the flag until both generator instances have been destroyed.
+Generator<YieldMoveFailure> yield_move_failure(std::atomic<bool>& fail) {
+    co_yield YieldMoveFailure{fail};
+}
 }
 
 TEST_CASE("Generator: throwing yield storage propagates to its consumer") {
-    auto generator = yield_move_failure();
+    std::atomic<bool> fail{true};
+    auto generator = yield_move_failure(fail);
     CHECK_THROWS_WITH_AS(generator.begin(), "yield move assignment", std::runtime_error);
+
+    fail.store(false);
+    auto succeeding_generator = yield_move_failure(fail);
+    auto iterator = succeeding_generator.begin();
+    REQUIRE(iterator != std::default_sentinel);
+    CHECK(iterator->fail == &fail);
+    ++iterator;
+    CHECK(iterator == std::default_sentinel);
 }

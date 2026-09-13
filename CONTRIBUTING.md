@@ -23,6 +23,9 @@ build, test, and submit changes.
 
 ## Build & test
 
+C++20 is the default and minimum. Opt into supported C++23 mode with
+`-DCMAKE_CXX_STANDARD=23`; both modes share the same public API.
+
 ```bash
 cmake -B build/flavors/release -DCMAKE_BUILD_TYPE=Release
 cmake --build build/flavors/release -j

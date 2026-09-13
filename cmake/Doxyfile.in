@@ -11,7 +11,7 @@
 
 PROJECT_NAME           = "Aria"
 PROJECT_NUMBER         = "@PROJECT_VERSION@"
-PROJECT_BRIEF          = "Modern C++20 MVVM framework — reactive, coroutine-first, ABI-layered"
+PROJECT_BRIEF          = "C++23 MVVM framework (C++20 minimum) — reactive, coroutine-first, ABI-layered"
 OUTPUT_DIRECTORY       = @ARIA_DOCS_OUTPUT_DIR@
 
 # ── Inputs ───────────────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ MULTILINE_CPP_IS_BRIEF = NO
 MARKDOWN_SUPPORT       = YES
 TOC_INCLUDE_HEADINGS   = 3
 
-# ── C++20 / preprocessor ───────────────────────────────────────────────────
+# ── C++ / preprocessor ───────────────────────────────────────────────────
 # Neutralise the export-macro decorations so the parser sees clean
 # declarations regardless of the build configuration.
 ENABLE_PREPROCESSING   = YES

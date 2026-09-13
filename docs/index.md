@@ -1,6 +1,6 @@
 # Aria Documentation
 
-A C++20 MVVM framework — one core, every platform.
+An MVVM framework supporting C++23, with C++20 as the minimum — one core, every platform.
 
 ---
 

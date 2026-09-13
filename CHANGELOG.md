@@ -130,6 +130,9 @@ implementation status.
 
 ### Documentation and verification
 
+- Project descriptions explicitly state C++23 support and retain C++20 as
+  the default and minimum; language-mode support is distinct from a baseline upgrade.
+
 - Corrected the HTTP guide to use actual routes, request fields, adapter
   ownership, and the shipped `AriaClient` ESM SDK, with a compiled example.
 - Added framework-owned HTTP/SSE and Node SDK regressions, deterministic

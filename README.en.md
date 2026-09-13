@@ -2,11 +2,11 @@
 
 # ⚡ Aria
 
-**Modern C++20 MVVM framework** · cross-platform · layered · coroutine-first
+**Modern MVVM framework for C++23** (C++20 minimum) · cross-platform · layered · coroutine-first
 
 One shared core: Windows / macOS / Linux / iOS / Android / Web
 
-[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
+[![C++23 supported](https://img.shields.io/badge/C%2B%2B-23%20supported-blue.svg)](https://en.cppreference.com/w/cpp/23)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml/badge.svg)](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20iOS%20%7C%20Android%20%7C%20Web-lightgrey.svg)](#)
@@ -192,7 +192,7 @@ Continue with the [binding guide](docs/guide/binding.md), the [per-platform adap
 ## 🎯 Where Aria fits
 
 Aria does one thing: **it extracts the reactive engine and binding layer out of the UI
-framework, as a plain C++20 library that is not tied to any UI toolkit.**
+framework, as a plain C++ library supporting C++23, independent of any UI toolkit.**
 
 A ViewModel is an ordinary C++ class — no framework base class, no macros, no code
 generator. UI layers plug in through `IViewAdapter`; five adapters ship in-tree today
@@ -202,7 +202,7 @@ Know the costs before you pick it:
 
 | Trade-off | What it means |
 |---|---|
-| **C++20 required** | Full coroutine and concepts support (GCC 12+ / Clang 15+ / MSVC v143). C++17 projects cannot use it. |
+| **C++20 minimum; C++23 supported** | Full coroutine and concepts support (GCC 12+ / Clang 15+ / MSVC v143). C++17 projects cannot use it. |
 | **No widgets** | Aria draws nothing. Widgets, layout and animation stay with your UI toolkit; Aria only owns the data flow between state and view. |
 | **Template layer is source-compatible only** | `aria-abi` / `aria-runtime` / `aria-binding` are ABI-stable within a major version; `Property<T>` and friends need a recompile across versions. |
 | **Adapters are on you** | Only the five adapters above work out of the box. A new toolkit means implementing an `IViewAdapter` (see the [adapter guides](docs/guide/adapters/)). |
@@ -219,7 +219,7 @@ does not try to replace them.
 
 - 📦 **Template-based reactive core** — `Property<T>` / `Computed<T>` / `Effect` / `Command<>` / `ObservableList<T>` / `Validator<T>` share one reactive dependency-graph engine. `Computed` auto-tracks deps; `reactive::batch` / `reactive::untracked` for fine control.
 - 🔌 **Shared foundation and ABI layer** — `aria::core` automatically links `aria::abi` for shared graph, diagnostics and signal storage. Binary compatibility requires matching compiler, standard library, build options and major version. Rebuild template code and its containing types after updates.
-- ⚡ **C++20 coroutines** — `Task<T>`, executors, `co_await schedule_on(pool)`. Async code reads like sync code.
+- ⚡ **C++ coroutines** — `Task<T>`, executors, `co_await schedule_on(pool)`. Async code reads like sync code.
 - 🖥 **Adapter abstraction** (`IViewAdapter`) — Qt6 / AppKit / UIKit / JNI / HTTP. Any UI toolkit, same business logic.
 
 ## 🏗 Architecture (10 modules)
@@ -272,7 +272,7 @@ does not try to replace them.
 |--------|------|-----------|-------|
 | `aria-abi` | `SHARED` by default | Threads | Compiled foundation: signals, shared reactive graph, diagnostics storage, scheduler base, and version metadata. Static builds are supported. |
 | `aria-core` | header-only | abi | All the templates: `Property`, `Computed`, `Command`, `ObservableList`, `Validator`. Source-compatible only (not ABI-stable). |
-| `aria-async` | header-only | core | C++20 `Task<T>`, executors. Source-compatible only. |
+| `aria-async` | header-only | core | Coroutine `Task<T>`, executors. Source-compatible only. |
 | `aria-runtime` | `SHARED` | core, abi | EventBus / Container / Dispatcher / Logger — singletons live in **one** dylib. **ABI-stable** (non-template exports). |
 | `aria-binding` | `SHARED` | core, runtime | `BindingEngine`, `IViewAdapter`. **ABI-stable** (non-template exports). |
 | Adapters | `SHARED`/`STATIC` | binding | Qt6 / AppKit / UIKit / JNI / HTTP (each opt-in). WASM is conditional roadmap work. |
@@ -373,7 +373,7 @@ pacman -S --needed mingw-w64-ucrt-x86_64-toolchain `
 scripts\build.ps1 tests
 ```
 
-Rationale for shipping both: aria is coroutine-heavy C++20 code that
+Rationale for shipping both: Aria uses C++ coroutines extensively that
 libstdc++, libc++, **and** the MSVC STL all handle cleanly. Pinning a
 single Windows toolchain artificially excluded a large chunk of users
 in the .NET / Visual Studio ecosystem — we now validate against MSVC
@@ -465,7 +465,7 @@ lives the subscription lives, and when it goes the subscription is torn down. In
 this `Subscription` is usually a member of the View, so destroying the View detaches the
 binding and no callback ever reaches a destroyed widget.
 
-## ⚡ Async (C++20 coroutines)
+## ⚡ Async (C++ coroutines)
 
 ```cpp
 #include "aria/async/task.hpp"
@@ -579,7 +579,7 @@ build options. See [CI results](https://github.com/dqsjqian/Aria/actions/workflo
 
 Measured on 2026-09-13: Apple M3 Pro / Apple Clang 21 / C++20 Release
 (`-O3 -DNDEBUG`). Each entry is the median of five paired runs' mean operation
-times, comparing original revision `eeb613f` with this 2.0 refactor.
+times, comparing original revision `eeb613f` with 2.0 snapshot `c33850d`.
 
 | Operation | Original | Current |
 |---|---:|---:|

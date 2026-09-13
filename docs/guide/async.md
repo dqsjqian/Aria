@@ -1,6 +1,6 @@
 # Async & Coroutines
 
-Aria's async layer provides C++20 coroutine-based primitives for asynchronous work, built on top of the reactive graph. The key types:
+Aria's async layer supports C++23 with a C++20 minimum and provides coroutine-based primitives for asynchronous work, built on top of the reactive graph. The key types:
 
 - **`Task<T>`** — lazy, single-shot coroutine awaitable
 - **`AsyncCommand<R, Args...>`** — three-state async action (executing / error / result)

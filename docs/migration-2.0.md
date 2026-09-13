@@ -20,7 +20,8 @@ make arbitrary compiler or standard-library combinations compatible. Static
 builds remain available; independently linked static copies in plugins do
 not form a shared graph.
 
-C++20 remains the minimum. Selecting C++23 is optional; see the
+C++23 is supported; C++20 remains the default and minimum. Select C++23
+with `-DCMAKE_CXX_STANDARD=23`; see the
 [evaluation](cpp23-evaluation.md). The unsupported WASM build option has
 been removed from the implemented platform surface.
 

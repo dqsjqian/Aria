@@ -117,7 +117,7 @@ public:
                 auto sig = weak_signal.lock();
                 auto src = weak_source.lock();
                 if (!st || !sig || !src) return;
-                handle_source_change_(*st, *sig, *src, ch);
+                handle_source_change_(*st, *sig, ch);
             });
     }
 
@@ -223,7 +223,7 @@ private:
     }
 
     static void handle_source_change_(SharedState& st, Signal& sig,
-                                      Source& src, const ListChange<T>& ch) {
+                                      const ListChange<T>& ch) {
         InputChange event{ch.kind, ch.index, ch.from_index, {}, {}};
         if (ch.kind == ListChangeKind::Insert ||
             ch.kind == ListChangeKind::Replace ||

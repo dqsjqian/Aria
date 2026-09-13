@@ -15,7 +15,7 @@
 # `add_subdirectory()` use; the canonical entry is via the option.
 #
 # Platform requirements:
-#   - Android NDK r25+ (Clang compiler, C++20 support)
+#   - Android NDK r26+ (C++20 minimum; C++23 mode supported by recent NDKs)
 #   - CMake 3.20+
 #   - Android API level 21+ (Android 5.0 Lollipop)
 #

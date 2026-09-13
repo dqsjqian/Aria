@@ -86,7 +86,7 @@ that should *not* register a dependency edge.
 
 ### `aria-async`
 
-C++20 coroutine support. Built around a minimal `Task<T>` (lazy, single-shot,
+C++ coroutine support, available in both C++20 and C++23 modes. Built around a minimal `Task<T>` (lazy, single-shot,
 exception-safe), an `IExecutor` interface, and a `ThreadPoolExecutor`. The
 `schedule_on(executor)` awaitable lets you hop between threads with
 `co_await`.
@@ -343,12 +343,13 @@ of those two sides only:
 
 ## Future work
 
-- **Swift adapter** (`modules/adapters/swift`): bridge Aria to
-  Swift/SwiftUI via C++ Interop (5.9+). See ROADMAP P2-II.b.
-- **WASM adapter**: bridge Aria to emscripten + JS-side reactive
-  systems. See ROADMAP P2-II.c.
-- **Reflection-based auto-binding** when C++23 `std::meta` becomes widely
-  available.
+Expansion follows the concrete-consumer triggers in the [roadmap](ROADMAP.md):
+
+- Swift/SwiftUI integration when a consumer justifies validating C++ interop
+  or Objective-C++ bridging against Aria's templates, callbacks, and coroutines.
+- WebAssembly when a workload needs C++ computation inside the browser.
+- Reflection-based auto-binding when standard C++ reflection is available
+  across supported toolchains and a concrete consumer needs it.
 
 ## ABI Stability Policy
 

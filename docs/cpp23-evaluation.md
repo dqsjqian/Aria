@@ -2,9 +2,10 @@
 
 Assessment date: 2026-09-13.
 
-**Keep C++20 as the minimum requirement. Validate builds in C++23 mode,
-and adopt individual newer facilities only when they solve a demonstrated
-problem across the supported toolchains.** Changing the language flag alone
+**C++23 mode is supported; C++20 remains the default and minimum.**
+Full C++23 framework tests have passed locally on macOS and in Ubuntu Clang
+CI. Adopt individual newer facilities only when they solve a demonstrated
+problem across the supported toolchains. Changing the language flag alone
 does not repair ownership, cancellation, collection diffs, or reentrancy,
 and does not establish a performance improvement.
 

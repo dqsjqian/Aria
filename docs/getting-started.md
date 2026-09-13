@@ -2,10 +2,20 @@
 
 ## Build
 
+Aria supports C++23; C++20 remains the default and minimum. The default build:
+
 ```bash
 cmake -B build/flavors/release -DCMAKE_BUILD_TYPE=Release
 cmake --build build/flavors/release -j
 ctest --test-dir build/flavors/release --output-on-failure
+```
+
+To select C++23 explicitly, add `-DCMAKE_CXX_STANDARD=23` when configuring:
+
+```bash
+cmake -B build/flavors/cxx23 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=23
+cmake --build build/flavors/cxx23 -j
+ctest --test-dir build/flavors/cxx23 --no-tests=error --output-on-failure
 ```
 
 The repository includes doctest, so the normal test build uses the bundled
