@@ -224,7 +224,7 @@ public:
     ///
     /// `factory` is almost always a lambda whose body is itself a
     /// coroutine (`[caps](CancellationToken tok) -> Task<void> { ... }`).
-    /// A C++20 coroutine that lives inside a lambda body does NOT copy
+    /// A C++ coroutine that lives inside a lambda body does NOT copy
     /// the lambda's captures into its own coroutine frame — instead, it
     /// stores `this` and reads captures through it. So if we let
     /// `factory` itself live only as long as the `launch()` call, every

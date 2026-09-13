@@ -1,6 +1,6 @@
 #pragma once
 
-// Generator<T>: pull-based C++20 coroutine.
+// Generator<T>: pull-based C++ coroutine (C++20 and C++23).
 //
 //   Generator<int> fib(int n) {
 //       int a = 0, b = 1;

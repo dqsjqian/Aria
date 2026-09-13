@@ -144,7 +144,7 @@ public:
                 auto sig = weak_signal.lock();
                 auto src = weak_source.lock();
                 if (!st || !sig || !src) return;
-                dispatch_source_change_(*st, *sig, *src, ch);
+                dispatch_source_change_(*st, *sig, ch);
             });
     }
 
@@ -293,24 +293,22 @@ private:
     // ── Translation: one source event -> zero or one derived events ───
     static void dispatch_source_change_(SharedState& st,
                                         Signal& sig,
-                                        Source& src,
                                         const ListChange<T>& ch) {
         {
             std::unique_lock lock(st.m);
             detail::replay_list_change(st.source_items, ch);
         }
         switch (ch.kind) {
-        case ListChangeKind::Insert:      handle_insert_(st, sig, src, ch);      return;
+        case ListChangeKind::Insert:      handle_insert_(st, sig, ch);           return;
         case ListChangeKind::Remove:      handle_remove_(st, sig, ch);           return;
-        case ListChangeKind::Replace:     handle_replace_(st, sig, src, ch);     return;
-        case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, src, ch); return;
+        case ListChangeKind::Replace:     handle_replace_(st, sig, ch);          return;
+        case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, ch);     return;
         case ListChangeKind::Move:        handle_move_(st, sig, ch);             return;
         case ListChangeKind::Reset:       handle_reset_(st, sig, ch);                return;
         }
     }
 
     static void handle_insert_(SharedState& st, Signal& sig,
-                               Source& src,
                                const ListChange<T>& ch) {
         std::unique_lock lk(st.m);
         const std::size_t src_idx = ch.index;
@@ -386,7 +384,6 @@ private:
     /// shared_ptr from the source. Out→in still always emits Insert,
     /// in→out still always emits Remove.
     static void handle_membership_transition_(SharedState& st, Signal& sig,
-                                              Source& src,
                                               const ListChange<T>& ch,
                                               ListChangeKind kind_for_in_in,
                                               bool refresh_value) {
@@ -438,17 +435,15 @@ private:
     }
 
     static void handle_replace_(SharedState& st, Signal& sig,
-                                Source& src,
                                 const ListChange<T>& ch) {
-        handle_membership_transition_(st, sig, src, ch,
+        handle_membership_transition_(st, sig, ch,
                                       ListChangeKind::Replace,
                                       /*refresh_value=*/true);
     }
 
     static void handle_item_changed_(SharedState& st, Signal& sig,
-                                     Source& src,
                                      const ListChange<T>& ch) {
-        handle_membership_transition_(st, sig, src, ch,
+        handle_membership_transition_(st, sig, ch,
                                       ListChangeKind::ItemChanged,
                                       /*refresh_value=*/false);
     }

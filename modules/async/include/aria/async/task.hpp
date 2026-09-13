@@ -1,6 +1,6 @@
 #pragma once
 
-// C++20 coroutine Task<T>: a lazy, single-shot, awaitable that returns T (or void).
+// C++ coroutine Task<T> (C++20 and C++23): a lazy, single-shot, awaitable that returns T (or void).
 //
 //   Task<int> compute() { co_return 42; }
 //   Task<void> log()    { co_return; }

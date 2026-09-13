@@ -427,9 +427,9 @@ private:
         return {};
     }
     template<typename U = T>
-    static auto subscribe_(const std::shared_ptr<SharedState>& state, U* item)
+    static auto subscribe_(const std::shared_ptr<SharedState>& owner, U* item)
         -> decltype(item->on_changed(std::declval<std::function<void(const U&)>>()), Subscription{}) {
-        std::weak_ptr<SharedState> weak = state;
+        std::weak_ptr<SharedState> weak = owner;
         const T* raw = item;
         return item->on_changed([weak, raw](const U&) {
             const auto state = weak.lock();

@@ -1,6 +1,6 @@
 #pragma once
 
-// Helpers that hide the C++20 "no co_await in catch" rule and the
+// Helpers that hide the C++20/C++23 "no co_await in catch" rule and the
 // "must hop back to UI thread before mutating" rule.
 //
 //   on_ui(ui_exec, []() -> Task<R> { ... });          // run, end on UI thread

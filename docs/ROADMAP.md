@@ -6,7 +6,8 @@
 
 ## Direction
 
-Aria is a C++20 MVVM framework: reactive state, bindings, commands,
+Aria is an MVVM framework supporting C++23, with C++20 as the minimum:
+reactive state, bindings, commands,
 collections, validation, async primitives, adapter contracts, and diagnostics.
 Its purpose is to share ViewModel code across UI hosts.
 

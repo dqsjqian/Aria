@@ -2,11 +2,11 @@
 
 # ⚡ Aria
 
-**现代 C++20 MVVM 框架** · 跨平台 · 分层架构 · 协程优先
+**支持 C++23 的现代 MVVM 框架**（最低 C++20） · 跨平台 · 分层架构 · 协程优先
 
 一套共享核心，覆盖 Windows / macOS / Linux / iOS / Android / Web
 
-[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
+[![支持 C++23](https://img.shields.io/badge/C%2B%2B-23%20supported-blue.svg)](https://en.cppreference.com/w/cpp/23)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml/badge.svg)](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20iOS%20%7C%20Android%20%7C%20Web-lightgrey.svg)](#)
@@ -180,7 +180,7 @@ aria::reactive::batch([&] {
 
 ## 🎯 定位与取舍
 
-Aria 只做一件事：**把响应式引擎和绑定层从 UI 框架里拆出来，做成不绑定任何 UI 工具包的纯 C++20 库。**
+Aria 只做一件事：**把响应式引擎和绑定层从 UI 框架里拆出来，做成不绑定任何 UI 工具包、支持 C++23 的纯 C++ 库。**
 
 ViewModel 是普通 C++ 类，不继承框架基类、不需要宏、不需要代码生成器。UI 层通过 `IViewAdapter`
 接入，目前仓内已实现 Qt6 / AppKit / UIKit / JNI / HTTP 五个适配器；换 UI 工具包不需要动 ViewModel。
@@ -189,7 +189,7 @@ ViewModel 是普通 C++ 类，不继承框架基类、不需要宏、不需要�
 
 | 取舍 | 说明 |
 |---|---|
-| **要求 C++20** | 需要完整的协程与 concepts 支持（GCC 12+ / Clang 15+ / MSVC v143）。C++17 项目用不了。 |
+| **最低要求 C++20，支持 C++23** | 需要完整的协程与 concepts 支持（GCC 12+ / Clang 15+ / MSVC v143）。C++17 项目用不了。 |
 | **不提供控件** | Aria 不画任何界面。控件、布局、动画仍由你选的 UI 工具包负责，Aria 只负责状态到界面的单向/双向数据流。 |
 | **模板层仅源码兼容** | `aria-abi` / `aria-runtime` / `aria-binding` 在主版本号内 ABI 稳定；`Property<T>` 等模板跨版本需重编。 |
 | **适配器要自己补** | 只有上述五个适配器开箱可用。接新工具包意味着实现一个 `IViewAdapter`（参考 [适配器指南](docs/guide/adapters/)）。 |
@@ -203,7 +203,7 @@ ViewModel 是普通 C++ 类，不继承框架基类、不需要宏、不需要�
 
 - 📦 **模板化响应式核心** —— `Property<T>` / `Computed<T>` / `Effect` / `Command<>` / `ObservableList<T>` / `Validator<T>` 共享同一个响应式依赖图引擎。`Computed` 自动跟踪依赖，`reactive::batch` / `reactive::untracked` 精确控制通知范围。
 - 🔌 **共享基础库与 ABI 层** —— `aria::core` 自动链接 `aria::abi`，统一跨动态库的响应式图、诊断和信号存储。ABI 要求一致的编译器、标准库、构建选项和主版本；模板及其宿主类型在更新后需要重新编译。
-- ⚡ **C++20 协程** —— `Task<T>`、执行器、`co_await schedule_on(pool)`，异步代码写起来像同步代码。
+- ⚡ **C++ 协程** —— `Task<T>`、执行器、`co_await schedule_on(pool)`，异步代码写起来像同步代码。
 - 🖥 **适配器抽象** (`IViewAdapter`) —— Qt6 / AppKit / UIKit / JNI / HTTP，任何 UI 工具包都能用同一套业务逻辑驱动。
 
 ## 🏗 架构（10 个模块）
@@ -256,7 +256,7 @@ ViewModel 是普通 C++ 类，不继承框架基类、不需要宏、不需要�
 |------|------|------|------|
 | `aria-abi` | 默认 `SHARED` | Threads | 编译型基础库：信号/槽、共享响应式图、诊断存储、调度器基类与版本信息；支持静态构建。 |
 | `aria-core` | 仅头文件 | abi | 全部模板：`Property`、`Computed`、`Command`、`ObservableList`、`Validator`。仅源码兼容。 |
-| `aria-async` | 仅头文件 | core | C++20 `Task<T>`、执行器。仅源码兼容。 |
+| `aria-async` | 仅头文件 | core | 协程 `Task<T>`、执行器。仅源码兼容。 |
 | `aria-runtime` | `SHARED` | core, abi | EventBus / Container / Dispatcher / Logger —— 单例统一放在**一个**动态库中。**ABI 稳定**。 |
 | `aria-binding` | `SHARED` | core, runtime | `BindingEngine`、`IViewAdapter`。**ABI 稳定**。 |
 | 适配器 | `SHARED`/`STATIC` | binding | Qt6 / AppKit / UIKit / JNI / HTTP（按需启用）；WASM 按需评估。 |
@@ -422,7 +422,7 @@ increment();   // 不再打印任何东西
 在真实的 UI 里，这个 `Subscription` 通常存成 View 的成员，View 销毁时订阅随之解除，
 不会回调到一个已经析构的控件上。
 
-## ⚡ 异步编程（C++20 协程）
+## ⚡ 异步编程（C++ 协程）
 
 ```cpp
 #include "aria/async/task.hpp"
@@ -501,7 +501,7 @@ ctest --test-dir build/flavors/release --no-tests=error --output-on-failure
 ## 📊 性能基准
 
 2026-09-13，Apple M3 Pro / Apple Clang 21 / C++20 Release（`-O3 -DNDEBUG`）。
-下面是五次配对运行中，各次平均耗时的中位数；原版为 `eeb613f`，新版为本次 2.0 改造。
+下面是五次配对运行中，各次平均耗时的中位数；原版为 `eeb613f`，新版测量快照为 2.0 改造提交 `c33850d`。
 
 | 操作 | 原版 | 新版 |
 |---|---:|---:|

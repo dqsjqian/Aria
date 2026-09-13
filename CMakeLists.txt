@@ -5,7 +5,7 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "")
 
 project(aria
     VERSION 2.0.0
-    DESCRIPTION "Modern C++20 MVVM framework — cross-platform, layered, coroutine-first"
+    DESCRIPTION "Modern MVVM framework for C++23 (C++20 minimum) — cross-platform, layered, coroutine-first"
     HOMEPAGE_URL "https://github.com/dqsjqian/Aria"
     LANGUAGES CXX
 )
