@@ -301,7 +301,7 @@ TEST_CASE("FilteredList: source indices round-trip after visible moves") {
     auto src = std::make_shared<ObservableList<Plain>>();
     for (int value : {1, -2, 3, 4}) src->push_back(std::make_shared<Plain>(Plain{value}));
     FilteredList<Plain> fl{src, [](const Plain& p) { return p.value > 0; }};
-    for (const auto [from, to] : {
+    for (const auto& [from, to] : {
              std::pair<std::size_t, std::size_t>{0, 3}, {3, 0}, {2, 1}}) {
         src->move(from, to);
         for (std::size_t i = 0; i < fl.size(); ++i) {

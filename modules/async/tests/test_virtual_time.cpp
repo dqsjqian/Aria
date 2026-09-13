@@ -16,7 +16,6 @@ using namespace std::chrono_literals;
 // dies at end of expression, but the coroutine frame stores REFERENCES to
 // the captures, not copies of the closure. Using free functions with
 // explicit reference parameters keeps everything alive correctly.
-// (See: cpp20-coroutine-pitfalls skill, pitfall #7.)
 
 namespace {
 

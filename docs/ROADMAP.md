@@ -39,7 +39,7 @@ rationale remains available in this file's Git history.
 ## Implemented on this branch — Unreleased
 
 The correctness audit produced the following repairs and regression coverage.
-They are local changes awaiting the release verification gate below.
+They remain unreleased until the release verification gate below is complete.
 
 - ABI 2 supplies one compiled graph, diagnostics registry, scheduler base and
   node-ID sequence across compatible dynamic libraries. Installed core-only

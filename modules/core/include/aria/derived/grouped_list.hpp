@@ -320,7 +320,7 @@ private:
         }
     }
 
-    static void apply_(SharedState& st, Signal& sig, InputChange event) {
+    static void apply_(SharedState& st, Signal& sig, InputChange&& event) {
         if (event.kind == ListChangeKind::ItemChanged) {
             std::vector<std::size_t> occurrences;
             {

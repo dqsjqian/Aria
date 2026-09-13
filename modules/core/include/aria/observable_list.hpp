@@ -494,13 +494,17 @@ private:
         ::aria::trace::List payload{std::string{name}, event.index, event.from_index, length};
         ::aria::publish_trace_unchecked(::aria::TraceCategory::List, std::move(payload));
     }
-    template<typename Prepare = decltype([] {})>
+    struct NoPreparation {
+        void operator()() const noexcept {}
+    };
+
+    template<typename Prepare = NoPreparation>
     static void emit_(const std::shared_ptr<SharedState>& state, Event event,
                       std::size_t length, Prepare prepare = {}) {
         state->signal->emit(event, std::move(prepare));
         trace_(event, length);
     }
-    template<typename Prepare = decltype([] {})>
+    template<typename Prepare = NoPreparation>
     static void emit_batch_(const std::shared_ptr<SharedState>& state, std::vector<Event> events,
                             std::size_t length, Prepare prepare = {}) {
         if (::aria::has_trace_sink()) {

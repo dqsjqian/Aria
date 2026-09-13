@@ -4,6 +4,7 @@
 # New bugprone/performance diagnostics reviewed; confirmed defects repaired.
 # Remaining counts include accepted style debt and guarded-index/assertion diagnostics.
 # Includes reviewed SDK 26.5/27 variation: exception_ptr has move operations only in the newer headers.
+# Includes reviewed Task ownership-test assertions and GroupedList payload subobject moves.
 benchmark/bench_async_command.cpp|bugprone-exception-escape 1
 benchmark/bench_async_command.cpp|readability-braces-around-statements 3
 benchmark/bench_async_command.cpp|readability-identifier-naming 5
@@ -296,7 +297,11 @@ modules/async/tests/test_scope.cpp|modernize-use-scoped-lock 2
 modules/async/tests/test_scope.cpp|readability-braces-around-statements 1
 modules/async/tests/test_scope.cpp|readability-convert-member-functions-to-static 1
 modules/async/tests/test_scope.cpp|readability-function-cognitive-complexity 5
-modules/async/tests/test_task.cpp|modernize-type-traits 1
+modules/async/tests/test_task.cpp|bugprone-use-after-move 3
+modules/async/tests/test_task.cpp|cppcoreguidelines-avoid-reference-coroutine-parameters 3
+modules/async/tests/test_task.cpp|modernize-type-traits 2
+modules/async/tests/test_task.cpp|readability-function-cognitive-complexity 6
+modules/async/tests/test_task.cpp|readability-math-missing-parentheses 4
 modules/async/tests/test_timeout.cpp|bugprone-argument-comment 10
 modules/async/tests/test_timeout.cpp|cppcoreguidelines-avoid-capturing-lambda-coroutines 1
 modules/async/tests/test_timeout.cpp|cppcoreguidelines-avoid-reference-coroutine-parameters 31
@@ -510,6 +515,7 @@ modules/core/include/aria/derived/grouped_list.hpp|bugprone-unchecked-optional-a
 modules/core/include/aria/derived/grouped_list.hpp|cppcoreguidelines-explicit-constructor 1
 modules/core/include/aria/derived/grouped_list.hpp|cppcoreguidelines-init-variables 4
 modules/core/include/aria/derived/grouped_list.hpp|cppcoreguidelines-pro-bounds-avoid-unchecked-container-access 10
+modules/core/include/aria/derived/grouped_list.hpp|cppcoreguidelines-rvalue-reference-param-not-moved 1
 modules/core/include/aria/derived/grouped_list.hpp|cppcoreguidelines-special-member-functions 1
 modules/core/include/aria/derived/grouped_list.hpp|readability-braces-around-statements 7
 modules/core/include/aria/derived/grouped_list.hpp|readability-identifier-naming 9
