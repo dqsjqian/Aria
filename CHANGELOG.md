@@ -7,18 +7,22 @@ All notable changes to **aria** are documented here.
 > backward-compatible additions. The `1.0.0` → `1.1.0` bump in 2026-08
 > marks the project's first public release; `1.2.0` in 2026-09 carries
 > documentation and CI-gate work with no API change; `1.2.1` is a
-> maintenance patch (dependency refresh + CI fixes, no API change).
-> This file records released changes and work implemented on the current
-> branch under **Unreleased**. Priorities and deferred work live in
+> maintenance patch (dependency refresh + CI fixes, no API change);
+> `2.0.0` rebuilds the lifetime and collection contracts on ABI 2.
+> Priorities and deferred work live in
 > [the roadmap](docs/ROADMAP.md).
 
 ---
 
-## Unreleased
+## 2.0.0 — 2026-09-14
 
-These changes are implemented on this branch and are not part of the
-published `1.2.1` release. Release validation is tracked separately from
-implementation status.
+Aria 2.0 shares the reactive graph, diagnostics and scheduler ABI across
+libraries; repairs callback teardown, coroutine cancellation and binding
+ownership; and makes collection events owning and replayable through
+reentrant derived views. Migration notes:
+[migration-2.0.md](docs/migration-2.0.md). Breaking changes: ABI 2, owning
+ListChange payloads, move-only subscription ownership, explicit Web SDK
+state fields and HTTP protocol 2 integer values.
 
 ### 2.0 foundation and API changes
 

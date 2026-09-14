@@ -75,7 +75,7 @@ They remain unreleased until the release verification gate below is complete.
 API check, and focused sanitizer checks on changed concurrency paths. Record
 actual results and any unavailable platform coverage before marking a release.
 HTTP protocol 2 and worker-capacity behavior require migration notes in the
-[changelog](../CHANGELOG.md#unreleased) and [HTTP guide](guide/adapters/http.md).
+[changelog](../CHANGELOG.md) and [HTTP guide](guide/adapters/http.md).
 
 ## Implemented — generated API reference publication
 
