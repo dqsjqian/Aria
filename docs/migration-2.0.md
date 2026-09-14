@@ -77,6 +77,6 @@ for ordinary requests, and queued notifications and each SSE client's data
 have finite bounds. See the [HTTP guide](guide/adapters/http.md) for limits,
 failure responses and the complete integration example.
 
-The [changelog](../CHANGELOG.md#unreleased) lists the associated fixes and
+The [changelog](../CHANGELOG.md) lists the associated fixes and
 new APIs; the [lifecycle contract](reference/lifecycle.md) defines threading
 and destruction requirements.
