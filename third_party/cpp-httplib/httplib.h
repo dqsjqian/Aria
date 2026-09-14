@@ -10777,6 +10777,12 @@ inline bool setup_client_tls_session(
  */
 
 inline void default_socket_options(socket_t sock) {
+#ifdef _WIN32
+  // Windows 的 SO_REUSEADDR 是"抢占"语义：允许绑到他人已绑定的端口上，
+  // 两个 server 实例会静默共享/抢占同一端口。服务端默认应使用
+  // SO_EXCLUSIVEADDRUSE 独占绑定，被占端口返回 WSAEADDRINUSE。
+  set_socket_opt(sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, 1);
+#else
   set_socket_opt(sock, SOL_SOCKET,
 #ifdef SO_REUSEPORT
                  SO_REUSEPORT,
@@ -10784,6 +10790,7 @@ inline void default_socket_options(socket_t sock) {
                  SO_REUSEADDR,
 #endif
                  1);
+#endif
 }
 
 inline bool set_socket_opt(socket_t sock, int level, int optname, int optval) {
