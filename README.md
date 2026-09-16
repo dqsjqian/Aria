@@ -17,6 +17,14 @@
 
 ---
 
+## 📚 从入门到精通：AriaTutorial
+
+想系统地学 Aria？配套教程仓库 **[AriaTutorial](https://github.com/dqsjqian/AriaTutorial)** 提供 20 章中英双语渐进式教程，**每一章都配一个可以编译、可以运行的最小 demo**。
+
+- 正文里每个代码块都与 `demos/` 下的源文件**逐字一致**，不是手抄的示意代码；
+- 每段输出都是 demo 在 Windows / MSVC 下的**真实 stdout**，并由脚本自动校验；
+- 教学路径覆盖：响应式核心 → 集合与表单 → 绑定与适配器 → 异步、诊断与测试 → 一个完整应用。
+
 ## 🌟 旗舰示例：AriaTools
 
 想先看 Aria 如何落到真实应用？请从 [AriaTools](https://github.com/dqsjqian/AriaTools) 开始。它是 Aria 唯一的旗舰跨平台示例，同一份 C++ ViewModel 驱动 Qt、iOS、Android 与 Web 四端。本仓库只保留框架、验收测试和文档中的最小代码片段。

@@ -17,6 +17,14 @@ One shared core: Windows / macOS / Linux / iOS / Android / Web
 
 ---
 
+## 📚 From beginner to expert: AriaTutorial
+
+Want to learn Aria systematically? The companion repository **[AriaTutorial](https://github.com/dqsjqian/AriaTutorial)** is a 20-chapter, bilingual (Chinese/English) progressive tutorial, **each chapter shipping a minimal demo you can compile and run**.
+
+- Every code block in an article is **character-for-character identical** to the source under `demos/`, not a hand-copied illustration;
+- Every output block is the demo's **real stdout** on Windows / MSVC, checked automatically by script;
+- The path covers: reactive core → collections and forms → binding and adapters → async, diagnostics and testing → a complete application.
+
 ## 🌟 Flagship example: AriaTools
 
 Start with [AriaTools](https://github.com/dqsjqian/AriaTools) to see Aria in a real application. It is Aria's single flagship cross-platform example, driving Qt, iOS, Android, and Web from one C++ ViewModel. This repository now stays focused on the framework, acceptance tests, and minimal documentation snippets.
