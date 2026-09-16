@@ -23,6 +23,7 @@ Want to learn Aria systematically? The companion repository **[AriaTutorial](htt
 
 - Every code block in an article is **character-for-character identical** to the source under `demos/`, not a hand-copied illustration;
 - Every output block is the demo's **real stdout** on Windows / MSVC, checked automatically by script;
+- Every chapter opens with one conclusion figure (data flow, dependency graph, state machine, or timeline) whose numbers also come from the demo's real run;
 - The path covers: reactive core → collections and forms → binding and adapters → async, diagnostics and testing → a complete application.
 
 ## 🌟 Flagship example: AriaTools
