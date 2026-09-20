@@ -250,8 +250,9 @@ only `http_adapter.cpp` changes.
 | Memory per client | < 16 KB |
 | Server thread count | `worker_threads` from config |
 
-Anything that needs to be fundamentally faster should use a different
-adapter (or a different framework — be honest about the limit).
+For workloads beyond this adapter's performance budget, evaluate an
+alternative adapter or transport architecture against the required
+throughput, latency, and concurrency.
 
 ## Testing strategy
 

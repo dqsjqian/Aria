@@ -2,9 +2,11 @@
 
 # ⚡ Aria
 
-**支持 C++23 的现代 MVVM 框架**（最低 C++20） · 跨平台 · 分层架构 · 协程优先
+**为工业级跨平台软件而生的现代 C++ MVVM 框架** · 支持 C++23（最低 C++20） · 响应式 · 协程优先
 
-一套共享核心，覆盖 Windows / macOS / Linux / iOS / Android / Web
+一套 C++ 核心，六大平台。以优雅架构承载复杂业务，以工程契约支撑长期演进。
+
+Windows / macOS / Linux / iOS / Android / Web
 
 [![支持 C++23](https://img.shields.io/badge/C%2B%2B-23%20supported-blue.svg)](https://en.cppreference.com/w/cpp/23)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -187,26 +189,24 @@ aria::reactive::batch([&] {
 
 继续阅读：[绑定指南](docs/guide/binding.md) · [各平台适配器指南](docs/guide/adapters/) · [Cookbook](docs/cookbook/README.md) · [AriaTools](https://github.com/dqsjqian/AriaTools)（Qt / iOS / Android / Web 四端完整应用）。
 
-## 🎯 定位与取舍
+## 🎯 设计理念与工程实力
 
-Aria 只做一件事：**把响应式引擎和绑定层从 UI 框架里拆出来，做成不绑定任何 UI 工具包、支持 C++23 的纯 C++ 库。**
+Aria 将**响应式状态、异步协程与跨端绑定统一为独立于 UI 工具包的现代 C++ 架构**，让复杂业务只实现一次，让各端界面充分发挥原生能力。
 
-ViewModel 是普通 C++ 类，不继承框架基类、不需要宏、不需要代码生成器。UI 层通过 `IViewAdapter`
-接入，目前仓内已实现 Qt6 / AppKit / UIKit / JNI / HTTP 五个适配器；换 UI 工具包不需要动 ViewModel。
+优雅来自清晰的分工：ViewModel 是普通 C++ 类，无需继承框架基类、编写宏或运行代码生成器；
+UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配器共享同一套绑定协议，切换 UI 工具包无需改写 ViewModel。
 
-选它之前请先了解代价：
+**以世界级工业软件的工程标准打造 C++ 框架**：把生命周期、线程、错误处理与集合事件写成可追踪的[工程契约](docs/index.md#reference)，用自动化测试、模糊测试和可复现的[性能基准](docs/reference/performance.md)检验实现。架构之美，落实到每一次状态更新、异步取消与跨端交付。
 
-| 取舍 | 说明 |
+| 架构优势 | 工程设计 |
 |---|---|
-| **最低要求 C++20，支持 C++23** | 需要完整的协程与 concepts 支持（GCC 12+ / Clang 15+ / MSVC v143）。C++17 项目用不了。 |
-| **不提供控件** | Aria 不画任何界面。控件、布局、动画仍由你选的 UI 工具包负责，Aria 只负责状态到界面的单向/双向数据流。 |
-| **模板层仅源码兼容** | `aria-abi` / `aria-runtime` / `aria-binding` 在主版本号内 ABI 稳定；`Property<T>` 等模板跨版本需重编。 |
-| **适配器要自己补** | 只有上述五个适配器开箱可用。接新工具包意味着实现一个 `IViewAdapter`（参考 [适配器指南](docs/guide/adapters/)）。 |
-| **年轻项目** | 生态、教程、第三方组件都无法与成熟框架相比。目前只有 AriaTools 一个真实应用在用。 |
+| **现代 C++ 基础** | 最低 C++20，支持 C++23，使用完整的协程与 concepts 能力（GCC 12+ / Clang 15+ / MSVC v143）；集成项目需采用 C++20 或更高标准。 |
+| **原生 UI 自由** | 控件、布局和动画交给所选 UI 工具包，Aria 统一状态与界面之间的单向/双向数据流；共享业务核心，各端保留原生体验。 |
+| **分层兼容策略** | `aria-abi` / `aria-runtime` / `aria-binding` 在主版本号内保持 ABI 稳定，要求编译器、标准库与构建选项一致；`Property<T>` 等模板及其宿主类型更新后需重新编译。 |
+| **开放适配协议** | Qt6 / AppKit / UIKit / JNI / HTTP 开箱可用；其他 UI 工具包通过实现 `IViewAdapter` 接入（见[适配器指南](docs/guide/adapters/)）。 |
+| **应用实践与开发资料** | AriaTools、AriaAgent 与 OpenRead 展示跨端工作台、Agent GUI 和阅读引擎中的应用实践；[指南](docs/index.md)、[Cookbook](docs/cookbook/README.md) 与工程契约覆盖从入门到扩展的开发路径。 |
 
-适合：已有 C++ 业务内核、要在多端复用同一份逻辑、且希望各端保留原生 UI 的项目。
-不适合：想要「一份代码连界面一起跨端」的场景 —— 那是 Flutter、Qt Quick 这类完整 UI 框架的领域，
-它们各有成熟的响应式绑定方案，Aria 不试图取代它们。
+**为共享 C++ 业务核心、原生多端 UI 和长期维护而设计。** Aria 负责业务与状态层，控件渲染与界面复用由所选 UI 工具包负责；两层通过明确的适配协议协作。
 
 ## ✨ 核心特性
 
