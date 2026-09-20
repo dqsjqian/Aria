@@ -2,9 +2,11 @@
 
 # ⚡ Aria
 
-**Modern MVVM framework for C++23** (C++20 minimum) · cross-platform · layered · coroutine-first
+**Modern C++ MVVM for industrial-grade cross-platform software** · C++23 supported (C++20 minimum) · reactive · coroutine-first
 
-One shared core: Windows / macOS / Linux / iOS / Android / Web
+One C++ core. Six platforms. Elegant architecture for complex applications, explicit engineering contracts for long-term evolution.
+
+Windows / macOS / Linux / iOS / Android / Web
 
 [![C++23 supported](https://img.shields.io/badge/C%2B%2B-23%20supported-blue.svg)](https://en.cppreference.com/w/cpp/23)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -198,31 +200,24 @@ the five native adapters:
 
 Continue with the [binding guide](docs/guide/binding.md), the [per-platform adapter guides](docs/guide/adapters/), the [cookbook](docs/cookbook/README.md), or the full four-platform [AriaTools](https://github.com/dqsjqian/AriaTools) application.
 
-## 🎯 Where Aria fits
+## 🎯 Design philosophy and engineering strength
 
-Aria does one thing: **it extracts the reactive engine and binding layer out of the UI
-framework, as a plain C++ library supporting C++23, independent of any UI toolkit.**
+Aria brings **reactive state, asynchronous coroutines, and cross-platform binding into one modern C++ architecture, independent of UI toolkits**. Implement complex business logic once and give each platform its native experience.
 
-A ViewModel is an ordinary C++ class — no framework base class, no macros, no code
-generator. UI layers plug in through `IViewAdapter`; five adapters ship in-tree today
-(Qt6 / AppKit / UIKit / JNI / HTTP). Swapping the UI toolkit does not touch the ViewModel.
+Elegance comes from clear responsibilities: a ViewModel is an ordinary C++ class, with no required framework base class, macros, or code generator.
+UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP share one binding protocol, so changing UI toolkits leaves the ViewModel intact.
 
-Know the costs before you pick it:
+**Built to the engineering standards of world-class industrial software.** Lifecycle, threading, error handling, and collection events have traceable [engineering contracts](docs/index.md#reference), checked through automated tests, fuzz testing, and reproducible [performance benchmarks](docs/reference/performance.md). Architectural elegance carries through to state updates, asynchronous cancellation, and cross-platform delivery.
 
-| Trade-off | What it means |
+| Architectural strength | Engineering design |
 |---|---|
-| **C++20 minimum; C++23 supported** | Full coroutine and concepts support (GCC 12+ / Clang 15+ / MSVC v143). C++17 projects cannot use it. |
-| **No widgets** | Aria draws nothing. Widgets, layout and animation stay with your UI toolkit; Aria only owns the data flow between state and view. |
-| **Template layer is source-compatible only** | `aria-abi` / `aria-runtime` / `aria-binding` are ABI-stable within a major version; `Property<T>` and friends need a recompile across versions. |
-| **Adapters are on you** | Only the five adapters above work out of the box. A new toolkit means implementing an `IViewAdapter` (see the [adapter guides](docs/guide/adapters/)). |
-| **Young project** | Ecosystem, tutorials and third-party components are nowhere near a mature framework's. AriaTools is currently the only real application using it. |
+| **Modern C++ foundation** | C++20 minimum, C++23 supported, with full coroutines and concepts (GCC 12+ / Clang 15+ / MSVC v143). Integrating projects must use C++20 or later. |
+| **Native UI freedom** | Your UI toolkit owns widgets, layout, and animation. Aria unifies one-way and two-way state binding, sharing the business core while preserving native experiences. |
+| **Layered compatibility** | `aria-abi` / `aria-runtime` / `aria-binding` maintain ABI stability within a major version, with matching compiler, standard library, and build options. Rebuild templates such as `Property<T>` and their containing types after updates. |
+| **Open adapter protocol** | Qt6 / AppKit / UIKit / JNI / HTTP ship out of the box. Integrate other UI toolkits by implementing `IViewAdapter` (see the [adapter guides](docs/guide/adapters/)). |
+| **Applications and learning resources** | AriaTools, AriaAgent, and OpenRead demonstrate cross-platform workbenches, agent GUIs, and reading engines. [Guides](docs/index.md), the [Cookbook](docs/cookbook/README.md), and engineering contracts cover the path from first integration to custom extensions. |
 
-Good fit: you already have a C++ business core, want to reuse one copy of that logic
-across platforms, and want each platform to keep its native UI.
-
-Poor fit: you want "one codebase including the UI". That is what full UI frameworks like
-Flutter and Qt Quick are for — they have mature reactive binding of their own, and Aria
-does not try to replace them.
+**Designed for shared C++ business logic, native multi-platform UIs, and long-term maintenance.** Aria owns business state and binding; the chosen UI toolkit owns rendering and UI reuse. An explicit adapter protocol connects the two.
 
 ## ✨ Core features
 
@@ -653,10 +648,9 @@ when upgrading from 1.2.x. Build the reference locally with
 
 ## 🗺 Roadmap
 
-Aria is open source (MIT License), hosted on [GitHub](https://github.com/dqsjqian/Aria). The single source of truth for what
-is *not yet done* (and what has been deliberately deferred) lives in
-[`docs/ROADMAP.md`](docs/ROADMAP.md). For the current capability snapshot, see
-[`CHANGELOG.md`](CHANGELOG.md).
+Aria is open source (MIT License), hosted on [GitHub](https://github.com/dqsjqian/Aria).
+The [roadmap](docs/ROADMAP.md) defines development priorities, planned capabilities,
+and explicitly deferred work. See the [changelog](CHANGELOG.md) for delivered capabilities and release history.
 
 ## 🤝 Contributing
 
