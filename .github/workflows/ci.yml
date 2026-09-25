@@ -195,8 +195,9 @@ jobs:
           if-no-files-found: ignore
 
   # ────────────────────────────────────────────────────────────────────
-  # Ubuntu — gcc + clang matrix, plus Qt6 dev packages. C++23 is an
-  # opt-in full build/test pass; C++20 remains the supported minimum.
+  # Ubuntu — gcc + clang matrix, plus Qt6 dev packages. C++23 is the
+  # framework baseline since 3.0; both compiler families build the full
+  # tree (Continuo included) against it.
   # ────────────────────────────────────────────────────────────────────
   ubuntu:
     name: Ubuntu (${{ matrix.compiler }}, C++${{ matrix.standard }})
@@ -208,11 +209,7 @@ jobs:
           - compiler: gcc
             cc: gcc-13
             cxx: g++-13
-            standard: 20
-          - compiler: clang
-            cc: clang-18
-            cxx: clang++-18
-            standard: 20
+            standard: 23
           - compiler: clang
             cc: clang-18
             cxx: clang++-18
