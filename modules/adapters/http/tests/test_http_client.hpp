@@ -23,8 +23,12 @@
 #include <vector>
 
 #if defined(_WIN32)
-#  define WIN32_LEAN_AND_MEAN
-#  define NOMINMAX
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
 #  include <winsock2.h>
 #  include <ws2tcpip.h>
 using SocketHandle = SOCKET;
@@ -193,7 +197,7 @@ public:
             out.body = std::move(body);
         } else if (auto length = header_value(head, "Content-Length"); !length.empty()) {
             if (!head_request) {
-                out.body = consume(static_cast<std::size_t>(std::stoul(length)), deadline);
+                out.body = consume(std::stoul(length), deadline);
             }
         } else if (!no_body) {
             out.body = read_until_eof(deadline);
