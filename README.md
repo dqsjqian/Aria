@@ -2,13 +2,13 @@
 
 # ⚡ Aria
 
-**为工业级跨平台软件而生的现代 C++ MVVM 框架** · 支持 C++23（最低 C++20） · 响应式 · 协程优先
+**为工业级跨平台软件而生的现代 C++ MVVM 框架** · C++23 · 响应式 · 协程优先
 
 一套 C++ 核心，六大平台。以优雅架构承载复杂业务，以工程契约支撑长期演进。
 
 Windows / macOS / Linux / iOS / Android / Web
 
-[![支持 C++23](https://img.shields.io/badge/C%2B%2B-23%20supported-blue.svg)](https://en.cppreference.com/w/cpp/23)
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](https://en.cppreference.com/w/cpp/23)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml/badge.svg)](https://github.com/dqsjqian/Aria/actions/workflows/ci.yml)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20iOS%20%7C%20Android%20%7C%20Web-lightgrey.svg)](#)
@@ -200,7 +200,7 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
 
 | 架构优势 | 工程设计 |
 |---|---|
-| **现代 C++ 基础** | 最低 C++20，支持 C++23，使用完整的协程与 concepts 能力（GCC 12+ / Clang 15+ / MSVC v143）；集成项目需采用 C++20 或更高标准。 |
+| **现代 C++ 基础** | C++23 基线（GCC 13+ / Clang 18+ / AppleClang 21+ / MSVC v143），使用完整的协程与 concepts 能力；集成项目需采用 C++23 或更高标准。 |
 | **原生 UI 自由** | 控件、布局和动画交给所选 UI 工具包，Aria 统一状态与界面之间的单向/双向数据流；共享业务核心，各端保留原生体验。 |
 | **分层兼容策略** | `aria-abi` / `aria-runtime` / `aria-binding` 在主版本号内保持 ABI 稳定，要求编译器、标准库与构建选项一致；`Property<T>` 等模板及其宿主类型更新后需重新编译。 |
 | **开放适配协议** | Qt6 / AppKit / UIKit / JNI / HTTP 开箱可用；其他 UI 工具包通过实现 `IViewAdapter` 接入（见[适配器指南](docs/guide/adapters/)）。 |
@@ -273,11 +273,10 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
 ## 📋 环境要求
 
 - **CMake** >= 3.20
-- **完整支持 C++20 的编译器**：
-  - GCC >= 12（Windows 下可走 MSYS2 UCRT64 工具链）
-  - Clang >= 15（macOS/iOS 上 AppleClang 15+ 即可）
+- **完整支持 C++23 的编译器**：
+  - GCC >= 13（Windows 下可走 MSYS2 UCRT64 工具链）
+  - Clang >= 18（macOS 上 AppleClang 21+ 即可）
   - **MSVC v143 / Visual Studio 2022**（Windows，详见下文）
-- **C++23** 可通过 `-DCMAKE_CXX_STANDARD=23` 选择；最低要求仍为 C++20，见[评估](docs/cpp23-evaluation.md)。
 - *(可选)* **Qt6** >= 6.4（用于 Qt6 适配器）
 
 > **Windows 同时支持 MSYS2 UCRT64（GCC）和 MSVC / Visual Studio 2022 两条工具链。** 团队栈里有哪个就用哪个 —— 同一棵源码树都能编出完整框架 + 测试 + 适配器，不需要分支或 fork。
@@ -360,7 +359,7 @@ cmake --build build/flavors/release -j && sudo cmake --install build/flavors/rel
 ```
 
 ```cmake
-find_package(aria 2.0 CONFIG REQUIRED)
+find_package(aria 3.0 CONFIG REQUIRED)
 add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE aria::aria)
 # 也可以按需选择模块：aria::core / ::async / ::runtime / ::binding
@@ -541,7 +540,7 @@ ctest --test-dir build/flavors/release --no-tests=error --output-on-failure
 | [`performance.md`](docs/reference/performance.md) | `PERF-N` | 复杂度上界与实测基线 |
 
 公开 [API 参考](https://dqsjqian.github.io/Aria/) 由主分支自动构建并发布。
-从 1.2.x 升级请阅读 [2.0 迁移指南](docs/migration-2.0.md)。
+从 2.x 升级请阅读 [3.0 迁移指南](docs/migration-3.0.md)；1.2.x → 2.0 见[迁移指南](docs/migration-2.0.md)。
 
 ## 🗺 路线图
 
@@ -559,9 +558,9 @@ Aria 已开源（MIT License），源码托管在 [GitHub](https://github.com/dq
 
 - [doctest](https://github.com/doctest/doctest) —— 轻量级测试框架
 - [nlohmann_json](https://github.com/nlohmann/json) —— JSON for Modern C++
-- [cpp-httplib](https://github.com/yhirose/cpp-httplib) —— HTTP/HTTPS server
-- [OpenSSL](https://www.openssl.org/) —— TLS 1.2/1.3（版本见 `third_party/openssl/VERSION.dat`）
-- [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) —— CMake 依赖管理
+- [Continuo](https://github.com/dqsjqian/continuo) —— 协程原生的 C++23 网络库（HTTP 适配器的传输层）
+- [OpenSSL](https://www.openssl.org/) —— TLS 1.2/1.3（哈希固定的 release 下载）
+- 第三方依赖统一经 [ariaFetchPinned.cmake](cmake/ariaFetchPinned.cmake) 按 SHA256 固定下载，无 vendored 源码、无 submodule
 
 ## 📄 License
 

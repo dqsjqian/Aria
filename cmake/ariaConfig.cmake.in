@@ -13,6 +13,12 @@ set(ARIA_HTTP_HAS_TLS @ARIA_HTTP_ENABLE_TLS@)
 if(NOT ARIA_BUILT_WITH_HTTP)
     set(ARIA_HTTP_HAS_TLS OFF)
 endif()
+# Static HTTP builds link Continuo archives directly, so consumers need the
+# Continuo package resolvable; shared builds absorb Continuo into the dylib.
+set(ARIA_HTTP_NEEDS_CONTINUO @ARIA_HTTP_NEEDS_CONTINUO@)
+if(ARIA_HTTP_NEEDS_CONTINUO)
+    find_dependency(continuo CONFIG)
+endif()
 if(ARIA_BUILT_WITH_HTTP AND ARIA_HTTP_HAS_TLS)
     if((TARGET OpenSSL::SSL AND NOT TARGET OpenSSL::Crypto) OR
        (TARGET OpenSSL::Crypto AND NOT TARGET OpenSSL::SSL))

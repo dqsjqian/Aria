@@ -14,6 +14,58 @@ All notable changes to **aria** are documented here.
 
 ---
 
+## 3.0.0 — 2026-09-25
+
+Aria 3.0 moves the framework to C++23 and rebuilds the HTTP adapter on
+[Continuo](https://github.com/dqsjqian/continuo), Aria's companion
+coroutine-native networking library. External dependencies are now
+hash-pinned downloads instead of vendored files or submodules. Migration
+notes: [migration-3.0.md](docs/migration-3.0.md). Breaking changes: C++23
+baseline, `HttpAdapter` transport swap, `native_server()` removal.
+
+### 3.0 foundation
+
+- **C++23 is the minimum standard** for every module and consumer. GCC 13+ /
+  Clang 18+ / AppleClang 21+ / MSVC v143. The `CMAKE_CXX_STANDARD` default and
+  the configure-time check both moved from 20 to 23.
+
+### 3.0 HTTP adapter (aria::http)
+
+- **cpp-httplib is replaced by Continuo.** The adapter now runs an event loop
+  thread (kqueue / epoll / IOCP through Continuo) with every connection served
+  as a coroutine, and keeps a worker pool for synchronous route logic and user
+  callbacks. The wire protocol (REST + SSE, protocol version 2) is unchanged;
+  browsers and the Web SDK need no updates.
+- **`native_server()` is removed.** It was a documented escape hatch leaking
+  the cpp-httplib implementation. Custom routes map to `register_command()`.
+- **SSE no longer occupies a worker thread per client.** Streaming responses
+  park a coroutine on the loop, so `max_sse_clients` is the only admission cap
+  (the old `worker_threads - 1` bound is gone; `max_sse_clients = 0` now means
+  a default of 64).
+- **TLS support maps onto Continuo's TLS module** (OpenSSL 3+/4.0): server
+  certificates, optional mandatory client verification (`tls_ca_file`), and
+  minimum protocol version control. TLS 1.0/1.1 remain impossible.
+- **Static mounts** (`HttpAdapterConfig::static_root`) are now served by the
+  adapter itself: `index.html` default, extension-based Content-Type, and
+  path-traversal refusal. Ranges and directory listings are not supported.
+- Bind addresses must be numeric ("127.0.0.1", "0.0.0.0"); "localhost" maps to
+  the IPv4 loopback. Exclusive bind semantics carry over through Continuo's
+  `ListenOptions::exclusive` (Windows uses `SO_EXCLUSIVEADDRUSE`).
+
+### 3.0 dependency model
+
+- **No vendored third-party sources, no git submodules, no CPM.** Every
+  external dependency is downloaded once, verified against a SHA256 pinned in
+  `cmake/ariaFetchPinned.cmake` call sites, and cached under `build/_deps`
+  across build flavors: Continuo 0.1.0 (release asset), nlohmann/json 3.12.0
+  (`json.tar.xz`), doctest 2.5.3 (single header), OpenSSL 4.0.2 (release
+  asset, TLS builds).
+- Offline overrides: `-DARIA_PIN_<NAME>_SOURCE_DIR` uses a local tree as-is;
+  `-DARIA_DEPS_CACHE_DIR` relocates the cache.
+- The `third_party/` directory and the OpenSSL submodule are removed.
+
+---
+
 ## 2.0.0 — 2026-09-14
 
 Aria 2.0 shares the reactive graph, diagnostics and scheduler ABI across

@@ -34,7 +34,6 @@ EXCLUDE_PATTERNS       = */detail/* \
                          */fuzz/* \
                          */src/* \
                          */build/* \
-                         */third_party/*
 # Hide internal implementation namespaces from the reference even when a
 # public header pulls them in transitively.
 EXCLUDE_SYMBOLS        = aria::detail aria::detail::* \
