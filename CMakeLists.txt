@@ -150,27 +150,17 @@ if(ARIA_BUILD_TESTS)
         SHA256 cfd518a3ef90f67e1f3ba514df23fb3627437de1a2feeba78cf5062a40021421
         AS doctest/doctest.h
     )
-    # One reviewed upstream patch, applied on top of the verified download:
-    # MSVC < 19.45 (VS 2022) rejects doctest's C4865 pragma with C4619, which
-    # is fatal under the tests' warning-to-error policy. The patched result is
-    # itself hash-checked, so the exact bytes we compile are pinned twice.
-    file(READ "${ARIA_PINNED_DOCTEST_FILE}" _doctest_source)
-    string(FIND "${_doctest_source}" "[ARIA PATCH]" _already_patched)
-    if(_already_patched EQUAL -1)
-        string(REPLACE
-            "DOCTEST_MSVC_SUPPRESS_WARNING(4865) // the underlying type will change if '/Zc:enumTypes' is passed"
-            "#if _MSC_VER >= 1945 // [ARIA PATCH] C4865 ships with VS 2026 (MSVC 19.45+); older toolsets would raise C4619 on the unknown number (fatal under /WX)\nDOCTEST_MSVC_SUPPRESS_WARNING(4865) // the underlying type will change if '/Zc:enumTypes' is passed\n#endif"
-            _doctest_patched "${_doctest_source}")
-        file(WRITE "${ARIA_PINNED_DOCTEST_FILE}" "${_doctest_patched}")
-    endif()
-    file(SHA256 "${ARIA_PINNED_DOCTEST_FILE}" _doctest_patched_hash)
-    if(NOT _doctest_patched_hash STREQUAL
-            "57419e0d9f752c4e489e095eb2bd8ad2d17388d0c39ba80e668ca21cb754612e")
-        message(FATAL_ERROR
-            "Aria deps: the applied doctest patch does not match the reviewed "
-            "result (${_doctest_patched_hash}). Remove the cached file and reconfigure.")
-    endif()
+    # One upstream quirk, handled without touching the pinned bytes: doctest
+    # suppresses MSVC warning 4865, a number only VS 2026 (19.45+) knows.
+    # Older toolsets report the unknown number as C4619, fatal under the
+    # tests' warning-to-error policy. Suppressing it through the INTERFACE
+    # options of this target keeps the downloaded bytes byte-identical on
+    # every platform — configure-time string surgery would make the file's
+    # hash depend on the line endings of this very CMakeLists.
     add_library(doctest INTERFACE)
+    if(MSVC)
+        target_compile_options(doctest INTERFACE /wd4619)
+    endif()
     target_include_directories(doctest INTERFACE
         $<BUILD_INTERFACE:${ARIA_PINNED_DOCTEST_BASE}>
     )

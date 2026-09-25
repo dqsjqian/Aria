@@ -207,12 +207,12 @@ jobs:
       matrix:
         include:
           - compiler: gcc
-            cc: gcc-13
-            cxx: g++-13
+            cc: gcc-14
+            cxx: g++-14
             standard: 23
           - compiler: clang
-            cc: clang-18
-            cxx: clang++-18
+            cc: clang-19
+            cxx: clang++-19
             standard: 23
     steps:
       - uses: actions/checkout@v7
@@ -523,12 +523,12 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build g++-13
+          sudo apt-get install -y ninja-build g++-14
 
       - name: Configure (shared libs + acceptance tests)
         env:
-          CC: gcc-13
-          CXX: g++-13
+          CC: gcc-14
+          CXX: g++-14
         run: |
           cmake -S . -B build/flavors/abi-smoke -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
