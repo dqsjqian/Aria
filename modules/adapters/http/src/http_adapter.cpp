@@ -652,44 +652,6 @@ struct HttpAdapter::Impl : std::enable_shared_from_this<HttpAdapter::Impl> {
         return out;
     }
 
-    // Hop the current coroutine onto the worker pool (and back with
-    // `schedule_on(loop)`). Posting the resume through the pool's queue is
-    // what makes the next segment run on a worker thread.
-    //
-    // The EventLoop threading contract: anything able to resume a coroutine
-    // from another thread must keep the loop aware of it, or a fully
-    // suspended tree looks like a deadlock. While the job sits in the pool,
-    // a self-reposting ping stays outstanding on the loop; the job clears
-    // it on start, and the continuation's own `schedule_on(loop)` posting
-    // keeps the chain alive from there.
-    struct PoolHop {
-        bool await_ready() const noexcept { return false; }
-        void await_suspend(std::coroutine_handle<> waiting) {
-            auto* loop_ptr = loop;
-            auto claimed = std::make_shared<std::atomic<bool>>(false);
-            pool->post([waiting, claimed] {
-                // Run the off-loop segment; only once the continuation has
-                // suspended again — with its own `schedule_on(loop)` post
-                // already queued — may the loop-side ping stop. Clearing the
-                // flag before the resume would open a window where the whole
-                // coroutine tree is suspended off-loop and the loop's
-                // deadlock detector sees "nothing outstanding".
-                waiting.resume();
-                claimed->store(true, std::memory_order_release);
-            });
-            auto ping = std::make_shared<std::function<void()>>();
-            *ping = [loop_ptr, claimed, ping] {
-                if (!claimed->load(std::memory_order_acquire)) {
-                    loop_ptr->post(*ping);  // job still queued or running
-                }
-            };
-            loop_ptr->post(*ping);
-        }
-        void await_resume() const noexcept {}
-        PoolState* pool;
-        EventLoop* loop;
-    };
-
     struct ParsedTarget {
         std::string_view path;
         std::string_view query;
@@ -1070,10 +1032,48 @@ Task<continuo::Result<void>> HttpAdapter::Impl::serve_request(
         co_return co_await run_sse(writer);
     }
 
-    // Everything else: compute on the pool, write on the loop.
-    co_await PoolHop{pool.get(), &*loop};
-    RouteOutcome outcome = dispatch(request, body);
-    co_await continuo::schedule_on(*loop);
+    // Everything else: compute on the pool, write on the loop. The hop uses
+    // Continuo's resolver shape: this coroutine parks in `loop.sleep_until`
+    // — which is loop-visible outstanding work, so the deadlock detector
+    // never sees a fully suspended tree — and the pool job runs the
+    // segment, then fires the stop token that resolves the sleep back on
+    // the loop thread. No coroutine handle ever crosses a thread, nothing
+    // self-references, and the gate dies with the request frame.
+    struct PoolGate {
+        std::exception_ptr error;
+        std::optional<RouteOutcome> outcome;
+        bool ran = false;
+    };
+    auto gate = std::make_shared<PoolGate>();
+    auto hop_stop = std::make_shared<std::stop_source>();
+    const std::stop_token hop_token = hop_stop->get_token();
+    // Teardown may drop the pool job before it runs; the global stop then
+    // has to resolve the sleep, or the connection would hang forever.
+    std::stop_callback teardown_watch{stop_source.get_token(),
+                                      [hop_stop] { hop_stop->request_stop(); }};
+    // The job owns copies of its inputs: under callback-driven teardown this
+    // job may outlive the request frame (and even the adapter), so nothing
+    // here may reference the serving coroutine's stack.
+    pool->post([this, gate, hop_stop, request,
+                body = std::string(reinterpret_cast<const char*>(body.data()),
+                                   body.size())]() mutable {
+        try {
+            gate->outcome = dispatch(request, {
+                reinterpret_cast<const std::byte*>(body.data()), body.size()});
+        } catch (...) {
+            gate->error = std::current_exception();
+        }
+        gate->ran = true;
+        hop_stop->request_stop();
+    });
+    co_await loop->sleep_until(EventLoop::Clock::time_point::max(),
+                               {.stop = hop_token});
+    // Back on the loop thread. request_stop is the job's last statement,
+    // so the segment has fully run before this line — unless teardown
+    // dropped the job and the global stop resolved the sleep instead.
+    if (gate->error) std::rethrow_exception(gate->error);
+    if (!gate->ran) co_return continuo::fail(continuo::Errc::cancelled);
+    RouteOutcome outcome = std::move(*gate->outcome);
 
     continuo::http::Response response;
     response.status = outcome.status;
