@@ -124,13 +124,15 @@ find_package(Threads REQUIRED)
 # -DARIA_PIN_<NAME>_SOURCE_DIR (archives) for offline development.
 include(ariaFetchPinned)
 
-aria_fetch_pinned_archive(
-    NAME json
-    VERSION 3.12.0
-    URL "https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz"
-    SHA256 42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
-)
-if(NOT TARGET nlohmann_json)
+# nlohmann/json is fetched only when the host does not already provide the
+# namespaced target — OpenRead, for instance, installs its own pinned copy.
+if(NOT TARGET nlohmann_json::nlohmann_json)
+    aria_fetch_pinned_archive(
+        NAME json
+        VERSION 3.12.0
+        URL "https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz"
+        SHA256 42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
+    )
     add_library(nlohmann_json INTERFACE)
     target_include_directories(nlohmann_json SYSTEM INTERFACE
         $<BUILD_INTERFACE:${ARIA_PINNED_JSON_SOURCE_DIR}/include>
