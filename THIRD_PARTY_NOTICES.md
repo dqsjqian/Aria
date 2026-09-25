@@ -6,9 +6,16 @@ summarized below. Aria itself is licensed under the MIT License (see `LICENSE`).
 
 ---
 
-## cpp-httplib
+## Continuo
 
-- **Version:** v0.53.1 (bundled single-header `third_party/cpp-httplib/httplib.h`)
+- **Version:** 0.1.0 (hash-pinned release download, see `cmake/ariaFetchPinned.cmake`)
+- **License:** MIT — see `LICENSE` upstream
+- **Upstream:** https://github.com/dqsjqian/continuo
+- **Used by:** `aria::http` transport (event loop, TCP, TLS, HTTP/1.1 serving)
+
+## cpp-httplib (removed in 3.0)
+
+- **Version:** v0.53.1 (bundled single-header `third_party/cpp-httplib/httplib.h`); no longer distributed with Aria
 - **Copyright:** Copyright (c) 2026 Yuji Hirose. All rights reserved.
 - **License:** MIT — see `third_party/cpp-httplib/LICENSE`
 - **Upstream:** https://github.com/yhirose/cpp-httplib

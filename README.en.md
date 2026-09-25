@@ -2,7 +2,7 @@
 
 # ⚡ Aria
 
-**Modern C++ MVVM for industrial-grade cross-platform software** · C++23 supported (C++20 minimum) · reactive · coroutine-first
+**Modern C++ MVVM for industrial-grade cross-platform software** · C++23 · reactive · coroutine-first
 
 One C++ core. Six platforms. Elegant architecture for complex applications, explicit engineering contracts for long-term evolution.
 
@@ -211,7 +211,7 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 
 | Architectural strength | Engineering design |
 |---|---|
-| **Modern C++ foundation** | C++20 minimum, C++23 supported, with full coroutines and concepts (GCC 12+ / Clang 15+ / MSVC v143). Integrating projects must use C++20 or later. |
+| **Modern C++ foundation** | C++23 baseline (GCC 13+ / Clang 18+ / AppleClang 21+ / MSVC v143) with full coroutines and concepts. Integrating projects must use C++23 or later. |
 | **Native UI freedom** | Your UI toolkit owns widgets, layout, and animation. Aria unifies one-way and two-way state binding, sharing the business core while preserving native experiences. |
 | **Layered compatibility** | `aria-abi` / `aria-runtime` / `aria-binding` maintain ABI stability within a major version, with matching compiler, standard library, and build options. Rebuild templates such as `Property<T>` and their containing types after updates. |
 | **Open adapter protocol** | Qt6 / AppKit / UIKit / JNI / HTTP ship out of the box. Integrate other UI toolkits by implementing `IViewAdapter` (see the [adapter guides](docs/guide/adapters/)). |
@@ -284,11 +284,10 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 ## 📋 Requirements
 
 - **CMake** >= 3.20
-- **Compiler** with full C++20 support:
-  - GCC >= 12 (the MSYS2 UCRT64 toolchain on Windows)
-  - Clang >= 15 (AppleClang 15+ on macOS/iOS)
+- **Compiler** with full C++23 support:
+  - GCC >= 13 (the MSYS2 UCRT64 toolchain on Windows)
+  - Clang >= 18 (AppleClang 21+ on macOS)
   - **MSVC v143 / Visual Studio 2022** (Windows, see below)
-- **C++23** is opt-in with `-DCMAKE_CXX_STANDARD=23`; C++20 remains the minimum. See the [evaluation](docs/cpp23-evaluation.md).
 - *(optional)* **Qt6** >= 6.4 (for the Qt6 adapter)
 
 > **Windows is supported on two toolchains: MSYS2 UCRT64 (GCC) and
@@ -503,7 +502,7 @@ Task<std::string> fetch_user(int id) {
 The HTTP adapter ships a small server (`HttpAdapter`) that exposes any
 ViewModel over a JSON REST + Server-Sent-Events protocol, plus a
 vanilla-JS browser SDK (`aria_client.js`). The server is built on the
-vendored single-header **cpp-httplib** (HTTP/1.1 + SSE) and
+the coroutine-native **Continuo** networking library (HTTP/1.1 + SSE) and
 **nlohmann::json** (encode/decode) — both committed under
 `third_party/`, so the adapter adds no new external build dependency;
 aria itself owns the wire protocol, view registry, subscription dispatch
@@ -664,7 +663,7 @@ Contributions are welcome! Please open an issue first to discuss design changes.
 
 - [doctest](https://github.com/doctest/doctest) — lightweight test framework
 - [nlohmann_json](https://github.com/nlohmann/json) — JSON for Modern C++
-- [cpp-httplib](https://github.com/yhirose/cpp-httplib) — HTTP/HTTPS server
+- [Continuo](https://github.com/dqsjqian/continuo) — coroutine-native C++23 networking (the HTTP adapter transport)
 - [OpenSSL](https://www.openssl.org/) — TLS 1.2/1.3 (version in `third_party/openssl/VERSION.dat`)
 - [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) — CMake dependency management
 

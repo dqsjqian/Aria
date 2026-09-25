@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "")
 
 project(aria
-    VERSION 2.0.0
+    VERSION 3.0.0
     DESCRIPTION "Modern MVVM framework for C++23 (C++20 minimum) — cross-platform, layered, coroutine-first"
     HOMEPAGE_URL "https://github.com/dqsjqian/Aria"
     LANGUAGES CXX
@@ -62,10 +62,10 @@ endif()
 
 # ── Project meta ─────────────────────────────────────────────────────────────
 if(NOT DEFINED CMAKE_CXX_STANDARD)
-    set(CMAKE_CXX_STANDARD 20)
+    set(CMAKE_CXX_STANDARD 23)
 endif()
-if(CMAKE_CXX_STANDARD LESS 20)
-    message(FATAL_ERROR "Aria requires C++20 or later")
+if(CMAKE_CXX_STANDARD LESS 23)
+    message(FATAL_ERROR "Aria requires C++23 or later (2.1+; the HTTP adapter is built on Continuo)")
 endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -117,25 +117,44 @@ add_library(aria::warnings ALIAS aria_warnings)
 # Threads
 find_package(Threads REQUIRED)
 
+# ── Hash-pinned dependencies (no vendored source, no submodules) ────────────
+# Every external dependency is downloaded once, verified against a SHA256
+# pinned in-tree, and cached under build/_deps across build flavors. See
+# cmake/ariaFetchPinned.cmake. Overrides: -DARIA_DEPS_CACHE_DIR=<dir> and
+# -DARIA_PIN_<NAME>_SOURCE_DIR (archives) for offline development.
+include(ariaFetchPinned)
+
+aria_fetch_pinned_archive(
+    NAME json
+    VERSION 3.12.0
+    URL "https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz"
+    SHA256 42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
+)
+if(NOT TARGET nlohmann_json)
+    add_library(nlohmann_json INTERFACE)
+    target_include_directories(nlohmann_json SYSTEM INTERFACE
+        $<BUILD_INTERFACE:${ARIA_PINNED_JSON_SOURCE_DIR}/include>
+    )
+    add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
+endif()
+
 # ── Tests setup (must come BEFORE modules so subdirs can use doctest target) ──
 if(ARIA_BUILD_TESTS)
     enable_testing()
-    # Prefer bundled doctest if available (avoids network fetch)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/doctest/doctest.h")
-        add_library(doctest INTERFACE)
-        target_include_directories(doctest INTERFACE
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party>
-        )
-        add_library(doctest::doctest ALIAS doctest)
-    else()
-        include(CPM)
-        CPMAddPackage(
-            NAME doctest
-            GITHUB_REPOSITORY doctest/doctest
-            GIT_TAG v2.4.11
-            OPTIONS "DOCTEST_WITH_TESTS OFF"
-        )
-    endif()
+    # doctest is a hash-pinned single header (no vendored source, no network
+    # surprises); see cmake/ariaFetchPinned.cmake for the verification rules.
+    include(ariaFetchPinned)
+    aria_fetch_pinned_file(
+        NAME doctest
+        URL "https://raw.githubusercontent.com/doctest/doctest/v2.5.3/doctest/doctest.h"
+        SHA256 cfd518a3ef90f67e1f3ba514df23fb3627437de1a2feeba78cf5062a40021421
+        AS doctest/doctest.h
+    )
+    add_library(doctest INTERFACE)
+    target_include_directories(doctest INTERFACE
+        $<BUILD_INTERFACE:${ARIA_PINNED_DOCTEST_BASE}>
+    )
+    add_library(doctest::doctest ALIAS doctest)
 endif()
 
 # ── Modules ──────────────────────────────────────────────────────────────────
@@ -358,6 +377,14 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
         NAMESPACE aria::
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/aria
     )
+
+    # Static HTTP builds install the Continuo package and expect consumers
+    # to resolve it; shared builds absorb Continuo into the aria_http dylib.
+    if(ARIA_BUILD_HTTP AND NOT ARIA_BUILD_SHARED)
+        set(ARIA_HTTP_NEEDS_CONTINUO ON)
+    else()
+        set(ARIA_HTTP_NEEDS_CONTINUO OFF)
+    endif()
 
     configure_package_config_file(
         cmake/ariaConfig.cmake.in

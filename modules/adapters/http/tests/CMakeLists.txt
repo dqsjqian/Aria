@@ -4,7 +4,7 @@ target_link_libraries(test_http_adapter
 target_compile_features(test_http_adapter PRIVATE cxx_std_20)
 add_test(NAME http_adapter COMMAND test_http_adapter)
 
-target_include_directories(test_http_adapter SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/third_party/nlohmann_json/include)
+target_link_libraries(test_http_adapter PRIVATE nlohmann_json::nlohmann_json)
 set_tests_properties(http_adapter PROPERTIES TIMEOUT 45)
 
 add_executable(http_guide_example http_guide_example.cpp)

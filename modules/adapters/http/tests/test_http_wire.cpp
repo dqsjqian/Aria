@@ -2,10 +2,12 @@
 #include "aria/adapters/http/http_adapter.hpp"
 #include "aria/binding/binding_engine.hpp"
 #include "aria/runtime/dispatcher.hpp"
-#include <httplib.h>
+#include "test_http_client.hpp"
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <condition_variable>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <future>
 #include <limits>
@@ -25,45 +27,6 @@ HttpAdapterConfig config() {
     c.heartbeat_sec = 60;
     return c;
 }
-void timeouts(httplib::Client& c) {
-    c.set_connection_timeout(2, 0);
-    c.set_read_timeout(2, 0);
-    c.set_write_timeout(2, 0);
-}
-struct Stream {
-    httplib::Client client;
-    std::mutex mu;
-    std::condition_variable cv;
-    std::string frames;
-    std::thread thread;
-    explicit Stream(int port) : client("127.0.0.1", port) {
-        timeouts(client);
-        thread = std::thread([this] {
-            client.Get("/aria/stream", [this](const char* data, std::size_t size) {
-                { std::lock_guard lk(mu); frames.append(data, size); }
-                cv.notify_all();
-                return true;
-            });
-        });
-    }
-    ~Stream() { client.stop(); if (thread.joinable()) thread.join(); }
-    bool wait_for(std::string_view text) {
-        std::unique_lock lk(mu);
-        return cv.wait_for(lk, 2s, [&] { return frames.find(text) != std::string::npos; });
-    }
-    std::vector<json> events() {
-        std::lock_guard lk(mu);
-        std::vector<json> out;
-        std::size_t start = 0;
-        while ((start = frames.find("data: ", start)) != std::string::npos) {
-            auto end = frames.find("\n\n", start);
-            if (end == std::string::npos) break;
-            out.push_back(json::parse(frames.substr(start + 6, end - start - 6)));
-            start = end + 2;
-        }
-        return out;
-    }
-};
 class PumpDispatcher final : public aria::runtime::IDispatcher {
     std::thread::id owner = std::this_thread::get_id();
     std::mutex mu;
@@ -87,13 +50,12 @@ TEST_CASE("HTTP requests validate schema, view kind and exact numeric range befo
     for (const auto* kind : {"text", "bool", "int", "int64", "uint64", "float", "double", "click"})
         http.register_view(kind, kind);
     REQUIRE(http.start());
-    httplib::Client c("127.0.0.1", http.actual_port());
-    timeouts(c);
+    test_http::Client c(http.actual_port());
+    REQUIRE(c.connected());
     auto check_post = [&](const char* path, const std::string& body, int status) {
-        auto r = c.Post(path, body, "application/json");
-        REQUIRE(r);
-        CHECK(r->status == status);
-        auto payload = json::parse(r->body);
+        auto r = c.post(path, body);
+        CHECK(r.status == status);
+        auto payload = json::parse(r.body);
         if (status != 200) CHECK(payload.contains("error"));
     };
     for (const auto* body : {"{", "[]", R"({"view":123,"field":"text","value":"x"})",
@@ -122,17 +84,15 @@ TEST_CASE("HTTP requests validate schema, view kind and exact numeric range befo
     CHECK(http.get_int(*http.find_view("int")) == 0);
     check_post("/aria/state", R"({"view":"int64","field":"int64","value":9007199254740993})", 200);
     CHECK(http.get_int64(*http.find_view("int64")) == 9007199254740993LL);
-    auto r = c.Get("/aria/state?view=int64");
-    REQUIRE(r);
-    CHECK(json::parse(r->body)["value"] == "9007199254740993");
+    auto r = c.get("/aria/state?view=int64");
+    CHECK(json::parse(r.body)["value"] == "9007199254740993");
     check_post("/aria/state", R"({"view":"int64","field":"int64","value":"-9223372036854775808"})", 200);
     CHECK(http.get_int64(*http.find_view("int64")) == std::numeric_limits<std::int64_t>::min());
     check_post("/aria/state", R"({"view":"uint64","field":"uint64","value":"18446744073709551615"})", 200);
     CHECK(http.get_uint64(*http.find_view("uint64")) == std::numeric_limits<std::uint64_t>::max());
     check_post("/aria/state", R"({"view":"int64","field":"int64","value":42})", 200);
-    r = c.Get("/aria/state?view=int64");
-    REQUIRE(r);
-    CHECK(json::parse(r->body)["value"] == 42);
+    r = c.get("/aria/state?view=int64");
+    CHECK(json::parse(r.body)["value"] == 42);
 }
 
 TEST_CASE("HTTP replacement retires bindings, callbacks, commands and shadow state without deadlock") {
@@ -146,10 +106,10 @@ TEST_CASE("HTTP replacement retires bindings, callbacks, commands and shadow sta
     http->set_visible(old, false);
     http->register_command("v", "stale", [](std::string_view) { return "{}"; });
     REQUIRE(http->start());
-    httplib::Client c("127.0.0.1", http->actual_port());
-    timeouts(c);
-    auto r = c.Post("/aria/state", R"({"view":"v","field":"text","value":"queued"})", "application/json");
-    REQUIRE(r);
+    test_http::Client c(http->actual_port());
+    REQUIRE(c.connected());
+    auto r = c.post("/aria/state", R"({"view":"v","field":"text","value":"queued"})");
+    CHECK(r.status == 200);
     CHECK(old_value.get() == "old");
     auto& replacement = http->register_view("v", "text");
     CHECK(http->get_text(replacement).empty());
@@ -157,11 +117,10 @@ TEST_CASE("HTTP replacement retires bindings, callbacks, commands and shadow sta
     dispatcher->pump();
     CHECK(old_value.get() == "old");
     CHECK(new_value.get() == "new");
-    r = c.Post("/aria/command", R"({"view":"v","command":"stale"})", "application/json");
-    REQUIRE(r);
-    CHECK(r->status == 404);
-    r = c.Post("/aria/state", R"({"view":"v","field":"text","value":"updated"})", "application/json");
-    REQUIRE(r);
+    r = c.post("/aria/command", R"({"view":"v","command":"stale"})");
+    CHECK(r.status == 404);
+    r = c.post("/aria/state", R"({"view":"v","field":"text","value":"updated"})");
+    CHECK(r.status == 200);
     CHECK(new_value.get() == "new");
     dispatcher->pump();
     CHECK(new_value.get() == "updated");
@@ -177,7 +136,7 @@ TEST_CASE("SSE initial snapshot includes numeric precision, visibility and comma
     http.set_visible(big, false);
     http.set_enabled(button, false);
     REQUIRE(http.start());
-    Stream stream(http.actual_port());
+    test_http::Stream stream(http.actual_port());
     REQUIRE(stream.wait_for("9007199254740993"));
     // Each initial view ends in enabled; wait until the complete snapshot arrives.
     REQUIRE(stream.wait_for("\"view\":\"button\""));
@@ -202,24 +161,25 @@ TEST_CASE("SSE initial snapshot includes numeric precision, visibility and comma
     http.stop();
 }
 
-TEST_CASE("SSE admission reserves a fixed-pool worker for REST and capacity responses") {
+TEST_CASE("SSE capacity responses and REST liveness under connected streams") {
+    // With coroutine-per-connection an SSE client no longer occupies a
+    // worker, so the cap is purely the configured maximum.
     auto cfg = config();
-    cfg.worker_threads = 3;
-    cfg.max_sse_clients = 0;
+    cfg.max_sse_clients = 2;
     HttpAdapter http(cfg);
     REQUIRE(http.start());
-    Stream first(http.actual_port()), second(http.actual_port());
+    test_http::Stream first(http.actual_port()), second(http.actual_port());
+    REQUIRE(first.connected());
+    REQUIRE(second.connected());
     REQUIRE(first.wait_for("hello"));
     REQUIRE(second.wait_for("hello"));
     CHECK(http.client_count() == 2);
-    httplib::Client c("127.0.0.1", http.actual_port());
-    timeouts(c);
-    auto r = c.Get("/aria/stream");
-    REQUIRE(r);
-    CHECK(r->status == 503);
-    r = c.Get("/aria/health");
-    REQUIRE(r);
-    CHECK(r->status == 200);
+    test_http::Client c(http.actual_port());
+    REQUIRE(c.connected());
+    auto r = c.get("/aria/stream");
+    CHECK(r.status == 503);
+    r = c.get("/aria/health");
+    CHECK(r.status == 200);
     http.stop();
 }
 
@@ -227,9 +187,9 @@ TEST_CASE("HTTP stop interrupts heartbeat, resets port, and permits immediate re
     HttpAdapter http(config());
     for (int i = 0; i < 2; ++i) {
         REQUIRE(http.start());
-        httplib::Client c("127.0.0.1", http.actual_port());
-        timeouts(c);
-        REQUIRE(c.Get("/aria/health"));
+        test_http::Client c(http.actual_port());
+        REQUIRE(c.connected());
+        CHECK(c.get("/aria/health").status == 200);
         auto start = std::chrono::steady_clock::now();
         http.stop();
         CHECK(std::chrono::steady_clock::now() - start < 1s);
@@ -242,16 +202,9 @@ TEST_CASE("HTTP stop interrupts heartbeat, resets port, and permits immediate re
 }
 
 TEST_CASE("HTTP bind failure cleans up and can retry after occupied port is released") {
+    // Continuo binds exclusively by default on every platform, so a second
+    // adapter on the same port deterministically fails.
     HttpAdapter occupying(config());
-    // cpp-httplib defaults to SO_REUSEPORT on Unix. Make the fixture
-    // exclusive so the second bind deterministically fails on every host.
-    occupying.native_server().set_socket_options([](socket_t socket) {
-#ifdef _WIN32
-        httplib::set_socket_opt(socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, 1);
-#else
-        static_cast<void>(socket); // Fresh socket: no SO_REUSEPORT/ADDR.
-#endif
-    });
     REQUIRE(occupying.start());
     auto cfg = config();
     cfg.port = occupying.actual_port();
@@ -264,40 +217,73 @@ TEST_CASE("HTTP bind failure cleans up and can retry after occupied port is rele
     http.stop();
 }
 
-TEST_CASE("HTTP start waits for task queue readiness and cleans up listener exceptions") {
+TEST_CASE("HTTP keep-alive serves multiple requests on one connection") {
     HttpAdapter http(config());
-    auto original_factory = http.native_server().new_task_queue;
-    std::mutex mu;
-    std::condition_variable cv;
-    bool entered = false, release = false;
-    std::atomic<bool> start_finished{false};
-    bool start_result = true;
-    http.native_server().new_task_queue = [&]() -> httplib::TaskQueue* {
-        std::unique_lock lk(mu);
-        entered = true;
-        cv.notify_all();
-        cv.wait(lk, [&] { return release; });
-        throw std::runtime_error("injected task queue failure");
-    };
-    std::thread starter([&] { start_result = http.start(); start_finished = true; });
-    {
-        std::unique_lock lk(mu);
-        const bool reached = cv.wait_for(lk, 2s, [&] { return entered; });
-        CHECK(reached);
-        CHECK_FALSE(start_finished.load());
-        release = true;
-    }
-    cv.notify_all();
-    starter.join();
-    CHECK_FALSE(start_result);
-    CHECK_FALSE(http.running());
-    CHECK(http.actual_port() == 0);
-    http.native_server().new_task_queue = original_factory;
+    http.register_view("v", "int");
     REQUIRE(http.start());
-    httplib::Client client("127.0.0.1", http.actual_port());
-    timeouts(client);
-    REQUIRE(client.Get("/aria/health"));
+    test_http::Client c(http.actual_port());
+    REQUIRE(c.connected());
+    // One socket, three exchanges: the connection loop must stay in sync.
+    for (int i = 0; i < 3; ++i) {
+        auto r = c.post("/aria/state", R"({"view":"v","field":"int","value":7})");
+        CHECK(r.status == 200);
+        auto health = c.get("/aria/health");
+        CHECK(health.status == 200);
+    }
+    CHECK(http.get_int(*http.find_view("v")) == 7);
     http.stop();
+}
+
+TEST_CASE("HEAD and CORS preflight behave on the wire") {
+    auto cfg = config();
+    cfg.enable_cors = true;
+    HttpAdapter http(cfg);
+    REQUIRE(http.start());
+    test_http::Client c(http.actual_port());
+    REQUIRE(c.connected());
+    auto options = c.request("OPTIONS", "/aria/state");
+    CHECK(options.status == 204);
+    CHECK(options.body.empty());
+    auto head = c.request("HEAD", "/aria/health");
+    CHECK(head.status == 200);
+    CHECK(head.body.empty());
+    auto get = c.get("/aria/health");
+    CHECK(get.status == 200);
+    CHECK(json::parse(get.body)["ok"] == true);
+    http.stop();
+}
+
+TEST_CASE("Static mount serves files, defaults to index.html and refuses traversal") {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("aria-http-static-" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "assets");
+    {
+        std::ofstream(root / "index.html") << "<html>home</html>";
+        std::ofstream(root / "assets" / "app.js") << "console.log(1)";
+    }
+    auto cfg = config();
+    cfg.static_root = root.string();
+    HttpAdapter http(cfg);
+    REQUIRE(http.start());
+    test_http::Client c(http.actual_port());
+    REQUIRE(c.connected());
+    auto home = c.get("/index.html");
+    CHECK(home.status == 200);
+    CHECK(home.body == "<html>home</html>");
+    auto script = c.get("/assets/app.js");
+    CHECK(script.status == 200);
+    CHECK(script.body == "console.log(1)");
+    auto index_default = c.get("/");
+    CHECK(index_default.status == 200);
+    CHECK(index_default.body == "<html>home</html>");
+    auto missing = c.get("/nope.html");
+    CHECK(missing.status == 404);
+    // API routes still win over the static mount.
+    auto health = c.get("/aria/health");
+    CHECK(health.status == 200);
+    http.stop();
+    std::filesystem::remove_all(root);
 }
 
 TEST_CASE("HTTP callback captures can reenter registry during subscription and command teardown") {
@@ -347,12 +333,12 @@ TEST_CASE("HTTP state notifications follow commit order and bounded admission") 
     });
     REQUIRE(http.start());
     const int port = http.actual_port();
-    int first_status = 0;
+    std::atomic<int> first_status{0};
     std::thread first([&] {
-        httplib::Client client("127.0.0.1", port);
-        timeouts(client);
-        auto result = client.Post("/aria/state", R"({"view":"v","field":"int","value":1})", "application/json");
-        if (result) first_status = result->status;
+        test_http::Client client(static_cast<std::uint16_t>(port));
+        if (!client.connected()) return;
+        auto result = client.post("/aria/state", R"({"view":"v","field":"int","value":1})");
+        first_status = result.status;
     });
     const bool started = entered_future.wait_for(2s) == std::future_status::ready;
     if (!started) {
@@ -360,18 +346,16 @@ TEST_CASE("HTTP state notifications follow commit order and bounded admission") 
         first.join();
         REQUIRE(started);
     }
-    httplib::Client client("127.0.0.1", port);
-    timeouts(client);
-    auto second = client.Post("/aria/state", R"({"view":"v","field":"int","value":2})", "application/json");
-    auto excess = client.Post("/aria/state", R"({"view":"v","field":"int","value":3})", "application/json");
+    test_http::Client client(static_cast<std::uint16_t>(port));
+    REQUIRE(client.connected());
+    auto second = client.post("/aria/state", R"({"view":"v","field":"int","value":2})");
+    auto excess = client.post("/aria/state", R"({"view":"v","field":"int","value":3})");
     const int committed = http.get_int(view);
     release.set_value();
     first.join();
-    REQUIRE(second);
-    REQUIRE(excess);
-    CHECK(first_status == 200);
-    CHECK(second->status == 200);
-    CHECK(excess->status == 503);
+    CHECK(first_status.load() == 200);
+    CHECK(second.status == 200);
+    CHECK(excess.status == 503);
     CHECK(committed == 2);
     CHECK(seen == std::vector<int>{1, 2});
 }
@@ -391,13 +375,12 @@ TEST_CASE("HTTP callback identity survives requests and disconnection cancels pe
     int final_calls = 0;
     auto last = http.on_int_changed(view, [&](int) { ++final_calls; });
     REQUIRE(http.start());
-    httplib::Client client("127.0.0.1", http.actual_port());
-    timeouts(client);
+    test_http::Client client(http.actual_port());
+    REQUIRE(client.connected());
     for (int i = 1; i <= 2; ++i) {
-        auto result = client.Post("/aria/state",
-            json{{"view", "v"}, {"field", "int"}, {"value", i}}.dump(), "application/json");
-        REQUIRE(result);
-        CHECK(result->status == 200);
+        auto result = client.post("/aria/state",
+            json{{"view", "v"}, {"field", "int"}, {"value", i}}.dump());
+        CHECK(result.status == 200);
     }
     http.stop();
     CHECK(counters == std::vector<int>{1, 2});
@@ -405,21 +388,23 @@ TEST_CASE("HTTP callback identity survives requests and disconnection cancels pe
     CHECK(final_calls == 2);
 }
 
-TEST_CASE("HTTP lifecycle calls from native routes fail promptly") {
+TEST_CASE("HTTP lifecycle calls from server tasks fail promptly") {
+    // The old backend injected a native route for this; commands now cover
+    // the same guarantee — start/stop reject calls from inside server tasks.
     HttpAdapter http(config());
-    http.native_server().Get("/lifecycle", [&](const httplib::Request&, httplib::Response& response) {
+    http.register_view("v", "text");
+    http.register_command("v", "lifecycle", [&](std::string_view) {
         int rejected = 0;
         try { http.stop(); } catch (const std::logic_error&) { ++rejected; }
         try { http.start(); } catch (const std::logic_error&) { ++rejected; }
-        response.set_content(std::to_string(rejected), "text/plain");
+        return std::to_string(rejected);
     });
     REQUIRE(http.start());
-    httplib::Client client("127.0.0.1", http.actual_port());
-    timeouts(client);
-    auto result = client.Get("/lifecycle");
-    REQUIRE(result);
-    CHECK(result->status == 200);
-    CHECK(result->body == "2");
+    test_http::Client client(http.actual_port());
+    REQUIRE(client.connected());
+    auto result = client.post("/aria/command", R"({"view":"v","command":"lifecycle"})");
+    CHECK(result.status == 200);
+    CHECK(result.body == "2");
     http.stop();
 }
 
@@ -434,11 +419,34 @@ TEST_CASE("HTTP callback can destroy its adapter while native work finishes") {
     });
     REQUIRE(http->start());
     const int port = http->actual_port();
-    httplib::Client client("127.0.0.1", port);
-    timeouts(client);
+    test_http::Client client(static_cast<std::uint16_t>(port));
+    REQUIRE(client.connected());
     // Shutdown can close the socket before a response; completion is observed
-    // through the callback, independently of that transport race.
-    (void)client.Post("/aria/click", R"({"view":"button"})", "application/json");
+    // through the callback, independently of that transport race. Fire the
+    // request over the raw socket and drain whatever comes back without any
+    // response expectations.
+    {
+        const std::string request =
+            "POST /aria/click HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            "Content-Type: application/json\r\nContent-Length: 17\r\n"
+            "Connection: close\r\n\r\n" + std::string(R"({"view":"button"})");
+        std::string_view sent(request);
+        while (!sent.empty()) {
+#if defined(_WIN32)
+            const int n = ::send(client.raw(), sent.data(), static_cast<int>(sent.size()), 0);
+#else
+            const ssize_t n = ::send(client.raw(), sent.data(), sent.size(), 0);
+#endif
+            if (n <= 0) break;  // hung up before the request fully landed: fine
+            sent.remove_prefix(static_cast<std::size_t>(n));
+        }
+        char drain[512];
+#if defined(_WIN32)
+        while (::recv(client.raw(), drain, sizeof(drain), 0) > 0) {}
+#else
+        while (::recv(client.raw(), drain, sizeof(drain), 0) > 0) {}
+#endif
+    }
     REQUIRE(destroyed_future.wait_for(2s) == std::future_status::ready);
     CHECK_FALSE(http);
 }
@@ -450,10 +458,9 @@ TEST_CASE("HTTP SSE rejects an initial snapshot larger than the configured buffe
     auto& view = http.register_view("v", "text");
     http.set_text(view, std::string(1024, 'x'));
     REQUIRE(http.start());
-    httplib::Client client("127.0.0.1", http.actual_port());
-    timeouts(client);
-    auto result = client.Get("/aria/stream");
-    REQUIRE(result);
-    CHECK(result->status == 503);
+    test_http::Client client(http.actual_port());
+    REQUIRE(client.connected());
+    auto result = client.get("/aria/stream");
+    CHECK(result.status == 503);
     CHECK(http.client_count() == 0);
 }

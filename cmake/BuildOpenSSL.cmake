@@ -52,12 +52,20 @@ if(TARGET openssl_external)
     return()
 endif()
 
-set(OPENSSL_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../third_party/openssl")
-get_filename_component(OPENSSL_SOURCE_DIR "${OPENSSL_SOURCE_DIR}" ABSOLUTE)
+# OpenSSL itself is a hash-pinned release download (no vendored source, no
+# submodule); see cmake/ariaFetchPinned.cmake for the verification rules.
+include(ariaFetchPinned)
+aria_fetch_pinned_archive(
+    NAME openssl
+    VERSION 4.0.2
+    URL "https://github.com/openssl/openssl/releases/download/openssl-4.0.2/openssl-4.0.2.tar.gz"
+    SHA256 736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8
+)
+set(OPENSSL_SOURCE_DIR "${ARIA_PINNED_OPENSSL_SOURCE_DIR}")
 if(NOT EXISTS "${OPENSSL_SOURCE_DIR}/Configure")
     message(FATAL_ERROR
-        "ARIA_HTTP_ENABLE_TLS=ON but third_party/openssl/Configure is missing. "
-        "Initialize that submodule, provide parent OpenSSL targets, or explicitly disable TLS.")
+        "ARIA_HTTP_ENABLE_TLS=ON but the pinned OpenSSL archive has no Configure script. "
+        "Provide parent OpenSSL targets or explicitly disable TLS.")
 endif()
 # OpenSSL is C code; never substitute a C++ driver in a CXX-only parent.
 enable_language(C)

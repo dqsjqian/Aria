@@ -7,6 +7,12 @@
 /// (typically a browser running plain JS or Vue/React/Svelte) over
 /// a small REST + SSE protocol — see `wire_protocol.hpp`.
 ///
+/// The transport layer is **Continuo** (https://github.com/dqsjqian/continuo),
+/// a coroutine-native C++23 networking library: an event loop runs the
+/// accept loop and every connection as a coroutine, so SSE streams no
+/// longer occupy a worker thread per client. Request routing and user
+/// callbacks still run on the adapter's worker pool.
+///
 /// # Design goals
 ///
 /// 1. **Drop-in replacement for any other adapter.**
@@ -37,16 +43,18 @@
 ///   removal and binding teardown on the graph owner thread.
 /// * Setters enqueue SSE data without waiting for socket writes; getters
 ///   copy shadow state under the registry mutex.
-/// * Direct subscriptions and custom command handlers run on HTTP workers.
-///   BindingEngine marshals bound Property/Command callbacks when configured
-///   with a dispatcher. Custom handlers must marshal graph access themselves.
+/// * Direct subscriptions and custom command handlers run on the worker
+///   pool. BindingEngine marshals bound Property/Command callbacks when
+///   configured with a dispatcher. Custom handlers must marshal graph
+///   access themselves.
 /// * Subscription handles may be released during or after adapter destruction;
 ///   they do not keep the adapter or its registered callbacks alive.
 /// * start/stop are serialized; invoke them from the host lifecycle thread,
-///   outside an HTTP callback (stop joins the worker pool). Calls from this
-///   server's tasks throw std::logic_error. Destroying the adapter inside a
-///   callback requests asynchronous shutdown; native state is retained until
-///   every active worker and both background threads have finished.
+///   outside an HTTP callback (stop joins the event loop thread and the
+///   worker pool). Calls from this server's tasks throw std::logic_error.
+///   Destroying the adapter inside a callback requests asynchronous
+///   shutdown; native state is retained until every active worker and the
+///   loop thread have finished.
 
 #include "aria/abi/export.hpp"
 #include "aria/binding/view_adapter.hpp"
@@ -59,10 +67,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-
-// Forward declaration so consumers don't pay for the cpp-httplib include
-// unless they actually use the `native_server()` escape hatch below.
-namespace httplib { class Server; }
 
 namespace aria::adapters::http {
 
@@ -186,32 +190,6 @@ public:
     /// Unregister a previously-registered command.
     void unregister_command(std::string_view view_id,
                             std::string_view command_name);
-
-    // ── Native server escape hatch ─────────────────────────────────────
-
-    /// Direct access to the underlying cpp-httplib server, for consumers
-    /// that want to register their own REST routes / static mounts /
-    /// chunked responses on the same listening socket.
-    ///
-    /// **Stability**: This is an escape hatch, not a stable contract.
-    /// The return type leaks the implementation detail that the adapter
-    /// is built on `cpp-httplib`. If we ever swap the HTTP backend, this
-    /// signature changes. Higher-level use cases should prefer
-    /// `register_command()` (REST-style POST handlers) or
-    /// `register_view()` + binding (state pushed via SSE).
-    ///
-    /// **Threading**:
-    /// * Must be called *before* `start()` to register routes — once the
-    ///   server thread is running, mutating the route table is racy.
-    /// * Available *after* construction (the underlying server is
-    ///   constructed eagerly), unlike pre-1.0 versions where you had to
-    ///   start first and downcast a `void*`.
-    ///
-    /// **Build-time visibility**: Include <httplib.h> to use the returned
-    /// server. The installed aria::http target exports the matching header,
-    /// compile definitions and optional TLS link dependencies. This API
-    /// remains coupled to the bundled cpp-httplib version.
-    [[nodiscard]] ::httplib::Server& native_server() noexcept;
 
 private:
     struct Impl;
