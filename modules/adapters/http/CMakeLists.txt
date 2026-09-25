@@ -20,9 +20,9 @@
 include(ariaFetchPinned)
 aria_fetch_pinned_archive(
     NAME continuo
-    VERSION 0.1.2
-    URL "https://github.com/dqsjqian/continuo/releases/download/v0.1.2/continuo-0.1.2.tar.gz"
-    SHA256 508c56092c004bda7e7e606e2c266fab8a918b38bab46c96b37604862681dafa
+    VERSION 0.1.3
+    URL "https://github.com/dqsjqian/continuo/releases/download/v0.1.3/continuo-0.1.3.tar.gz"
+    SHA256 b12349be5ba07c862b8126e252e7bffa01f653e40b8af28a7b3565117ac9a760
 )
 set(CONTINUO_BUILD_TESTS OFF)
 set(CONTINUO_BUILD_EXAMPLES OFF)
