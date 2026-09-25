@@ -1,7 +1,11 @@
 add_executable(test_http_adapter test_http_adapter.cpp test_http_wire.cpp)
 target_link_libraries(test_http_adapter
     PRIVATE aria::http aria::binding aria::core aria::warnings doctest::doctest)
-target_compile_features(test_http_adapter PRIVATE cxx_std_20)
+target_compile_features(test_http_adapter PRIVATE cxx_std_23)
+if(WIN32)
+    # test_http_wire drives the adapter through a raw blocking socket client.
+    target_link_libraries(test_http_adapter PRIVATE ws2_32)
+endif()
 add_test(NAME http_adapter COMMAND test_http_adapter)
 
 target_link_libraries(test_http_adapter PRIVATE nlohmann_json::nlohmann_json)
