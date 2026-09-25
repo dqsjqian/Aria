@@ -40,11 +40,27 @@ add_subdirectory(${ARIA_PINNED_CONTINUO_SOURCE_DIR} continuo)
 # and unannotated TUs together (LNK2038 on the container-annotation
 # metadata), and on GCC/Clang the Continuo archives would otherwise
 # silently opt out of the sanitizer guarantees the rest of the build has.
-foreach(_continuo_target continuo_core continuo_transport continuo_http continuo_tls)
-    if(TARGET ${_continuo_target})
-        aria_apply_sanitizers(${_continuo_target})
+# aria_apply_sanitizers() is INTERFACE-shaped — for these third-party
+# targets the flags must land PRIVATE so their own TUs are instrumented.
+set(_continuo_san_flags "")
+if(ARIA_ENABLE_ASAN)
+    if(MSVC)
+        list(APPEND _continuo_san_flags /fsanitize=address /Zi)
+    else()
+        list(APPEND _continuo_san_flags -fsanitize=address -fno-omit-frame-pointer)
     endif()
-endforeach()
+endif()
+if(ARIA_ENABLE_UBSAN AND NOT MSVC)
+    list(APPEND _continuo_san_flags -fsanitize=undefined -fno-sanitize-recover=undefined)
+endif()
+if(_continuo_san_flags)
+    foreach(_continuo_target continuo_core continuo_transport continuo_http continuo_tls)
+        if(TARGET ${_continuo_target})
+            target_compile_options(${_continuo_target} PRIVATE ${_continuo_san_flags})
+            target_link_options(${_continuo_target} PRIVATE ${_continuo_san_flags})
+        endif()
+    endforeach()
+endif()
 
 if(ARIA_BUILD_SHARED)
     add_library(aria_http SHARED)
