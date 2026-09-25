@@ -36,6 +36,16 @@ if(NOT ARIA_BUILD_SHARED)
 endif()
 add_subdirectory(${ARIA_PINNED_CONTINUO_SOURCE_DIR} continuo)
 
+# Sanitizers must reach Continuo as well: MSVC refuses to link annotated
+# and unannotated TUs together (LNK2038 on the container-annotation
+# metadata), and on GCC/Clang the Continuo archives would otherwise
+# silently opt out of the sanitizer guarantees the rest of the build has.
+foreach(_continuo_target continuo_core continuo_transport continuo_http continuo_tls)
+    if(TARGET ${_continuo_target})
+        aria_apply_sanitizers(${_continuo_target})
+    endif()
+endforeach()
+
 if(ARIA_BUILD_SHARED)
     add_library(aria_http SHARED)
 else()
