@@ -20,9 +20,9 @@
 include(ariaFetchPinned)
 aria_fetch_pinned_archive(
     NAME Mira
-    VERSION 0.1.5
-    URL "https://github.com/dqsjqian/Mira/releases/download/v0.1.5/Mira-0.1.5.tar.gz"
-    SHA256 d29cfd4a632c505f5632fa4f294e44984df131b7ca238690bd22cbd1fd845c62
+    VERSION 0.2.0
+    URL "https://github.com/dqsjqian/Mira/releases/download/v0.2.0/Mira-0.2.0.tar.gz"
+    SHA256 8f536d56d4b5218797da638f068e753838e4917ac3f2fbc6e5534c87c059cf17
 )
 set(MIRA_BUILD_TESTS OFF)
 set(MIRA_BUILD_EXAMPLES OFF)
