@@ -235,7 +235,7 @@ CI/infrastructure defects fixed.
   evaluation, before command-line filters apply.
 - The CMake build-tree guard no longer fires for consumers that pull
   Aria in via `add_subdirectory()`; it only guards standalone
-  top-level Aria builds (OpenRead's `<root>/build` used to trip it).
+  top-level Aria builds (AriaRead's `<root>/build` used to trip it).
 - The nightly fuzz job had failed every night since 2026-09-01:
   `ASAN_OPTIONS=detect_leaks=1` is not supported by ASan on macOS and,
   combined with `abort_on_error=1`, aborted the fuzzer at startup.

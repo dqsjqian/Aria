@@ -34,7 +34,7 @@ project(aria
 # CMAKE_SOURCE_DIR.
 option(ARIA_ALLOW_BUILD_ROOT "Permit configuring directly into build/ (not recommended)" OFF)
 # Guard fires only when Aria is the top-level project. When Aria is pulled in
-# via add_subdirectory() (OpenRead / AriaTools / AriaAgent submodules),
+# via add_subdirectory() (AriaRead / AriaTools / AriaAgent submodules),
 # CMAKE_SOURCE_DIR is the consumer's root and the consumer owns its build
 # layout — e.g. a plain `build/` there is perfectly valid and must not fail.
 if(NOT ARIA_ALLOW_BUILD_ROOT AND CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
@@ -125,7 +125,7 @@ find_package(Threads REQUIRED)
 include(ariaFetchPinned)
 
 # nlohmann/json is fetched only when the host does not already provide the
-# namespaced target — OpenRead, for instance, installs its own pinned copy.
+# namespaced target — AriaRead, for instance, installs its own pinned copy.
 if(NOT TARGET nlohmann_json::nlohmann_json)
     aria_fetch_pinned_archive(
         NAME json

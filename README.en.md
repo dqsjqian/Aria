@@ -215,7 +215,7 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 | **Native UI freedom** | Your UI toolkit owns widgets, layout, and animation. Aria unifies one-way and two-way state binding, sharing the business core while preserving native experiences. |
 | **Layered compatibility** | `aria-abi` / `aria-runtime` / `aria-binding` maintain ABI stability within a major version, with matching compiler, standard library, and build options. Rebuild templates such as `Property<T>` and their containing types after updates. |
 | **Open adapter protocol** | Qt6 / AppKit / UIKit / JNI / HTTP ship out of the box. Integrate other UI toolkits by implementing `IViewAdapter` (see the [adapter guides](docs/guide/adapters/)). |
-| **Applications and learning resources** | AriaTools, AriaAgent, and OpenRead demonstrate cross-platform workbenches, agent GUIs, and reading engines. [Guides](docs/index.md), the [Cookbook](docs/cookbook/README.md), and engineering contracts cover the path from first integration to custom extensions. |
+| **Applications and learning resources** | AriaTools, AriaAgent, and AriaRead demonstrate cross-platform workbenches, agent GUIs, and reading engines. [Guides](docs/index.md), the [Cookbook](docs/cookbook/README.md), and engineering contracts cover the path from first integration to custom extensions. |
 
 **Designed for shared C++ business logic, native multi-platform UIs, and long-term maintenance.** Aria owns business state and binding; the chosen UI toolkit owns rendering and UI reuse. An explicit adapter protocol connects the two.
 
@@ -527,7 +527,7 @@ The big picture first — three real applications grew out of one framework:
 Below is what Aria looks like in real applications — one C++ ViewModel, native shells per
 platform. **[AriaTools](https://github.com/dqsjqian/AriaTools)** (17-module cross-platform
 workbench on Qt / iOS / Android / Web), **[AriaAgent](https://github.com/dqsjqian/AriaAgent)**
-(provider-agnostic LLM Agent GUI), and [OpenRead](https://github.com/dqsjqian/OpenRead)
+(provider-agnostic LLM Agent GUI), and [AriaRead](https://github.com/dqsjqian/AriaRead)
 (cross-platform book-source engine, HTTP/SSE web shell) all run Aria 1.x in production
 shape. Every screenshot comes from a stable release: one build, one shared C++ business
 core across platforms.
@@ -555,7 +555,7 @@ tool-call chain visualization, permission approval (fail-closed), Markdown rende
 | Main chat | ![AriaAgent-Main](docs/marketing/images/AriaAgent-Mac-main.png) |
 | Settings (General / Model / Plugins / Agent Presets) | ![AriaAgent-Setting](docs/marketing/images/AriaAgent-Mac-setting.png) |
 
-### OpenRead — cross-platform book-source engine
+### AriaRead — cross-platform book-source engine
 
 A book-source manager powered by the Aria HTTP adapter: source list on the left, book
 cards on the right — search, subscribe, and debug in one place. The same C++ core drives
@@ -563,8 +563,8 @@ two web shapes: a REST+SSE thin client and an SSR variant.
 
 | View | Screenshot |
 |---|---|
-| Source manager (Web, REST + SSE) | ![OpenRead-Web](docs/marketing/images/OpenRead-Web.png) |
-| Source manager (Web, SSR) | ![OpenRead-SSR](docs/marketing/images/OpenRead-SSR.png) |
+| Source manager (Web, REST + SSE) | ![AriaRead-Web](docs/marketing/images/AriaRead-Web.png) |
+| Source manager (Web, SSR) | ![AriaRead-SSR](docs/marketing/images/AriaRead-SSR.png) |
 
 > These screenshots show the macOS example applications. Other platforms reuse
 > the ViewModel; native appearance depends on the platform, Qt style, and host
