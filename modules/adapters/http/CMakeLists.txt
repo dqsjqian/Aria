@@ -22,7 +22,7 @@ aria_fetch_pinned_archive(
     NAME Mira
     VERSION 0.2.0
     URL "https://github.com/dqsjqian/Mira/releases/download/v0.2.0/Mira-0.2.0.tar.gz"
-    SHA256 b733f9a131740fffd6f027e0cd4ff224d40885672d11b1ec190786466c10cb38
+    SHA256 777916e5e2034517de75bd34f063d95383268dd48195bac5ebfa80a21ebe6316
 )
 set(MIRA_BUILD_TESTS OFF)
 set(MIRA_BUILD_EXAMPLES OFF)
