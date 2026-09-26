@@ -25,9 +25,12 @@ baseline, `HttpAdapter` transport swap, `native_server()` removal.
 
 ### 3.0 foundation
 
-- **C++23 is the minimum standard** for every module and consumer. GCC 13+ /
-  Clang 18+ / AppleClang 21+ / MSVC v143. The `CMAKE_CXX_STANDARD` default and
-  the configure-time check both moved from 20 to 23.
+- **C++23 is the minimum standard** for every module and consumer. GCC 14+ /
+  Clang 19+ / AppleClang 21+ / MSVC v143. The `CMAKE_CXX_STANDARD` default and
+  the configure-time check both moved from 20 to 23. GCC 13 ICEs on
+  move-only coroutine consumers and clang-18's `__cpp_concepts` hides
+  `std::expected` from libstdc++; both are compiler defects, not library
+  ones — the CI matrix moved to gcc-14 / clang-19 to prove the floor.
 
 ### 3.0 HTTP adapter (aria::http)
 
