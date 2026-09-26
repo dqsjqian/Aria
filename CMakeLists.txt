@@ -65,7 +65,7 @@ if(NOT DEFINED CMAKE_CXX_STANDARD)
     set(CMAKE_CXX_STANDARD 23)
 endif()
 if(CMAKE_CXX_STANDARD LESS 23)
-    message(FATAL_ERROR "Aria requires C++23 or later (2.1+; the HTTP adapter is built on Continuo)")
+    message(FATAL_ERROR "Aria requires C++23 or later (2.1+; the HTTP adapter is built on Mira)")
 endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -390,12 +390,12 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/aria
     )
 
-    # Static HTTP builds install the Continuo package and expect consumers
-    # to resolve it; shared builds absorb Continuo into the aria_http dylib.
+    # Static HTTP builds install the Mira package and expect consumers
+    # to resolve it; shared builds absorb Mira into the aria_http dylib.
     if(ARIA_BUILD_HTTP AND NOT ARIA_BUILD_SHARED)
-        set(ARIA_HTTP_NEEDS_CONTINUO ON)
+        set(ARIA_HTTP_NEEDS_MIRA ON)
     else()
-        set(ARIA_HTTP_NEEDS_CONTINUO OFF)
+        set(ARIA_HTTP_NEEDS_MIRA OFF)
     endif()
 
     configure_package_config_file(

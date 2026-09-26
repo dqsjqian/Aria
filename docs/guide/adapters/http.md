@@ -2,7 +2,7 @@
 
 The HTTP adapter exposes registered logical views to browsers using REST and
 Server-Sent Events. It implements the same `IViewAdapter` contract as native UI
-adapters, with [Continuo](https://github.com/dqsjqian/continuo) as the
+adapters, with [Mira](https://github.com/dqsjqian/Mira) as the
 transport (coroutine-native C++23 networking; hash-pinned automatically by
 the build). Build with `-DARIA_BUILD_HTTP=ON`; add
 `-DARIA_HTTP_ENABLE_TLS=OFF` for a plain HTTP development build. Link the
@@ -154,7 +154,7 @@ view while another thread dereferences it.
 `register_command(view_id, name, handler)` receives a JSON argument string and
 returns a JSON response string. The view must exist when invoked.
 
-The transport is [Continuo](https://github.com/dqsjqian/continuo): one event
+The transport is [Mira](https://github.com/dqsjqian/Mira): one event
 loop thread serves every connection as a coroutine, so SSE streams do not
 occupy worker threads. Synchronous route logic and user callbacks run on the
 adapter's worker pool. A blocking custom command handler delays other

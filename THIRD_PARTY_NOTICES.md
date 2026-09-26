@@ -9,12 +9,12 @@ Aria itself is licensed under the MIT License (see `LICENSE`).
 
 ---
 
-## Continuo
+## Mira
 
 - **Version:** 0.1.5 (hash-pinned release archive, pinned in `modules/adapters/http/CMakeLists.txt`)
 - **Copyright:** Copyright (c) 2026 dqsjqian
 - **License:** MIT — see `LICENSE` upstream
-- **Upstream:** https://github.com/dqsjqian/continuo
+- **Upstream:** https://github.com/dqsjqian/Mira
 - **Used by:** `aria::http` transport (event loop, TCP, TLS, HTTP/1.1 serving)
 
 ## nlohmann/json
@@ -38,7 +38,7 @@ Aria itself is licensed under the MIT License (see `LICENSE`).
 - **Version:** 4.0.2 (hash-pinned release archive, built from source via `cmake/BuildOpenSSL.cmake` when TLS is enabled)
 - **License:** Apache License 2.0 — reproduced in the release archive as `LICENSE.txt`
 - **Upstream:** https://github.com/openssl/openssl
-- **Used by:** Continuo's TLS module (server/client certificates, ALPN, mTLS)
+- **Used by:** Mira's TLS module (server/client certificates, ALPN, mTLS)
 
 ---
 
@@ -47,7 +47,7 @@ Aria itself is licensed under the MIT License (see `LICENSE`).
 - **cpp-httplib** (v0.53.1–0.54.1, bundled single-header with a local
   `SO_EXCLUSIVEADDRUSE` patch) was the HTTP adapter transport until 2.x and is
   no longer distributed with, or depended on by, Aria. Its MIT notice applied
-  to the versions previously bundled here. The transport is now Continuo.
+  to the versions previously bundled here. The transport is now Mira.
 - **CPM.cmake** was used as an offline fallback for doctest and is no longer
   part of the build.
 
