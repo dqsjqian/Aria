@@ -2,7 +2,7 @@
 /// @file test_http_client.hpp
 /// @brief Minimal blocking HTTP/1.1 test client for adapter wire tests.
 ///
-/// Deliberately independent of Continuo's own HTTP client: exercising the
+/// Deliberately independent of Mira's own HTTP client: exercising the
 /// adapter through plain sockets keeps the test honest about the wire. It
 /// speaks just enough HTTP for the adapter's surface — request lines,
 /// Content-Length and chunked responses, and incremental reads for SSE.

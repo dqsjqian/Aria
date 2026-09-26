@@ -3,61 +3,61 @@
 #
 # Dependencies (hash-pinned downloads, no vendored source, no submodules —
 # see cmake/ariaFetchPinned.cmake):
-#   - Continuo       (dqsjqian, MIT)   — coroutine-native HTTP/1.1 server,
+#   - Mira       (dqsjqian, MIT)   — coroutine-native HTTP/1.1 server,
 #                                        event loop, TCP, optional TLS
 #   - nlohmann::json (Niels Lohmann, MIT) — JSON encode/decode
 #   - OpenSSL        (Apache-2.0; pinned release, built from source via
-#                      BuildOpenSSL)     — TLS 1.2/1.3 (optional, via Continuo)
+#                      BuildOpenSSL)     — TLS 1.2/1.3 (optional, via Mira)
 #
 # Configure with: cmake -DARIA_BUILD_HTTP=ON ...
 # To disable TLS:  cmake -DARIA_BUILD_HTTP=ON -DARIA_HTTP_ENABLE_TLS=OFF ...
 
-# Continuo is fetched as a hash-pinned release archive (no vendored source,
+# Mira is fetched as a hash-pinned release archive (no vendored source,
 # no submodule; see cmake/ariaFetchPinned.cmake). Only what the adapter uses
-# is enabled; HTTP/2 and HTTP/3 stay off. Continuo requires C++23, and the
+# is enabled; HTTP/2 and HTTP/3 stay off. Mira requires C++23, and the
 # adapter propagates cxx_std_23 PUBLIC for exactly that reason.
-# Override for offline work: -DARIA_PIN_CONTINUO_SOURCE_DIR=/path/to/continuo
+# Override for offline work: -DARIA_PIN_MIRA_SOURCE_DIR=/path/to/Mira
 include(ariaFetchPinned)
 aria_fetch_pinned_archive(
-    NAME continuo
+    NAME Mira
     VERSION 0.1.5
-    URL "https://github.com/dqsjqian/continuo/releases/download/v0.1.5/continuo-0.1.5.tar.gz"
+    URL "https://github.com/dqsjqian/Mira/releases/download/v0.1.5/Mira-0.1.5.tar.gz"
     SHA256 d29cfd4a632c505f5632fa4f294e44984df131b7ca238690bd22cbd1fd845c62
 )
-set(CONTINUO_BUILD_TESTS OFF)
-set(CONTINUO_BUILD_EXAMPLES OFF)
-set(CONTINUO_ENABLE_HTTP2 OFF)
-set(CONTINUO_ENABLE_HTTP3 OFF)
-set(CONTINUO_ENABLE_TLS ${ARIA_HTTP_ENABLE_TLS})
+set(MIRA_BUILD_TESTS OFF)
+set(MIRA_BUILD_EXAMPLES OFF)
+set(MIRA_ENABLE_HTTP2 OFF)
+set(MIRA_ENABLE_HTTP3 OFF)
+set(MIRA_ENABLE_TLS ${ARIA_HTTP_ENABLE_TLS})
 if(NOT ARIA_BUILD_SHARED)
-    # Static aria_http: consumer link lines end at the Continuo archives,
-    # so the Continuo package config must be installed alongside Aria.
-    set(CONTINUO_INSTALL ON)
+    # Static aria_http: consumer link lines end at the Mira archives,
+    # so the Mira package config must be installed alongside Aria.
+    set(MIRA_INSTALL ON)
 endif()
-add_subdirectory(${ARIA_PINNED_CONTINUO_SOURCE_DIR} continuo)
+add_subdirectory(${ARIA_PINNED_MIRA_SOURCE_DIR} Mira)
 
-# Sanitizers must reach Continuo as well: MSVC refuses to link annotated
+# Sanitizers must reach Mira as well: MSVC refuses to link annotated
 # and unannotated TUs together (LNK2038 on the container-annotation
-# metadata), and on GCC/Clang the Continuo archives would otherwise
+# metadata), and on GCC/Clang the Mira archives would otherwise
 # silently opt out of the sanitizer guarantees the rest of the build has.
 # aria_apply_sanitizers() is INTERFACE-shaped — for these third-party
 # targets the flags must land PRIVATE so their own TUs are instrumented.
-set(_continuo_san_flags "")
+set(_mira_san_flags "")
 if(ARIA_ENABLE_ASAN)
     if(MSVC)
-        list(APPEND _continuo_san_flags /fsanitize=address /Zi)
+        list(APPEND _mira_san_flags /fsanitize=address /Zi)
     else()
-        list(APPEND _continuo_san_flags -fsanitize=address -fno-omit-frame-pointer)
+        list(APPEND _mira_san_flags -fsanitize=address -fno-omit-frame-pointer)
     endif()
 endif()
 if(ARIA_ENABLE_UBSAN AND NOT MSVC)
-    list(APPEND _continuo_san_flags -fsanitize=undefined -fno-sanitize-recover=undefined)
+    list(APPEND _mira_san_flags -fsanitize=undefined -fno-sanitize-recover=undefined)
 endif()
-if(_continuo_san_flags)
-    foreach(_continuo_target continuo_core continuo_transport continuo_http continuo_tls)
-        if(TARGET ${_continuo_target})
-            target_compile_options(${_continuo_target} PRIVATE ${_continuo_san_flags})
-            target_link_options(${_continuo_target} PRIVATE ${_continuo_san_flags})
+if(_mira_san_flags)
+    foreach(_mira_target mira_core mira_transport mira_http mira_tls)
+        if(TARGET ${_mira_target})
+            target_compile_options(${_mira_target} PRIVATE ${_mira_san_flags})
+            target_link_options(${_mira_target} PRIVATE ${_mira_san_flags})
         endif()
     endforeach()
 endif()
@@ -87,7 +87,7 @@ if(NOT ARIA_BUILD_SHARED)
 endif()
 
 # Optional TLS via OpenSSL — either system-installed (find_package) or
-# built from source by ../../../cmake/BuildOpenSSL.cmake. Continuo's TLS
+# built from source by ../../../cmake/BuildOpenSSL.cmake. Mira's TLS
 # module owns the OpenSSL linkage; Aria's public surface no longer leaks
 # any SSL types.
 if(ARIA_HTTP_ENABLE_TLS)
@@ -95,10 +95,10 @@ if(ARIA_HTTP_ENABLE_TLS)
         message(FATAL_ERROR "HTTP TLS was requested without complete OpenSSL targets")
     endif()
     target_compile_definitions(aria_http PUBLIC ARIA_HTTP_HAS_TLS)
-    target_link_libraries(aria_http PRIVATE continuo::transport continuo::http continuo::tls)
-    message(STATUS "aria::http: TLS enabled (OpenSSL via Continuo)")
+    target_link_libraries(aria_http PRIVATE Mira::transport Mira::http Mira::tls)
+    message(STATUS "aria::http: TLS enabled (OpenSSL via Mira)")
 else()
-    target_link_libraries(aria_http PRIVATE continuo::transport continuo::http)
+    target_link_libraries(aria_http PRIVATE Mira::transport Mira::http)
     message(STATUS "aria::http: TLS disabled (HTTP-only)")
 endif()
 

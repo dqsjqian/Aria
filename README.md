@@ -558,7 +558,7 @@ Aria 已开源（MIT License），源码托管在 [GitHub](https://github.com/dq
 
 - [doctest](https://github.com/doctest/doctest) —— 轻量级测试框架
 - [nlohmann_json](https://github.com/nlohmann/json) —— JSON for Modern C++
-- [Continuo](https://github.com/dqsjqian/continuo) —— 协程原生的 C++23 网络库（HTTP 适配器的传输层）
+- [Mira](https://github.com/dqsjqian/Mira) —— 协程原生的 C++23 网络库（HTTP 适配器的传输层）
 - [OpenSSL](https://www.openssl.org/) —— TLS 1.2/1.3（哈希固定的 release 下载）
 - 第三方依赖统一经 [ariaFetchPinned.cmake](cmake/ariaFetchPinned.cmake) 按 SHA256 固定下载，无 vendored 源码、无 submodule
 

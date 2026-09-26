@@ -502,7 +502,7 @@ Task<std::string> fetch_user(int id) {
 The HTTP adapter ships a small server (`HttpAdapter`) that exposes any
 ViewModel over a JSON REST + Server-Sent-Events protocol, plus a
 vanilla-JS browser SDK (`aria_client.js`). The server is built on the
-the coroutine-native **Continuo** networking library (HTTP/1.1 + SSE) and
+the coroutine-native **Mira** networking library (HTTP/1.1 + SSE) and
 **nlohmann::json** (encode/decode) — both committed under
 `third_party/`, so the adapter adds no new external build dependency;
 aria itself owns the wire protocol, view registry, subscription dispatch
@@ -663,7 +663,7 @@ Contributions are welcome! Please open an issue first to discuss design changes.
 
 - [doctest](https://github.com/doctest/doctest) — lightweight test framework
 - [nlohmann_json](https://github.com/nlohmann/json) — JSON for Modern C++
-- [Continuo](https://github.com/dqsjqian/continuo) — coroutine-native C++23 networking (the HTTP adapter transport)
+- [Mira](https://github.com/dqsjqian/Mira) — coroutine-native C++23 networking (the HTTP adapter transport)
 - [OpenSSL](https://www.openssl.org/) — TLS 1.2/1.3 (version in `third_party/openssl/VERSION.dat`)
 - [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) — CMake dependency management
 

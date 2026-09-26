@@ -202,7 +202,7 @@ TEST_CASE("HTTP stop interrupts heartbeat, resets port, and permits immediate re
 }
 
 TEST_CASE("HTTP bind failure cleans up and can retry after occupied port is released") {
-    // Continuo binds exclusively by default on every platform, so a second
+    // Mira binds exclusively by default on every platform, so a second
     // adapter on the same port deterministically fails.
     HttpAdapter occupying(config());
     REQUIRE(occupying.start());

@@ -7,7 +7,7 @@
 /// (typically a browser running plain JS or Vue/React/Svelte) over
 /// a small REST + SSE protocol — see `wire_protocol.hpp`.
 ///
-/// The transport layer is **Continuo** (https://github.com/dqsjqian/continuo),
+/// The transport layer is **Mira** (https://github.com/dqsjqian/Mira),
 /// a coroutine-native C++23 networking library: an event loop runs the
 /// accept loop and every connection as a coroutine, so SSE streams no
 /// longer occupy a worker thread per client. Request routing and user

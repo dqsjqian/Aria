@@ -197,7 +197,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────
   # Ubuntu — gcc + clang matrix, plus Qt6 dev packages. C++23 is the
   # framework baseline since 3.0; both compiler families build the full
-  # tree (Continuo included) against it.
+  # tree (Mira included) against it.
   # ────────────────────────────────────────────────────────────────────
   ubuntu:
     name: Ubuntu (${{ matrix.compiler }}, C++${{ matrix.standard }})

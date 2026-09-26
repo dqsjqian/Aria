@@ -5,7 +5,7 @@
 #include <string>
 
 // Minimal standalone HTTP/1.1 client for the installed-SDK smoke test: no
-// Aria test helpers, no Continuo types — a raw loopback exchange over the
+// Aria test helpers, no Mira types — a raw loopback exchange over the
 // public adapter surface, plus the build-definition contract checks.
 
 #if defined(_WIN32)

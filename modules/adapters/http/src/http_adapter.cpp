@@ -1,7 +1,7 @@
 /// @file http_adapter.cpp
-/// @brief HTTP/REST/SSE implementation built on Continuo + nlohmann::json.
+/// @brief HTTP/REST/SSE implementation built on Mira + nlohmann::json.
 ///
-/// Continuo (MIT, https://github.com/dqsjqian/continuo) supplies the event
+/// Mira (MIT, https://github.com/dqsjqian/Mira) supplies the event
 /// loop, TCP, optional TLS, and the HTTP/1.1 connection loop. nlohmann::json
 /// (MIT) handles JSON encode/decode. Both are hash-pinned downloads — see
 /// cmake/ariaFetchPinned.cmake and the module CMakeLists.
@@ -30,15 +30,15 @@
 #include "aria/binding/view_adapter.hpp"
 #include "aria/callback_boundary.hpp"
 
-#include <continuo/core/event_loop.hpp>
-#include <continuo/core/executor.hpp>
-#include <continuo/core/task.hpp>
-#include <continuo/core/task_scope.hpp>
-#include <continuo/http/connection.hpp>
-#include <continuo/transport/tcp.hpp>
+#include <mira/core/event_loop.hpp>
+#include <mira/core/executor.hpp>
+#include <mira/core/task.hpp>
+#include <mira/core/task_scope.hpp>
+#include <mira/http/connection.hpp>
+#include <mira/transport/tcp.hpp>
 #if defined(ARIA_HTTP_HAS_TLS)
-#  include <continuo/tls/context.hpp>
-#  include <continuo/tls/stream.hpp>
+#  include <mira/tls/context.hpp>
+#  include <mira/tls/stream.hpp>
 #endif
 
 #include <nlohmann/json.hpp>
@@ -76,10 +76,10 @@ using json = nlohmann::json;
 
 namespace {
 
-using continuo::EventLoop;
-using continuo::OperationOptions;
-using continuo::Result;
-using continuo::Task;
+using Mira::EventLoop;
+using Mira::OperationOptions;
+using Mira::Result;
+using Mira::Task;
 
 std::span<const std::byte> as_bytes(std::string_view text) {
     return {reinterpret_cast<const std::byte*>(text.data()), text.size()};
@@ -88,7 +88,7 @@ std::span<const std::byte> as_bytes(std::string_view text) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Worker pool — where synchronous route logic and user callbacks run.
 //
-// Continuo deliberately owns no thread policy, so the adapter brings its own
+// Mira deliberately owns no thread policy, so the adapter brings its own
 // tiny pool. Jobs are opaque callables; the pool never touches sockets.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -361,9 +361,9 @@ struct HttpAdapter::Impl : std::enable_shared_from_this<HttpAdapter::Impl> {
     bool tls_active = false;
     std::string tls_error;  // non-empty when TLS configuration failed at start
 #if defined(ARIA_HTTP_HAS_TLS)
-    std::optional<continuo::tls::Context> tls_context;
+    std::optional<Mira::tls::Context> tls_context;
 #endif
-    std::optional<continuo::transport::tcp::Listener> listener;
+    std::optional<Mira::transport::tcp::Listener> listener;
     std::stop_source stop_source;
     std::mutex lifecycle_mu;
 
@@ -454,20 +454,20 @@ struct HttpAdapter::Impl : std::enable_shared_from_this<HttpAdapter::Impl> {
         close_registry();
     }
 
-    // ── TLS construction (maps config onto Continuo's server context) ──
+    // ── TLS construction (maps config onto Mira's server context) ──
 
 #if defined(ARIA_HTTP_HAS_TLS)
     void construct_tls_context() {
-        continuo::tls::Context::ServerConfig tls;
+        Mira::tls::Context::ServerConfig tls;
         tls.cert_file = config.tls_cert_file;
         tls.key_file = config.tls_key_file;
         if (!config.tls_ca_file.empty()) {
-            // Continuo enforces peer verification whenever a CA is loaded;
+            // Mira enforces peer verification whenever a CA is loaded;
             // there is no insecure bypass, matching the adapter's contract.
             tls.client_ca_file = config.tls_ca_file;
         }
         tls.min_version = config.tls_min_version;
-        auto built = continuo::tls::Context::server(tls);
+        auto built = Mira::tls::Context::server(tls);
         if (!built) {
             tls_error = built.error().message();
             return;
@@ -691,12 +691,12 @@ struct HttpAdapter::Impl : std::enable_shared_from_this<HttpAdapter::Impl> {
     // loop thread; synchronous work hops to the pool and back.
     template<class Stream>
     Task<Result<void>> serve_request(
-        const continuo::http::Request& request,
-        continuo::http::ResponseWriter<Stream>& writer,
+        const Mira::http::Request& request,
+        Mira::http::ResponseWriter<Stream>& writer,
         std::span<const std::byte> body);
 
     // Shared synchronous dispatcher: runs ON THE POOL, returns the response.
-    RouteOutcome dispatch(const continuo::http::Request& request,
+    RouteOutcome dispatch(const Mira::http::Request& request,
                           std::span<const std::byte> body);
 
     RouteOutcome handle_health();
@@ -705,18 +705,18 @@ struct HttpAdapter::Impl : std::enable_shared_from_this<HttpAdapter::Impl> {
     RouteOutcome handle_post_state(std::span<const std::byte> body_bytes);
     RouteOutcome handle_post_click(std::span<const std::byte> body_bytes);
     RouteOutcome handle_post_command(std::span<const std::byte> body_bytes);
-    RouteOutcome handle_static(const continuo::http::Request& request);
+    RouteOutcome handle_static(const Mira::http::Request& request);
 
     // SSE: admitted on the loop, streamed on the loop until the client or
     // the server goes away. No worker thread is involved.
     template<class Stream>
-    Task<Result<void>> run_sse(continuo::http::ResponseWriter<Stream>& writer);
+    Task<Result<void>> run_sse(Mira::http::ResponseWriter<Stream>& writer);
 
     // ── Connection & accept loops (loop thread only) ───────────────────
 
-    Task<void> connection_task_plain(continuo::transport::tcp::Socket socket);
+    Task<void> connection_task_plain(Mira::transport::tcp::Socket socket);
 #if defined(ARIA_HTTP_HAS_TLS)
-    Task<void> connection_task_tls(continuo::transport::tcp::Socket socket);
+    Task<void> connection_task_tls(Mira::transport::tcp::Socket socket);
 #endif
     Task<void> accept_loop();
 
@@ -927,7 +927,7 @@ HttpAdapter::Impl::RouteOutcome HttpAdapter::Impl::handle_post_command(std::span
 }
 
 HttpAdapter::Impl::RouteOutcome HttpAdapter::Impl::handle_static(
-    const continuo::http::Request& request) {
+    const Mira::http::Request& request) {
     if (config.static_root.empty()) return error_outcome(404, "not found");
 
     // Decode, then refuse anything that escapes the configured root.
@@ -965,16 +965,16 @@ HttpAdapter::Impl::RouteOutcome HttpAdapter::Impl::handle_static(
 }
 
 HttpAdapter::Impl::RouteOutcome HttpAdapter::Impl::dispatch(
-    const continuo::http::Request& request,
+    const Mira::http::Request& request,
     std::span<const std::byte> body_bytes) {
     ExecutionScope scope(this);
     const auto [path, query] = split_target(request.target);
-    const bool get_like = request.method == continuo::http::Method::get ||
-                          request.method == continuo::http::Method::head;
-    const std::string_view method_text = continuo::http::to_string(request.method);
+    const bool get_like = request.method == Mira::http::Method::get ||
+                          request.method == Mira::http::Method::head;
+    const std::string_view method_text = Mira::http::to_string(request.method);
 
     // CORS preflight: answered before routing, like the old global handler.
-    if (request.method == continuo::http::Method::options) {
+    if (request.method == Mira::http::Method::options) {
         RouteOutcome out;
         out.status = 204;
         out.content_type = "text/plain";
@@ -1006,7 +1006,7 @@ HttpAdapter::Impl::RouteOutcome HttpAdapter::Impl::dispatch(
 
 namespace {
 
-void apply_common_headers(continuo::http::Response& response,
+void apply_common_headers(Mira::http::Response& response,
                           const HttpAdapterConfig& config) {
     if (config.enable_cors) {
         response.headers.append("Access-Control-Allow-Origin", "*");
@@ -1018,22 +1018,22 @@ void apply_common_headers(continuo::http::Response& response,
 }  // namespace
 
 template<class Stream>
-Task<continuo::Result<void>> HttpAdapter::Impl::serve_request(
-    const continuo::http::Request& request,
-    continuo::http::ResponseWriter<Stream>& writer,
+Task<Mira::Result<void>> HttpAdapter::Impl::serve_request(
+    const Mira::http::Request& request,
+    Mira::http::ResponseWriter<Stream>& writer,
     std::span<const std::byte> body) {
     const auto [path, query] = split_target(request.target);
-    const bool get_like = request.method == continuo::http::Method::get ||
-                          request.method == continuo::http::Method::head;
+    const bool get_like = request.method == Mira::http::Method::get ||
+                          request.method == Mira::http::Method::head;
 
     if (get_like &&
-        classify(continuo::http::to_string(request.method), path, config.api_prefix) ==
+        classify(Mira::http::to_string(request.method), path, config.api_prefix) ==
             Route::stream) {
         co_return co_await run_sse(writer);
     }
 
     // Everything else: compute on the pool, write on the loop. The hop uses
-    // Continuo's resolver shape: this coroutine parks in `loop.sleep_until`
+    // Mira's resolver shape: this coroutine parks in `loop.sleep_until`
     // — which is loop-visible outstanding work, so the deadlock detector
     // never sees a fully suspended tree — and the pool job runs the
     // segment, then fires the stop token that resolves the sleep back on
@@ -1072,10 +1072,10 @@ Task<continuo::Result<void>> HttpAdapter::Impl::serve_request(
     // so the segment has fully run before this line — unless teardown
     // dropped the job and the global stop resolved the sleep instead.
     if (gate->error) std::rethrow_exception(gate->error);
-    if (!gate->ran) co_return continuo::fail(continuo::Errc::cancelled);
+    if (!gate->ran) co_return Mira::fail(Mira::Errc::cancelled);
     RouteOutcome outcome = std::move(*gate->outcome);
 
-    continuo::http::Response response;
+    Mira::http::Response response;
     response.status = outcome.status;
     response.headers.append("Content-Type", outcome.content_type);
     apply_common_headers(response, config);
@@ -1083,15 +1083,15 @@ Task<continuo::Result<void>> HttpAdapter::Impl::serve_request(
 }
 
 template<class Stream>
-Task<continuo::Result<void>> HttpAdapter::Impl::run_sse(
-    continuo::http::ResponseWriter<Stream>& writer) {
+Task<Mira::Result<void>> HttpAdapter::Impl::run_sse(
+    Mira::http::ResponseWriter<Stream>& writer) {
     auto client = std::make_shared<SseClient>(config.max_pending_sse_bytes);
     {
         // Identical order to a state commit: no live event can precede its snapshot.
         std::lock_guard<std::mutex> registry_lock(registry_mu);
         std::lock_guard<std::mutex> clients_lock(sse_mu);
         if (!running || sse_clients.size() >= sse_capacity) {
-            continuo::http::Response rejection;
+            Mira::http::Response rejection;
             rejection.status = 503;
             rejection.headers.append("Content-Type", "application/json");
             apply_common_headers(rejection, config);
@@ -1114,7 +1114,7 @@ Task<continuo::Result<void>> HttpAdapter::Impl::run_sse(
                 {"value", !shadow_enabled.count(id) || shadow_enabled[id]}}.dump()));
         }
         if (client->closed) {
-            continuo::http::Response rejection;
+            Mira::http::Response rejection;
             rejection.status = 503;
             rejection.headers.append("Content-Type", "application/json");
             apply_common_headers(rejection, config);
@@ -1126,7 +1126,7 @@ Task<continuo::Result<void>> HttpAdapter::Impl::run_sse(
         sse_clients.push_back(client);
     }
 
-    continuo::http::Response head;
+    Mira::http::Response head;
     head.status = 200;
     head.headers.append("Content-Type", "text/event-stream");
     head.headers.append("Cache-Control", "no-cache");
@@ -1136,7 +1136,7 @@ Task<continuo::Result<void>> HttpAdapter::Impl::run_sse(
     auto sent = co_await writer.send_head_chunked(head);
     if (!sent) {
         remove_sse_client(client);
-        co_return continuo::fail(sent.error());
+        co_return Mira::fail(sent.error());
     }
 
     for (;;) {
@@ -1158,7 +1158,7 @@ Task<continuo::Result<void>> HttpAdapter::Impl::run_sse(
             if (!written) {
                 client->closed = true;
                 remove_sse_client(client);
-                co_return continuo::fail(written.error());
+                co_return Mira::fail(written.error());
             }
             pending.pop_front();
         }
@@ -1174,8 +1174,8 @@ Task<continuo::Result<void>> HttpAdapter::Impl::run_sse(
 // Connection / accept loops — loop thread only.
 // ─────────────────────────────────────────────────────────────────────────────
 
-Task<void> HttpAdapter::Impl::connection_task_plain(continuo::transport::tcp::Socket socket) {
-    continuo::http::ServerOptions options;
+Task<void> HttpAdapter::Impl::connection_task_plain(Mira::transport::tcp::Socket socket) {
+    Mira::http::ServerOptions options;
     options.stop = stop_source.get_token();
     options.max_requests_per_connection = 1'000'000;
     // No idle/request deadlines by default: the previous backend had none,
@@ -1184,12 +1184,12 @@ Task<void> HttpAdapter::Impl::connection_task_plain(continuo::transport::tcp::So
     options.idle_timeout = EventLoop::Duration::zero();
     options.request_timeout = EventLoop::Duration::zero();
 
-    auto handler = [this](const continuo::http::Request& request,
+    auto handler = [this](const Mira::http::Request& request,
                           auto& writer,
                           std::span<const std::byte> body) -> Task<Result<void>> {
         co_return co_await serve_request(request, writer, body);
     };
-    auto served = co_await continuo::http::serve_connection(socket, handler, options);
+    auto served = co_await Mira::http::serve_connection(socket, handler, options);
     // Connection-level failures (peer reset, parse errors, cancelled I/O)
     // end one connection; they are not server failures.
     (void)served;
@@ -1197,25 +1197,25 @@ Task<void> HttpAdapter::Impl::connection_task_plain(continuo::transport::tcp::So
 }
 
 #if defined(ARIA_HTTP_HAS_TLS)
-Task<void> HttpAdapter::Impl::connection_task_tls(continuo::transport::tcp::Socket socket) {
-    continuo::http::ServerOptions options;
+Task<void> HttpAdapter::Impl::connection_task_tls(Mira::transport::tcp::Socket socket) {
+    Mira::http::ServerOptions options;
     options.stop = stop_source.get_token();
     options.max_requests_per_connection = 1'000'000;
     options.idle_timeout = EventLoop::Duration::zero();
     options.request_timeout = EventLoop::Duration::zero();
 
     const OperationOptions io{.stop = options.stop};
-    auto stream = continuo::tls::Stream<continuo::transport::tcp::Socket>::create(socket, *tls_context);
+    auto stream = Mira::tls::Stream<Mira::transport::tcp::Socket>::create(socket, *tls_context);
     if (!stream) co_return;
     auto handshake = co_await stream->handshake(io);
     if (!handshake) co_return;
 
-    auto handler = [this](const continuo::http::Request& request,
+    auto handler = [this](const Mira::http::Request& request,
                           auto& writer,
                           std::span<const std::byte> body) -> Task<Result<void>> {
         co_return co_await serve_request(request, writer, body);
     };
-    auto served = co_await continuo::http::serve_connection(*stream, handler, options);
+    auto served = co_await Mira::http::serve_connection(*stream, handler, options);
     (void)served;
     // Best-effort close_notify; the socket closes with the frame either way.
     (void)co_await stream->shutdown(io);
@@ -1225,7 +1225,7 @@ Task<void> HttpAdapter::Impl::connection_task_tls(continuo::transport::tcp::Sock
 
 Task<void> HttpAdapter::Impl::accept_loop() {
     const std::stop_token stop = stop_source.get_token();
-    continuo::TaskScope connections;
+    Mira::TaskScope connections;
     for (;;) {
         auto accepted = co_await listener->accept(OperationOptions{.stop = stop});
         if (!accepted) {
@@ -1282,10 +1282,10 @@ bool HttpAdapter::Impl::start_server() {
 
     // Numeric bind addresses only; "localhost" maps to the IPv4 loopback.
     auto address = config.host == "localhost"
-        ? continuo::transport::Endpoint::loopback(config.port)
-        : continuo::transport::Endpoint::parse(config.host, config.port);
+        ? Mira::transport::Endpoint::loopback(config.port)
+        : Mira::transport::Endpoint::parse(config.host, config.port);
     if (!address) return false;
-    auto bound = continuo::transport::tcp::Listener::bind(*loop, *address);
+    auto bound = Mira::transport::tcp::Listener::bind(*loop, *address);
     if (!bound) return false;
     listener = std::move(*bound);
     bound_port = listener->local_endpoint().port();
@@ -1319,7 +1319,7 @@ bool HttpAdapter::Impl::start_server() {
     loop_thread = std::thread([self] {
         // Root task: accept loop + heartbeat, joined when everything unwinds.
         auto root = [self]() -> Task<void> {
-            continuo::TaskScope scope;
+            Mira::TaskScope scope;
             scope.spawn(self->accept_loop());
             scope.spawn(self->heartbeat_loop());
             try {

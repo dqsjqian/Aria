@@ -1,4 +1,4 @@
-# ariaFetchPinned.cmake — hash-pinned third-party dependencies, the Continuo way.
+# ariaFetchPinned.cmake — hash-pinned third-party dependencies, the Mira way.
 #
 # Aria carries no vendored third-party source and no git submodules. Every
 # external dependency is downloaded once, verified against a hard-coded
