@@ -204,7 +204,7 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
 | **原生 UI 自由** | 控件、布局和动画交给所选 UI 工具包，Aria 统一状态与界面之间的单向/双向数据流；共享业务核心，各端保留原生体验。 |
 | **分层兼容策略** | `aria-abi` / `aria-runtime` / `aria-binding` 在主版本号内保持 ABI 稳定，要求编译器、标准库与构建选项一致；`Property<T>` 等模板及其宿主类型更新后需重新编译。 |
 | **开放适配协议** | Qt6 / AppKit / UIKit / JNI / HTTP 开箱可用；其他 UI 工具包通过实现 `IViewAdapter` 接入（见[适配器指南](docs/guide/adapters/)）。 |
-| **应用实践与开发资料** | AriaTools、AriaAgent 与 OpenRead 展示跨端工作台、Agent GUI 和阅读引擎中的应用实践；[指南](docs/index.md)、[Cookbook](docs/cookbook/README.md) 与工程契约覆盖从入门到扩展的开发路径。 |
+| **应用实践与开发资料** | AriaTools、AriaAgent 与 AriaRead 展示跨端工作台、Agent GUI 和阅读引擎中的应用实践；[指南](docs/index.md)、[Cookbook](docs/cookbook/README.md) 与工程契约覆盖从入门到扩展的开发路径。 |
 
 **为共享 C++ 业务核心、原生多端 UI 和长期维护而设计。** Aria 负责业务与状态层，控件渲染与界面复用由所选 UI 工具包负责；两层通过明确的适配协议协作。
 
@@ -466,7 +466,7 @@ Task<std::string> fetch_user(int id) {
 
 ![Aria 生态：框架 + 三个真实应用](docs/marketing/images/aria-eco.png)
 
-下面这些是 Aria 框架在真实应用里跑出来的样子 —— 同一份 C++ ViewModel，跨多个平台的原生壳。**[AriaTools](https://github.com/dqsjqian/AriaTools)**（17 个模块的跨端工作台，Qt / iOS / Android / Web 四端）、**[AriaAgent](https://github.com/dqsjqian/AriaAgent)**（Provider 无关的 LLM Agent GUI）、[OpenRead](https://github.com/dqsjqian/OpenRead)（跨平台书源引擎，HTTP/SSE Web 壳）均已在生产形态上使用 Aria 1.x。所有截图均来自稳定版本，一次构建、跨端共用同一份 C++ 业务核心。
+下面这些是 Aria 框架在真实应用里跑出来的样子 —— 同一份 C++ ViewModel，跨多个平台的原生壳。**[AriaTools](https://github.com/dqsjqian/AriaTools)**（17 个模块的跨端工作台，Qt / iOS / Android / Web 四端）、**[AriaAgent](https://github.com/dqsjqian/AriaAgent)**（Provider 无关的 LLM Agent GUI）、[AriaRead](https://github.com/dqsjqian/AriaRead)（跨平台书源引擎，HTTP/SSE Web 壳）均已在生产形态上使用 Aria 1.x。所有截图均来自稳定版本，一次构建、跨端共用同一份 C++ 业务核心。
 
 ### AriaTools —— 跨端工作台（17 模块）
 
@@ -488,14 +488,14 @@ Aria + Qt6 实现的 Provider 无关 Agent GUI：真流式 SSE、工具调用链
 | 主界面（对话） | ![AriaAgent-Main](docs/marketing/images/AriaAgent-Mac-main.png) |
 | 设置（General / Model / Plugins / Agent Presets） | ![AriaAgent-Setting](docs/marketing/images/AriaAgent-Mac-setting.png) |
 
-### OpenRead —— 跨平台书源引擎
+### AriaRead —— 跨平台书源引擎
 
 Aria HTTP 适配器驱动的书源管理 Web 端：左侧书源列表 + 右侧书本卡片网格，全文搜索、订阅、调试一站式。同一份 C++ 核心同时驱动 REST/SSE 薄客户端与 SSR 两种 Web 形态。
 
 | 视图 | 截图 |
 |---|---|
-| 书源管理（Web / REST+SSE） | ![OpenRead-Web](docs/marketing/images/OpenRead-Web.png) |
-| 书源管理（Web / SSR） | ![OpenRead-SSR](docs/marketing/images/OpenRead-SSR.png) |
+| 书源管理（Web / REST+SSE） | ![AriaRead-Web](docs/marketing/images/AriaRead-Web.png) |
+| 书源管理（Web / SSR） | ![AriaRead-SSR](docs/marketing/images/AriaRead-SSR.png) |
 
 > 以上截图来自 macOS 示例应用。其他平台复用同一份 ViewModel；原生控件外观由平台、Qt 样式和宿主应用决定。框架的 Windows / Linux 构建与测试状态以 CI 为准。
 
