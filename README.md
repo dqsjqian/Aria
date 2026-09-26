@@ -200,7 +200,7 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
 
 | 架构优势 | 工程设计 |
 |---|---|
-| **现代 C++ 基础** | C++23 基线（GCC 13+ / Clang 18+ / AppleClang 21+ / MSVC v143），使用完整的协程与 concepts 能力；集成项目需采用 C++23 或更高标准。 |
+| **现代 C++ 基础** | C++23 基线（GCC 14+ / Clang 19+ / AppleClang 21+ / MSVC v143），使用完整的协程与 concepts 能力；集成项目需采用 C++23 或更高标准。 |
 | **原生 UI 自由** | 控件、布局和动画交给所选 UI 工具包，Aria 统一状态与界面之间的单向/双向数据流；共享业务核心，各端保留原生体验。 |
 | **分层兼容策略** | `aria-abi` / `aria-runtime` / `aria-binding` 在主版本号内保持 ABI 稳定，要求编译器、标准库与构建选项一致；`Property<T>` 等模板及其宿主类型更新后需重新编译。 |
 | **开放适配协议** | Qt6 / AppKit / UIKit / JNI / HTTP 开箱可用；其他 UI 工具包通过实现 `IViewAdapter` 接入（见[适配器指南](docs/guide/adapters/)）。 |
@@ -318,7 +318,7 @@ scripts\build-msvc.ps1 debug
 
 | 工具链 | 脚本 | 构建目录 | 备注 |
 |---|---|---|---|
-| **MSYS2 UCRT64**（GCC 14+ / Clang 18+） | `scripts\build.ps1` | `build/` | 体积小（≈300 MB），大多数 CI 镜像已预装。 |
+| **MSYS2 UCRT64**（GCC 14+ / Clang 19+） | `scripts\build.ps1` | `build/` | 体积小（≈300 MB），大多数 CI 镜像已预装。 |
 | **MSVC v143**（VS 2022） | `scripts\build-msvc.ps1` | `build/flavors/msvc/` | 通过 `vswhere` 自动定位 VS 安装；使用 `Visual Studio 17 2022` 生成器。 |
 
 <details>

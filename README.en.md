@@ -211,7 +211,7 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 
 | Architectural strength | Engineering design |
 |---|---|
-| **Modern C++ foundation** | C++23 baseline (GCC 13+ / Clang 18+ / AppleClang 21+ / MSVC v143) with full coroutines and concepts. Integrating projects must use C++23 or later. |
+| **Modern C++ foundation** | C++23 baseline (GCC 14+ / Clang 19+ / AppleClang 21+ / MSVC v143) with full coroutines and concepts. Integrating projects must use C++23 or later. |
 | **Native UI freedom** | Your UI toolkit owns widgets, layout, and animation. Aria unifies one-way and two-way state binding, sharing the business core while preserving native experiences. |
 | **Layered compatibility** | `aria-abi` / `aria-runtime` / `aria-binding` maintain ABI stability within a major version, with matching compiler, standard library, and build options. Rebuild templates such as `Property<T>` and their containing types after updates. |
 | **Open adapter protocol** | Qt6 / AppKit / UIKit / JNI / HTTP ship out of the box. Integrate other UI toolkits by implementing `IViewAdapter` (see the [adapter guides](docs/guide/adapters/)). |
@@ -345,7 +345,7 @@ neither one needs to know about the other.
 
 | Toolchain | Script | Build dir | Notes |
 |---|---|---|---|
-| **MSYS2 UCRT64** (GCC 14+ / Clang 18+) | `scripts\build.ps1` | `build/` | Lightweight (~300 MB). Pre-installed on most CI images. Auto-detected from `C:\msys64\ucrt64\bin` and a few other common paths. |
+| **MSYS2 UCRT64** (GCC 14+ / Clang 19+) | `scripts\build.ps1` | `build/` | Lightweight (~300 MB). Pre-installed on most CI images. Auto-detected from `C:\msys64\ucrt64\bin` and a few other common paths. |
 | **MSVC v143** (VS 2022) | `scripts\build-msvc.ps1` | `build/flavors/msvc/` | Auto-detects the VS install via `vswhere`, scrubs MSYS2 env vars (`INCLUDE` / `LIB` / `CPATH` / ...) before running CMake, and uses the `Visual Studio 17 2022` generator. |
 
 You can switch back and forth without `clean` — the two trees are
