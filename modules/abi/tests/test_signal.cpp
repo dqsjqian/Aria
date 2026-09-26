@@ -146,11 +146,6 @@ TEST_CASE("Signal: moved-from instance is a safe no-op (B6)") {
     CHECK(count.load() == 1);
 }
 
-TEST_CASE("Version constants are sane") {
-    CHECK(version_major == 2);
-    CHECK(abi_version == 2);
-}
-
 // ---------------------------------------------------------------------------
 //  The compile-time constants above describe the headers this TU was built
 //  against; structurally they can never reveal a mismatch with the library
