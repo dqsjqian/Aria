@@ -77,7 +77,12 @@ TEST_CASE("QtDispatcher contains callback exceptions and ignores empty callbacks
     dispatcher.post_delayed(1ms, {});
     dispatcher.post([] { throw std::runtime_error("posted failure"); });
     dispatcher.post_delayed(1ms, [] { throw std::runtime_error("delayed failure"); });
-    std::this_thread::sleep_for(2ms);
+    // Poll instead of a fixed sleep: delayed callbacks mature on the
+    // dispatcher clock and a fixed 2ms sleep raced under CI load.
+    for (int spins = 0; spins < 250 && dispatcher_failures < 2; ++spins) {
+        pump_qt_dispatcher();
+        if (dispatcher_failures < 2) std::this_thread::sleep_for(2ms);
+    }
     CHECK_NOTHROW(pump_qt_dispatcher());
     aria::set_callback_failure_sink(previous);
     CHECK(dispatcher_failures == 2);
