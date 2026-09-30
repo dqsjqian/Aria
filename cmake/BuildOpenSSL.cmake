@@ -292,4 +292,4 @@ set_property(TARGET OpenSSL::SSL PROPERTY INTERFACE_LINK_LIBRARIES OpenSSL::Cryp
 _aria_openssl_system_libraries()
 set(OPENSSL_FOUND TRUE)
 set(ARIA_BUNDLED_OPENSSL ON)
-message(STATUS "Aria TLS: vendored OpenSSL ${OPENSSL_VERSION}, target ${_OPENSSL_TARGET}")
+message(STATUS "Aria TLS: bundled OpenSSL ${OPENSSL_VERSION}, target ${_OPENSSL_TARGET}")

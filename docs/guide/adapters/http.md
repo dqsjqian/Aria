@@ -8,6 +8,12 @@ the build). Build with `-DARIA_BUILD_HTTP=ON`; add
 `-DARIA_HTTP_ENABLE_TLS=OFF` for a plain HTTP development build. Link the
 application to `aria::http` and `aria::runtime` when using `SimpleDispatcher`.
 
+An installed SDK built with bundled OpenSSL must use that SDK's OpenSSL
+targets. If the application has already imported another OpenSSL installation,
+the HTTP component is rejected during configuration; `OPTIONAL_COMPONENTS http`
+can still leave the core usable. To use the application's OpenSSL, rebuild Aria
+against those targets instead of mixing independently built TLS dependencies.
+
 ## A compiled starting point
 
 This complete example is compiled and run as `http_guide_example` in CTest.

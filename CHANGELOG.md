@@ -35,6 +35,9 @@ All notable changes to **aria** are documented here.
   plus a static TLS CI job; update stale integration instructions. Resolve
   framework-owned CMake helpers by path so parent projects cannot shadow
   dependency verification with a stale helper of the same name.
+- Reject pre-existing foreign OpenSSL targets when consuming a bundled TLS
+  SDK, with a configure-time component diagnostic instead of a later ABI/link
+  failure. Core-only and optional-HTTP discovery remain usable.
 
 ## 3.0.0 — 2026-09-25
 

@@ -183,7 +183,7 @@ endif()
 
 if(ARIA_BUILD_HTTP)
     if(ARIA_HTTP_ENABLE_TLS)
-        # Reuse complete parent targets, otherwise build vendored OpenSSL.
+        # Reuse complete parent targets, otherwise build hash-pinned OpenSSL.
         # The helper rejects missing source/partial parent configuration.
         include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildOpenSSL.cmake")
     endif()

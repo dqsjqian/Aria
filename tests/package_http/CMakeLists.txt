@@ -14,6 +14,8 @@ if(aria_FOUND)
     message(FATAL_ERROR "An unavailable required component must reject the package")
 endif()
 find_package(aria CONFIG REQUIRED COMPONENTS core async runtime binding http)
+# Repeated discovery must accept OpenSSL targets imported by this SDK itself.
+find_package(aria CONFIG REQUIRED COMPONENTS http)
 if(NOT TARGET aria::http)
     message(FATAL_ERROR "The installed Aria SDK has no HTTP adapter")
 endif()
