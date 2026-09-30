@@ -16,9 +16,7 @@ CMakeScripts/
 cmake_install.cmake
 install_manifest.txt
 Makefile
-*.cmake
-!cmake/*.cmake
-!tests/cmake/*.cmake
+CMakeUserPresets.json
 
 # Compiled
 *.o
@@ -70,6 +68,8 @@ cpm-cache/
 
 # Sanitizer outputs
 *.log
+*.logg
+*.err
 asan.log.*
 ubsan.log.*
 
@@ -86,8 +86,13 @@ docs/xml/
 
 # Local agent / editor metadata
 .workbuddy/
+.codebuddy/
+.thumbs/
 .aider*
 .claude/
+.env
+.env.*
+!.env.example
 
 # Xcode user-specific data (per-developer state, should never be committed)
 xcuserdata/

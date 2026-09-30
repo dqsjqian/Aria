@@ -135,7 +135,7 @@ $QT_SETTINGS_ARGS
     ],
     "cmake.parallelJobs": 8,
     "C_Cpp.default.compileCommands": "\${workspaceFolder}/build/ide/compile_commands.json",
-    "C_Cpp.default.cppStandard": "c++20"
+    "C_Cpp.default.cppStandard": "c++23"
 }
 JSON
 )
@@ -301,7 +301,7 @@ C_CPP_PROPERTIES_JSON=$(cat <<JSON
             "compileCommands": "\${workspaceFolder}/build/ide/compile_commands.json",
             "compilerPath": "$CLANGXX_PATH_JSON",
             "cStandard": "c17",
-            "cppStandard": "c++20",
+            "cppStandard": "c++23",
             "intelliSenseMode": "$INTELLISENSE_MODE",
             "includePath": ["\${workspaceFolder}/modules/**"]
         }

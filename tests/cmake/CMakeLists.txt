@@ -22,6 +22,10 @@ set_tests_properties(embedded_project_configure PROPERTIES TIMEOUT 120)
 unset(_aria_test_cache)
 
 if(PROJECT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
+    get_target_property(_aria_sanitizer_link_options aria_warnings INTERFACE_LINK_OPTIONS)
+    if(NOT _aria_sanitizer_link_options)
+        set(_aria_sanitizer_link_options "")
+    endif()
     add_test(NAME installed_sdk
         COMMAND ${CMAKE_COMMAND}
             "-DARIA_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
@@ -35,8 +39,10 @@ if(PROJECT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
             "-DTEST_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}"
             "-DTEST_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}"
             "-DTEST_MSVC_RUNTIME_LIBRARY=${CMAKE_MSVC_RUNTIME_LIBRARY}"
+            "-DTEST_SANITIZER_LINK_OPTIONS=${_aria_sanitizer_link_options}"
             "-DTEST_HTTP=${ARIA_BUILD_HTTP}"
             "-DTEST_TLS=${ARIA_HTTP_ENABLE_TLS}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/test_package.cmake")
     set_tests_properties(installed_sdk PROPERTIES TIMEOUT 120)
+    unset(_aria_sanitizer_link_options)
 endif()

@@ -22,13 +22,13 @@ if(WIN32)
             "Qt6 resolved to a MinGW/MSYS2 kit, incompatible with the MSVC "
             "toolchain:\n  Qt6_DIR = ${Qt6_DIR}\n"
             "Reconfigure with the MSVC kit, e.g.:\n"
-            "  cmake -DQt6_DIR=C:/DevTools/Qt/6.11.1/msvc2022_64/lib/cmake/Qt6 ...")
+            "  cmake -DQt6_DIR=C:/Qt/6.11.1/msvc2022_64/lib/cmake/Qt6 ...")
     elseif(NOT MSVC AND _aria_qt6_dir_lower MATCHES "msvc[0-9]")
         message(FATAL_ERROR
             "Qt6 resolved to an MSVC kit, incompatible with the "
             "${CMAKE_CXX_COMPILER_ID} toolchain:\n  Qt6_DIR = ${Qt6_DIR}\n"
             "Reconfigure with the MinGW/MSYS2 kit, e.g.:\n"
-            "  cmake -DQt6_DIR=C:/DevTools/msys64/ucrt64/lib/cmake/Qt6 ...")
+            "  cmake -DQt6_DIR=C:/msys64/ucrt64/lib/cmake/Qt6 ...")
     endif()
     unset(_aria_qt6_dir_lower)
 endif()

@@ -111,7 +111,12 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Sanitizers.cmake")
 # Common warnings target
 add_library(aria_warnings INTERFACE)
 aria_set_warnings(aria_warnings)
-aria_apply_sanitizers(aria_warnings)
+# A sanitized SDK requires its executable to link the same runtime. Keep
+# this public requirement separate from Aria's private warning settings and
+# compile instrumentation, which belong to the application's own build.
+add_library(aria_sanitizer_runtime INTERFACE)
+add_library(aria::sanitizer_runtime ALIAS aria_sanitizer_runtime)
+aria_apply_sanitizers(aria_warnings aria_sanitizer_runtime)
 add_library(aria::warnings ALIAS aria_warnings)
 
 # Threads
@@ -277,6 +282,7 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
 
     set(ARIA_CORE_INSTALL_TARGETS
         aria_warnings
+        aria_sanitizer_runtime
         aria_abi
         aria_core
         aria_async
@@ -345,6 +351,7 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     # Strip the "aria_" prefix on export so installed targets become
     # aria::core / aria::abi / aria::async / ... matching the in-tree aliases.
     set_target_properties(aria_warnings PROPERTIES EXPORT_NAME warnings)
+    set_target_properties(aria_sanitizer_runtime PROPERTIES EXPORT_NAME sanitizer_runtime)
     set_target_properties(aria_abi      PROPERTIES EXPORT_NAME abi)
     set_target_properties(aria_core     PROPERTIES EXPORT_NAME core)
     set_target_properties(aria_async    PROPERTIES EXPORT_NAME async)

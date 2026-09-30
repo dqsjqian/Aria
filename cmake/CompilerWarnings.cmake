@@ -60,20 +60,18 @@ function(aria_set_warnings target)
         /wd4251
 
         # C5285: "cannot specialize standard library template" — fires
-        # on third_party/doctest/doctest.h(539) where doctest specializes
-        # std::tuple.  This is a doctest issue, not ours; we cannot fix
-        # the vendored doctest source.  Silenced to keep VS 2026 / MSVC
+        # in doctest's downloaded header where it specializes std::tuple.
+        # Keep the hash-pinned upstream header unchanged; suppress this
+        # diagnostic to keep VS 2026 / MSVC
         # 19.5x builds green (the warning is also /Wv:18-gated, so older
         # MSVC versions are unaffected).
         /wd5285
 
         # NOTE on C4619 ("#pragma warning: there is no warning number
         # '4865'", raised by doctest 2.5.3's VS-2026-targeted pragma on
-        # MSVC 2022): do NOT try to silence it here — /wd4619 has no
-        # effect because the warning is emitted while __pragma() is being
-        # evaluated, before command-line warning filters apply.  The fix
-        # is a _MSC_VER >= 1945 guard patched directly into the vendored
-        # doctest.h (search "[ARIA PATCH]").
+        # MSVC 2022): the root CMakeLists applies /wd4619 to doctest's
+        # INTERFACE target, so only consumers of that header receive the
+        # suppression and the hash-pinned download remains unchanged.
     )
 
     set(CLANG_WARNINGS

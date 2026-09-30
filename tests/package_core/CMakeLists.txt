@@ -24,5 +24,10 @@ if(ARIA_HTTP_NEEDS_MIRA OR ARIA_HTTP_HAS_TLS)
 endif()
 add_executable(aria_core_package_consumer main.cpp)
 target_link_libraries(aria_core_package_consumer PRIVATE aria::core)
+# Inspect the evaluated consumer usage requirements as well as running it:
+# Darwin can load a sanitized dylib without exposing the missing executable
+# runtime link that GCC's ELF loader rejects before main().
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/consumer-link-options-$<CONFIG>.txt"
+    CONTENT "$<TARGET_PROPERTY:aria_core_package_consumer,LINK_OPTIONS>")
 enable_testing()
 add_test(NAME core_package_consumer COMMAND aria_core_package_consumer)

@@ -57,6 +57,11 @@ Request the components you use: `COMPONENTS core` does not require the Qt or
 HTTP dependencies even when those adapters are present in the installed SDK.
 Add `qt6` or `http` to the component list before linking those adapter targets.
 
+An SDK built with sanitizers also propagates its runtime link options through
+these targets. Use a compatible compiler and sanitizer runtime when consuming
+that SDK. This does not instrument application source: enable the matching
+sanitizers in the application's build to check that code as well.
+
 ## Hello, Property
 
 ```cpp

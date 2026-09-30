@@ -70,7 +70,7 @@ scripts/build.sh tests      # release + ctest          (macOS/Linux)
 scripts/build.sh asan       # debug + ASan + UBSan
 scripts/build.sh tsan       # debug + ThreadSanitizer
 scripts\build.ps1 tests     # MSYS2 UCRT64             (Windows)
-scripts\build-msvc.ps1 tests# MSVC / VS 2022           (Windows)
+scripts\build-msvc.ps1 tests # MSVC / VS 2022           (Windows)
 ```
 
 Run the fuzzers (lifecycle / re-entrancy invariants) before touching the

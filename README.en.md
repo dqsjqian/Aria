@@ -291,7 +291,7 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 - *(optional)* **Qt6** >= 6.4 (for the Qt6 adapter)
 
 > **Windows is supported on two toolchains: MSYS2 UCRT64 (GCC) and
-> MSVC / Visual Studio 2022.** Pick whichever fits your team's existing
+> MSVC / Visual Studio 2022 or 2026.** Pick whichever fits your team's existing
 > stack — both build the full framework + tests + adapters from a single
 > tree, no source forks. See ["Windows toolchains"](#windows-toolchains) below.
 
@@ -330,7 +330,7 @@ scripts\build.ps1 tests
 scripts\build.ps1 asan
 scripts\build.ps1 tsan       # debug + ThreadSanitizer (not available on MSVC, see below)
 
-# Windows — MSVC / Visual Studio 2022
+# Windows — MSVC / Visual Studio 2022 or 2026
 scripts\build-msvc.ps1       # release  (build/flavors/msvc/ tree)
 scripts\build-msvc.ps1 tests
 scripts\build-msvc.ps1 debug
@@ -345,11 +345,11 @@ neither one needs to know about the other.
 
 | Toolchain | Script | Build dir | Notes |
 |---|---|---|---|
-| **MSYS2 UCRT64** (GCC 14+ / Clang 19+) | `scripts\build.ps1` | `build/` | Lightweight (~300 MB). Pre-installed on most CI images. Auto-detected from `C:\msys64\ucrt64\bin` and a few other common paths. |
-| **MSVC v143** (VS 2022) | `scripts\build-msvc.ps1` | `build/flavors/msvc/` | Auto-detects the VS install via `vswhere`, scrubs MSYS2 env vars (`INCLUDE` / `LIB` / `CPATH` / ...) before running CMake, and uses the `Visual Studio 17 2022` generator. |
+| **MSYS2 UCRT64** (GCC 14+ / Clang 19+) | `scripts\build.ps1` | `build/flavors/release/` | Lightweight (~300 MB). Pre-installed on most CI images. Auto-detected from `C:\msys64\ucrt64\bin` and a few other common paths. |
+| **MSVC** (VS 2022 / 2026) | `scripts\build-msvc.ps1` | `build/flavors/msvc/` | Auto-detects the VS install via `vswhere`, scrubs MSYS2 env vars (`INCLUDE` / `LIB` / `CPATH` / ...) before running CMake, and selects the Visual Studio generator matching the installation. |
 
 You can switch back and forth without `clean` — the two trees are
-isolated. CI runs both nightly to make sure neither regresses.
+isolated. CI validates both toolchains on pushes and pull requests.
 
 #### MSVC one-time setup
 
@@ -394,7 +394,7 @@ cmake --build build/flavors/release -j && sudo cmake --install build/flavors/rel
 
 ```cmake
 # In your project's CMakeLists.txt:
-find_package(aria 2.0 CONFIG REQUIRED)
+find_package(aria 3.0 CONFIG REQUIRED)
 add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE aria::aria)
 # or pick individual modules: aria::core / ::async / ::runtime / ::binding
@@ -404,12 +404,15 @@ Installed Linux shared libraries resolve other Aria libraries from their own
 directory. Keep these libraries together; after moving the SDK, configure
 consumers against its new installation path.
 
-**Option B — vendored (no install)**:
+**Option B — separate source checkout (no install)**:
 
 ```cmake
-add_subdirectory(third_party/aria EXCLUDE_FROM_ALL)
+set(ARIA_SOURCE_DIR "" CACHE PATH "Path to a separate Aria checkout")
+add_subdirectory("${ARIA_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/aria" EXCLUDE_FROM_ALL)
 target_link_libraries(my_app PRIVATE aria::core aria::async)
 ```
+
+Clone Aria separately outside your project, then pass its absolute path when configuring the application: `cmake -S . -B build -DARIA_SOURCE_DIR=/path/to/Aria`.
 
 ### Flagship example
 
@@ -425,7 +428,7 @@ target_link_libraries(my_app PRIVATE aria::core aria::async)
 | `ARIA_BUILD_QT6` | OFF | Build the Qt6 adapter (requires `Qt6Widgets`). |
 | `ARIA_BUILD_APPKIT` | OFF | **(production-grade)** Build the macOS AppKit adapter as a first-class `STATIC` CMake module using Objective-C++; ships `aria::adapters::appkit` and passes the shared `adapter_conformance` battery. Requires `APPLE`. |
 | `ARIA_BUILD_UIKIT` | OFF | **(production-grade)** Build the iOS UIKit adapter as a first-class `STATIC` CMake module using Objective-C++; ships `aria::adapters::uikit` and passes the shared conformance battery. Requires `APPLE`. |
-| `ARIA_BUILD_JNI` | OFF | Build Android JNI adapter as a first-class CMake module — built as `STATIC`, ships `aria::adapters::jni`, implementing the same `IViewAdapter` contract as Qt/AppKit/UIKit via reflective JNI dispatch (text / bool / int / double / visibility / click). Requires an Android NDK toolchain (**NDK r26+** — the C++20-concepts core does not build under NDK r25's libc++). |
+| `ARIA_BUILD_JNI` | OFF | Build Android JNI adapter as a first-class CMake module — built as `STATIC`, ships `aria::adapters::jni`, implementing the same `IViewAdapter` contract as Qt/AppKit/UIKit via reflective JNI dispatch (text / bool / int / double / visibility / click). Requires an Android NDK toolchain (**NDK r29**, validated in CI for the C++23 core). |
 | `ARIA_ENABLE_ASAN` | OFF | AddressSanitizer. |
 | `ARIA_ENABLE_UBSAN` | OFF | UndefinedBehaviorSanitizer. |
 | `ARIA_ENABLE_TSAN` | OFF | ThreadSanitizer. |
@@ -495,16 +498,16 @@ Task<std::string> fetch_user(int id) {
 | macOS      | AppKit / Qt6   | `aria-qt6` ✅ ready; AppKit ✅ ready |
 | Linux      | Qt6            | `aria-qt6` ✅ ready             |
 | iOS        | UIKit          | `aria-uikit` ✅ ready |
-| Android    | Compose / View | `aria-jni` ✅ ready (NDK r26+)   |
+| Android    | Compose / View | `aria-jni` ✅ ready (NDK r29)   |
 | **Web (server-driven)** | **HTML/JS in browser** | **`aria-http` ✅ ready (REST + SSE)** |
 | Web (in-browser C++) | DOM via WASM     | Not implemented; conditional roadmap work             |
 
 The HTTP adapter ships a small server (`HttpAdapter`) that exposes any
 ViewModel over a JSON REST + Server-Sent-Events protocol, plus a
 vanilla-JS browser SDK (`aria_client.js`). The server is built on the
-the coroutine-native **Mira** networking library (HTTP/1.1 + SSE) and
-**nlohmann::json** (encode/decode) — both committed under
-`third_party/`, so the adapter adds no new external build dependency;
+coroutine-native **Mira** networking library (HTTP/1.1 + SSE) and
+**nlohmann::json** (encode/decode). CMake fetches pinned, checksum-verified
+archives into the ignored build dependency cache;
 aria itself owns the wire protocol, view registry, subscription dispatch
 and SSE fan-out. It is the right shape for
 desktop apps that want a web UI on the side, headless services, and
@@ -664,8 +667,7 @@ Contributions are welcome! Please open an issue first to discuss design changes.
 - [doctest](https://github.com/doctest/doctest) — lightweight test framework
 - [nlohmann_json](https://github.com/nlohmann/json) — JSON for Modern C++
 - [Mira](https://github.com/dqsjqian/Mira) — coroutine-native C++23 networking (the HTTP adapter transport)
-- [OpenSSL](https://www.openssl.org/) — TLS 1.2/1.3 (version in `third_party/openssl/VERSION.dat`)
-- [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) — CMake dependency management
+- [OpenSSL](https://www.openssl.org/) — TLS 1.2/1.3 (pinned release archives, verified by CMake)
 
 ## 📄 License
 

@@ -14,10 +14,10 @@
 #   build-msvc.ps1 tests              # Release framework + tests + ctest (no package)
 #   build-msvc.ps1 asan               # Debug + /fsanitize=address (MSVC has no UBSan)
 #   build-msvc.ps1 pack-zip           # Default flow plus a .zip archive
-#   build-msvc.ps1 clean              # Wipe build/
+#   build-msvc.ps1 clean              # Wipe build/flavors/msvc/ only
 #
 # Environment variables:
-#   $env:QT_DIR="C:\DevTools\Qt\6.11.1\msvc2022_64"
+#   $env:QT_DIR="C:\Qt\6.11.1\msvc2022_64"
 #   $env:ARIA_NO_QT6="1"
 #   $env:ARIA_VS_GENERATOR="Visual Studio 18 2026"  # override generator
 #
@@ -43,6 +43,13 @@ $OrigConsoleEncoding = [Console]::OutputEncoding
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
 
 try {
+    if ($Mode -eq "clean") {
+        $CleanBuildDir = Join-Path $RepoRoot "build/flavors/msvc"
+        Write-Host "wiping $CleanBuildDir/"
+        if (Test-Path $CleanBuildDir) { Remove-Item -Recurse -Force $CleanBuildDir }
+        exit 0
+    }
+
     # This entry point selects Visual Studio, regardless of GNU compiler
     # overrides inherited from a preceding MinGW invocation.
     Remove-Item Env:CC, Env:CXX -ErrorAction SilentlyContinue
@@ -91,7 +98,7 @@ try {
     # well-known MSYS2 install roots so no other discovery vector
     # (env CMAKE_PREFIX_PATH, registry, etc.) can leak MinGW artifacts in.
     $ignoreCandidates = @($msysPrefixes)
-    foreach ($root in @("C:\DevTools\msys64", "C:\msys64", "D:\msys64")) {
+    foreach ($root in (@($env:MSYS2_ROOT, "C:\msys64", "D:\msys64") | Where-Object { $_ })) {
         foreach ($sub in @("ucrt64", "mingw64", "clang64")) {
             $ignoreCandidates += (Join-Path $root $sub)
         }
@@ -108,10 +115,14 @@ try {
     # Supports any VS version vswhere can find (2022, 2026, ...). The
     # generator string is derived from the VS major version + year, NOT
     # hardcoded - so this script does not break when a new VS ships.
-    $vsWhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+    $ProgramFilesX86 = ${env:ProgramFiles(x86)}
+    if (-not $ProgramFilesX86) { $ProgramFilesX86 = "C:\Program Files (x86)" }
+    $ProgramFilesNative = $env:ProgramFiles
+    if (-not $ProgramFilesNative) { $ProgramFilesNative = "C:\Program Files" }
+    $vsWhere = Join-Path $ProgramFilesX86 "Microsoft Visual Studio\Installer\vswhere.exe"
     if (-not (Test-Path $vsWhere)) {
         # Fallback: vswhere sometimes lives under Common7
-        $vsWhere2 = Join-Path $env:ProgramFiles "Microsoft Visual Studio\Installer\vswhere.exe"
+        $vsWhere2 = Join-Path $ProgramFilesNative "Microsoft Visual Studio\Installer\vswhere.exe"
         if (Test-Path $vsWhere2) { $vsWhere = $vsWhere2 }
     }
 
@@ -138,19 +149,15 @@ try {
     if (-not $vsPath) {
         # Fallback to known install locations (covers cases where vswhere
         # is missing or the install isn't registered).
-        $fallbackRoots = @(
-            "C:\DevTools\VS2026", "C:\DevTools\VS2022",
-            "C:\Program Files\Microsoft Visual Studio\2026\Professional",
-            "C:\Program Files\Microsoft Visual Studio\2026\Enterprise",
-            "C:\Program Files\Microsoft Visual Studio\2026\Community",
-            "C:\Program Files\Microsoft Visual Studio\2022\Professional",
-            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise",
-            "C:\Program Files\Microsoft Visual Studio\2022\Community"
-        )
+        $fallbackRoots = foreach ($year in @("2026", "2022")) {
+            foreach ($edition in @("Professional", "Enterprise", "Community", "BuildTools")) {
+                Join-Path $ProgramFilesNative "Microsoft Visual Studio\$year\$edition"
+            }
+        }
         foreach ($p in $fallbackRoots) {
             if (Test-Path (Join-Path $p "VC\Auxiliary\Build\vcvars64.bat")) {
                 $vsPath = $p
-                if ($p -match 'VS(20\d{2})') { $vsYear = $matches[1]; $vsMajor = if ($vsYear -eq '2026') { 18 } elseif ($vsYear -eq '2022') { 17 } else { 17 } }
+                if ($p -match '\\(20\d{2})\\') { $vsYear = $matches[1]; $vsMajor = if ($vsYear -eq '2026') { 18 } else { 17 } }
                 break
             }
         }
@@ -233,11 +240,6 @@ $DoPackage = $false
 $DoArchive = $false
 
 switch ($Mode) {
-    "clean" {
-        Write-Host "wiping $BuildDir/"
-        if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir }
-        exit 0
-    }
     { $_ -in "default", "release" } {
         $CMakeOpts = @("-DARIA_BUILD_TESTS=ON")
         $BuildConfig = "Release"
@@ -300,7 +302,7 @@ function Find-Qt6 {
         if (Test-MSVCQt6Kit $env:QT_DIR) { return $env:QT_DIR }
         throw "QT_DIR must point to an MSVC Qt6 kit with Qt6Core .lib libraries: $env:QT_DIR"
     }
-    $roots = @("C:\DevTools\Qt", "C:\Qt", "D:\Qt", "$env:USERPROFILE\Qt")
+    $roots = @("C:\Qt", "D:\Qt", "$env:USERPROFILE\Qt")
     $kitOrder = @("msvc2022_64", "msvc2019_64")
     foreach ($root in $roots) {
         if (-not (Test-Path $root)) { continue }
@@ -414,8 +416,17 @@ if ($DoArchive) {
 
 Write-Host ""
 Write-Host "$Mode done."
-Write-Host "  Solution : $RepoRoot\$BuildDir\aria.sln"
-if ($DoPackage) { Write-Host "  Package  : $RepoRoot\$BuildDir\release\" }
+Get-ChildItem -LiteralPath $BuildDir -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in @(".sln", ".slnx") } |
+    ForEach-Object { Write-Host "  Solution : $($_.FullName)" }
+if ($DoPackage) {
+    $packageDir = Join-Path $RepoRoot "build\dist\tree"
+    $packageCache = Select-String -LiteralPath (Join-Path $BuildDir "CMakeCache.txt") `
+        -Pattern '^ARIA_RELEASE_DIR:PATH=(.+)$' -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($packageCache) { $packageDir = $packageCache.Matches[0].Groups[1].Value }
+    Write-Host "  Package  : $packageDir"
+}
 
 } finally {
     Set-Location $OriginalDir

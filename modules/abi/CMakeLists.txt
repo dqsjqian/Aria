@@ -32,7 +32,10 @@ endif()
 target_include_directories(aria_abi PRIVATE
     "${PROJECT_SOURCE_DIR}/modules/core/include"
 )
-target_link_libraries(aria_abi PUBLIC Threads::Threads PRIVATE aria::warnings)
+target_link_libraries(aria_abi
+    PUBLIC Threads::Threads aria::sanitizer_runtime
+    PRIVATE aria::warnings
+)
 set_target_properties(aria_abi PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     SOVERSION ${PROJECT_VERSION_MAJOR}

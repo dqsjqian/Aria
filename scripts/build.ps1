@@ -3,7 +3,7 @@
 # Default behaviour (no args): build aria framework + tests + ctest +
 # release package -> build\flavors\release\
 #
-# Default toolchain: MSYS2 UCRT64 (GCC 14+ / Clang 18+) + Ninja.
+# Default toolchain: MSYS2 UCRT64 (GCC 14+ / Clang 19+) + Ninja.
 #
 # For MSVC / Visual Studio, use `scripts\build-msvc.ps1` instead — it's
 # a dedicated script that auto-locates VS 2022 and scrubs MSYS2 env
@@ -42,7 +42,7 @@
 #   scripts\build.ps1 tests          # Release framework + tests + ctest (no package)
 #   scripts\build.ps1 asan           # Debug + AddressSanitizer + UBSan
 #   scripts\build.ps1 tsan           # Debug + ThreadSanitizer
-#   scripts\build.ps1 pack-zip       # Default flow plus build\packages\aria-*.zip
+#   scripts\build.ps1 pack-zip       # Default flow plus build\dist\archives\aria-*.zip
 #   scripts\build.ps1 tsan-gate      # Pre-release TSan gate (CHANGELOG promises every release is TSan-clean)
 #   scripts\build.ps1 android        # Android NDK cross-build (JNI adapter)
 #   scripts\build.ps1 clean          # Wipe build\
@@ -257,7 +257,6 @@ function Find-Msys2Bin {
     $candidates = @(
         "C:\msys64\ucrt64\bin",
         "D:\msys64\ucrt64\bin",
-        "C:\DevTools\msys64\ucrt64\bin",
         "$env:USERPROFILE\msys64\ucrt64\bin",
         "$env:LOCALAPPDATA\msys64\ucrt64\bin"
     )

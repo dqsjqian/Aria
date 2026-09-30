@@ -43,7 +43,9 @@ try {
     $GccPath = Find-Cmd "g++"
     $GdbPath = Find-Cmd "gdb"
     $NinjaPath = Find-Cmd "ninja"
-    foreach ($MsysDir in @("C:\DevTools\msys64\ucrt64\bin", "C:\msys64\ucrt64\bin", "D:\msys64\ucrt64\bin")) {
+    $MsysRoots = @($env:MSYS2_ROOT, "C:\msys64", "D:\msys64") | Where-Object { $_ }
+    foreach ($MsysRoot in $MsysRoots) {
+        $MsysDir = Join-Path $MsysRoot "ucrt64\bin"
         if (-not (Test-Path $MsysDir)) { continue }
         if (-not $GccPath) { $Path = Join-Path $MsysDir "g++.exe"; if (Test-Path $Path) { $GccPath = $Path } }
         if (-not $GdbPath) { $Path = Join-Path $MsysDir "gdb.exe"; if (Test-Path $Path) { $GdbPath = $Path } }
@@ -54,22 +56,41 @@ try {
     if (-not $CmakePath) { Log-Err "cmake not found"; exit 1 }
     if (-not $GccPath) { Log-Err "g++ not found; install MSYS2 UCRT64"; exit 1 }
 
+    $GccTriple = & $GccPath -dumpmachine
+    if ($LASTEXITCODE -ne 0 -or $GccTriple -notmatch '(mingw32|windows-gnu)') {
+        throw "A MinGW C++ compiler is required; $GccPath reports '$GccTriple'."
+    }
+
+    function Test-MinGWQt6Kit([string]$Prefix) {
+        if (-not (Test-Path (Join-Path $Prefix "lib\cmake\Qt6\Qt6Config.cmake"))) { return $false }
+        $gnu = (Test-Path (Join-Path $Prefix "lib\libQt6Core.dll.a")) -or
+               (Test-Path (Join-Path $Prefix "lib\libQt6Core.a"))
+        $msvc = (Test-Path (Join-Path $Prefix "lib\Qt6Core.lib")) -or
+                (Test-Path (Join-Path $Prefix "lib\Qt6Cored.lib"))
+        return $gnu -and -not $msvc
+    }
+
     function Find-Qt6 {
         if ($env:ARIA_NO_QT6 -eq "1") { return $null }
-        if ($env:QT_DIR -and (Test-Path (Join-Path $env:QT_DIR "lib\cmake\Qt6\Qt6Config.cmake"))) {
-            return $env:QT_DIR
+        if ($env:QT_DIR) {
+            if (Test-MinGWQt6Kit $env:QT_DIR) { return $env:QT_DIR }
+            throw "QT_DIR must point to a MinGW Qt6 kit with GNU Qt6Core libraries: $env:QT_DIR"
         }
+        $CompilerPrefix = Split-Path -Parent (Split-Path -Parent $GccPath)
+        if (Test-MinGWQt6Kit $CompilerPrefix) { return $CompilerPrefix }
         foreach ($Root in @("C:\Qt", "D:\Qt", "$env:USERPROFILE\Qt")) {
             if (-not (Test-Path $Root)) { continue }
             $Versions = Get-ChildItem $Root -Directory -ErrorAction SilentlyContinue |
                 Where-Object { $_.Name -match '^6\.' } | Sort-Object Name -Descending
             foreach ($Version in $Versions) {
                 $Candidate = Join-Path $Version.FullName "mingw_64"
-                if (Test-Path (Join-Path $Candidate "lib\cmake\Qt6\Qt6Config.cmake")) { return $Candidate }
+                if (Test-MinGWQt6Kit $Candidate) { return $Candidate }
             }
         }
-        foreach ($Candidate in @("C:\msys64\ucrt64", "D:\msys64\ucrt64", "C:\DevTools\msys64\ucrt64")) {
-            if (Test-Path (Join-Path $Candidate "lib\cmake\Qt6\Qt6Config.cmake")) { return $Candidate }
+        $Candidates = @((Split-Path -Parent (Split-Path -Parent $GccPath)))
+        $Candidates += @($MsysRoots | ForEach-Object { Join-Path $_ "ucrt64" })
+        foreach ($Candidate in $Candidates) {
+            if (Test-MinGWQt6Kit $Candidate) { return $Candidate }
         }
         return $null
     }
@@ -77,8 +98,11 @@ try {
     $QtDir = Find-Qt6
     $Generator = if ($NinjaPath) { "Ninja" } else { "MinGW Makefiles" }
     $Msys2BinDir = Split-Path -Parent $GccPath
-    $PathEnv = "$Msys2BinDir;`${env:PATH}"
+    $PathParts = @($Msys2BinDir)
+    if ($QtDir) { $PathParts += (Join-Path $QtDir "bin") }
+    $PathEnv = ($PathParts -join ';') + ';${env:PATH}'
     $QtDirEsc = if ($QtDir) { $QtDir -replace '\\', '\\' } else { "" }
+    $CompilerCommandEsc = ($GccPath -replace "'", "''") -replace '\\', '\\'
     $CompilerEsc = $GccPath -replace '\\', '\\'
     $GdbEsc = if ($GdbPath) { $GdbPath -replace '\\', '\\' } else { "" }
     $PathEnvEsc = $PathEnv -replace '\\', '\\'
@@ -101,11 +125,11 @@ try {
     }
 
     if ($QtDir) {
-        $QtSettingsArgs = "        `"-DCMAKE_PREFIX_PATH=$QtDirEsc`",`n        `"-DARIA_BUILD_QT6=ON`","
-        $QtTaskArgs = "                `"-DCMAKE_PREFIX_PATH=$QtDirEsc`",`n                `"-DARIA_BUILD_QT6=ON`","
+        $QtSettingsArgs = "        `"-UQt6*_DIR`",`n        `"-DCMAKE_PREFIX_PATH=$QtDirEsc`",`n        `"-DQt6_DIR=$QtDirEsc/lib/cmake/Qt6`",`n        `"-DARIA_BUILD_QT6=ON`","
+        $QtTaskArgs = "                `"-UQt6*_DIR`",`n                `"-DCMAKE_PREFIX_PATH=$QtDirEsc`",`n                `"-DQt6_DIR=$QtDirEsc/lib/cmake/Qt6`",`n                `"-DARIA_BUILD_QT6=ON`","
     } else {
-        $QtSettingsArgs = '        "-DARIA_BUILD_QT6=OFF",'
-        $QtTaskArgs = '                "-DARIA_BUILD_QT6=OFF",'
+        $QtSettingsArgs = '        "-UQt6*_DIR", "-DARIA_BUILD_QT6=OFF",'
+        $QtTaskArgs = '                "-UQt6*_DIR", "-DARIA_BUILD_QT6=OFF",'
     }
 
     $Settings = @"
@@ -113,15 +137,17 @@ try {
     "cmake.sourceDirectory": "`${workspaceFolder}",
     "cmake.buildDirectory": "`${workspaceFolder}/build/ide",
     "cmake.generator": "$Generator",
+    "cmake.configureEnvironment": { "PATH": "$PathEnvEsc" },
     "cmake.configureArgs": [
         "-DCMAKE_BUILD_TYPE=Debug",
+        "-DCMAKE_CXX_COMPILER=$CompilerEsc",
 $QtSettingsArgs
         "-DARIA_BUILD_TESTS=ON",
         "-DARIA_BUILD_DOCS=ON"
     ],
     "cmake.parallelJobs": 8,
     "C_Cpp.default.compileCommands": "`${workspaceFolder}/build/ide/compile_commands.json",
-    "C_Cpp.default.cppStandard": "c++20"
+    "C_Cpp.default.cppStandard": "c++23"
 }
 "@
 
@@ -148,6 +174,7 @@ $QtSettingsArgs
                 "-S", "`${workspaceFolder}",
                 "-B", "`${workspaceFolder}/build/ide",
                 "-DCMAKE_BUILD_TYPE=Debug",
+                "-DCMAKE_CXX_COMPILER=$CompilerEsc",
 $QtTaskArgs
                 "-DARIA_BUILD_TESTS=ON",
                 "-DARIA_BUILD_DOCS=ON",
@@ -181,7 +208,7 @@ $QtTaskArgs
             "label": "aria: configure (ASan+UBSan)",
             "type": "shell",
             "command": "cmake",
-            "args": ["-S", "`${workspaceFolder}", "-B", "`${workspaceFolder}/build/flavors/asan", "-G", "$Generator", "-DCMAKE_BUILD_TYPE=Debug", "-DARIA_ENABLE_ASAN=ON", "-DARIA_ENABLE_UBSAN=ON", "-DARIA_BUILD_TESTS=ON"],
+            "args": ["-S", "`${workspaceFolder}", "-B", "`${workspaceFolder}/build/flavors/asan", "-G", "$Generator", "-DCMAKE_CXX_COMPILER=$CompilerEsc", "-DCMAKE_BUILD_TYPE=Debug", "-DARIA_ENABLE_ASAN=ON", "-DARIA_ENABLE_UBSAN=ON", "-DARIA_BUILD_TESTS=ON"],
             "options": { "env": { "PATH": "$PathEnvEsc" } },
             "group": "build",
             "problemMatcher": []
@@ -199,7 +226,7 @@ $QtTaskArgs
             "label": "aria: configure (TSan)",
             "type": "shell",
             "command": "cmake",
-            "args": ["-S", "`${workspaceFolder}", "-B", "`${workspaceFolder}/build/flavors/tsan", "-G", "$Generator", "-DCMAKE_BUILD_TYPE=Debug", "-DARIA_ENABLE_TSAN=ON", "-DARIA_BUILD_TESTS=ON"],
+            "args": ["-S", "`${workspaceFolder}", "-B", "`${workspaceFolder}/build/flavors/tsan", "-G", "$Generator", "-DCMAKE_CXX_COMPILER=$CompilerEsc", "-DCMAKE_BUILD_TYPE=Debug", "-DARIA_ENABLE_TSAN=ON", "-DARIA_BUILD_TESTS=ON"],
             "options": { "env": { "PATH": "$PathEnvEsc" } },
             "group": "build",
             "problemMatcher": []
@@ -225,7 +252,7 @@ $QtTaskArgs
             "label": "aria: benchmark",
             "type": "shell",
             "command": "powershell",
-            "args": ["-NoProfile", "-Command", "cmake -S . -B build/flavors/bench -DCMAKE_BUILD_TYPE=Release -DARIA_BUILD_BENCHMARK=ON; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; cmake --build build/flavors/bench -j"],
+            "args": ["-NoProfile", "-Command", "cmake -S . -B build/flavors/bench -G '$Generator' '-DCMAKE_CXX_COMPILER=$CompilerCommandEsc' -DCMAKE_BUILD_TYPE=Release -DARIA_BUILD_BENCHMARK=ON; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; cmake --build build/flavors/bench -j"],
             "options": { "env": { "PATH": "$PathEnvEsc" } },
             "group": "build",
             "problemMatcher": []
@@ -242,7 +269,7 @@ $QtTaskArgs
             "label": "aria: clang-tidy",
             "type": "shell",
             "command": "powershell",
-            "args": ["-NoProfile", "-Command", "cmake -S . -B build/ide -G '$Generator' -DCMAKE_EXPORT_COMPILE_COMMANDS=ON | Out-Null; cmake --build build/ide -j | Out-Null; `$files = Get-ChildItem -Recurse -Path 'modules/*/include/aria' -Filter *.hpp | ForEach-Object FullName; clang-tidy -p build/ide --warnings-as-errors=\`"*\`" @files"],
+            "args": ["-NoProfile", "-Command", "cmake -S . -B build/ide -G '$Generator' '-DCMAKE_CXX_COMPILER=$CompilerCommandEsc' -DCMAKE_EXPORT_COMPILE_COMMANDS=ON | Out-Null; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; cmake --build build/ide -j | Out-Null; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; `$files = Get-ChildItem -Recurse -Path 'modules/*/include/aria' -Filter *.hpp | ForEach-Object FullName; clang-tidy -p build/ide --warnings-as-errors=\`"*\`" @files"],
             "options": { "env": { "PATH": "$PathEnvEsc" } },
             "problemMatcher": []
         }
@@ -289,7 +316,7 @@ $QtTaskArgs
             "compileCommands": "`${workspaceFolder}/build/ide/compile_commands.json",
             "compilerPath": "$CompilerEsc",
             "cStandard": "c17",
-            "cppStandard": "c++20",
+            "cppStandard": "c++23",
             "intelliSenseMode": "windows-gcc-x64",
             "includePath": ["`${workspaceFolder}/modules/**"]
         }

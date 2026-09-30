@@ -279,7 +279,7 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
   - **MSVC v143 / Visual Studio 2022**（Windows，详见下文）
 - *(可选)* **Qt6** >= 6.4（用于 Qt6 适配器）
 
-> **Windows 同时支持 MSYS2 UCRT64（GCC）和 MSVC / Visual Studio 2022 两条工具链。** 团队栈里有哪个就用哪个 —— 同一棵源码树都能编出完整框架 + 测试 + 适配器，不需要分支或 fork。
+> **Windows 同时支持 MSYS2 UCRT64（GCC）和 MSVC / Visual Studio 2022 或 2026 两条工具链。** 团队栈里有哪个就用哪个 —— 同一棵源码树都能编出完整框架 + 测试 + 适配器，不需要分支或 fork。
 
 ## 🚀 快速开始
 
@@ -308,7 +308,7 @@ scripts\build.ps1 tests
 scripts\build.ps1 asan
 scripts\build.ps1 tsan       # Debug + ThreadSanitizer（MSVC 不支持，见下）
 
-# Windows —— MSVC / Visual Studio 2022
+# Windows —— MSVC / Visual Studio 2022 或 2026
 scripts\build-msvc.ps1       # Release（使用 build/flavors/msvc/ 目录）
 scripts\build-msvc.ps1 tests
 scripts\build-msvc.ps1 debug
@@ -318,8 +318,8 @@ scripts\build-msvc.ps1 debug
 
 | 工具链 | 脚本 | 构建目录 | 备注 |
 |---|---|---|---|
-| **MSYS2 UCRT64**（GCC 14+ / Clang 19+） | `scripts\build.ps1` | `build/` | 体积小（≈300 MB），大多数 CI 镜像已预装。 |
-| **MSVC v143**（VS 2022） | `scripts\build-msvc.ps1` | `build/flavors/msvc/` | 通过 `vswhere` 自动定位 VS 安装；使用 `Visual Studio 17 2022` 生成器。 |
+| **MSYS2 UCRT64**（GCC 14+ / Clang 19+） | `scripts\build.ps1` | `build/flavors/release/` | 体积小（≈300 MB），大多数 CI 镜像已预装。 |
+| **MSVC**（VS 2022 / 2026） | `scripts\build-msvc.ps1` | `build/flavors/msvc/` | 通过 `vswhere` 自动定位 VS 安装；根据安装版本选择 Visual Studio 生成器。 |
 
 <details>
 <summary>📖 MSVC 一次性配置</summary>
@@ -368,12 +368,15 @@ target_link_libraries(my_app PRIVATE aria::aria)
 Linux 安装包中的 Aria 动态库从同目录解析其他 Aria 库。请将这些库一并保留；
 移动 SDK 后，以新安装路径重新配置使用它的项目。
 
-**方式 B —— 直接嵌入（不安装）**：
+**方式 B —— 使用独立源码目录（不安装）**：
 
 ```cmake
-add_subdirectory(third_party/aria EXCLUDE_FROM_ALL)
+set(ARIA_SOURCE_DIR "" CACHE PATH "Path to a separate Aria checkout")
+add_subdirectory("${ARIA_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/aria" EXCLUDE_FROM_ALL)
 target_link_libraries(my_app PRIVATE aria::core aria::async)
 ```
+
+先将 Aria 独立克隆到项目外；配置应用时传入绝对路径，例如 `cmake -S . -B build -DARIA_SOURCE_DIR=/path/to/Aria`。
 
 ## 💻 旗舰示例
 
@@ -389,7 +392,7 @@ target_link_libraries(my_app PRIVATE aria::core aria::async)
 | `ARIA_BUILD_QT6` | OFF | 构建 Qt6 适配器。 |
 | `ARIA_BUILD_APPKIT` | OFF | macOS AppKit 适配器（需 `APPLE`）。 |
 | `ARIA_BUILD_UIKIT` | OFF | iOS UIKit 适配器（需 `APPLE`）。 |
-| `ARIA_BUILD_JNI` | OFF | Android JNI 适配器（需 NDK r26+）。 |
+| `ARIA_BUILD_JNI` | OFF | Android JNI 适配器（需 NDK r29）。 |
 | `ARIA_BUILD_HTTP` | OFF | 构建 HTTP/REST/SSE 适配器。 |
 | `ARIA_ENABLE_ASAN` | OFF | AddressSanitizer。 |
 | `ARIA_ENABLE_UBSAN` | OFF | UndefinedBehaviorSanitizer。 |
@@ -456,7 +459,7 @@ Task<std::string> fetch_user(int id) {
 | macOS | AppKit / Qt6 | `aria-qt6` / `aria-appkit` | ✅ 可用 |
 | Linux | Qt6 | `aria-qt6` | ✅ 可用 |
 | iOS | UIKit | `aria-uikit` | ✅ 可用 |
-| Android | Compose / View | `aria-jni` | ✅ 就绪（NDK r26+） |
+| Android | Compose / View | `aria-jni` | ✅ 就绪（NDK r29） |
 | **Web（服务端驱动）** | **浏览器 HTML/JS** | **`aria-http`** | **✅ REST + SSE** |
 | Web（浏览器内 C++） | DOM via WASM | `aria-wasm` | 按实际需求评估，未实现 |
 
