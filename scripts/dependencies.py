@@ -359,16 +359,27 @@ def resolve(manifest: Path, lock: Path, *, base_lock: Path | None = None,
         return result
 
 
-def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("resolve", "update"))
-    parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--lock", type=Path, required=True)
-    parser.add_argument("--base-lock", type=Path)
-    parser.add_argument("--cache-dir", type=Path)
-    parser.add_argument("--version", action="append", default=[], metavar="NAME=VERSION")
-    parser.add_argument("--only", action="append")
-    parser.add_argument("--offline", action="store_true")
+def main(argv=None, *, command=None, manifest=None, lock=None) -> int:
+    description = ("Update dependency selections atomically. Explicit --version overrides "
+                   "manifest versions; unspecified versions resolve the latest stable release. "
+                   "Run the normal build and tests after reviewing the lock diff.") if command == "update" else __doc__
+    parser = argparse.ArgumentParser(description=description)
+    if command is None:
+        parser.add_argument("command", choices=("resolve", "update"))
+    else:
+        parser.set_defaults(command=command)
+    parser.add_argument("--manifest", type=Path, default=manifest, required=manifest is None,
+                        help="Source declarations and persistent version requirements")
+    parser.add_argument("--lock", type=Path, default=lock, required=lock is None,
+                        help="Output dependency lock (existing unselected records are preserved)")
+    parser.add_argument("--base-lock", type=Path, help="Optional initial lock for a separate output")
+    parser.add_argument("--cache-dir", type=Path, help="Download checksum discovery cache")
+    parser.add_argument("--version", action="append", default=[], metavar="NAME=VERSION",
+                        help="Override one version for this invocation; repeat for different names")
+    parser.add_argument("--only", action="append", metavar="NAME",
+                        help="Process only this name; repeat to select multiple dependencies")
+    parser.add_argument("--offline", action="store_true",
+                        help="Require matching locked metadata without any upstream lookup")
     args = parser.parse_args(argv)
     versions = {}
     try:

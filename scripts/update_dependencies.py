@@ -13,7 +13,6 @@ from dependencies import main as resolve_main
 ROOT = Path(__file__).resolve().parents[1]
 
 if __name__ == "__main__":
-    raise SystemExit(resolve_main([
-        "update", "--manifest", str(ROOT / "dependencies.json"),
-        "--lock", str(ROOT / "dependencies.lock.json"), *sys.argv[1:],
-    ]))
+    raise SystemExit(resolve_main(sys.argv[1:], command="update",
+                                 manifest=ROOT / "dependencies.json",
+                                 lock=ROOT / "dependencies.lock.json"))

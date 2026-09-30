@@ -2,6 +2,8 @@
 
 # ⚡ Aria
 
+[Complete dependency update guide](docs/dependency-updates.en.md) — Version pins, selective updates, offline use, rollback and commit steps.
+
 **Modern C++ MVVM for industrial-grade cross-platform software** · C++23 · reactive · coroutine-first
 
 One C++ core. Six platforms. Elegant architecture for complex applications, explicit engineering contracts for long-term evolution.

@@ -102,6 +102,20 @@ class DependencyTests(unittest.TestCase):
         self.context.offline = True
         self.assertEqual(self.resolve()["dependencies"]["library"]["version"], "1.9.0")
 
+    def test_mixed_persistent_pins_and_latest(self):
+        self.write_manifest({"fixed_one": {**SOURCE, "version": "1.9.0"},
+                             "fixed_two": {**SOURCE, "version": "1.10.0"},
+                             "rolling": SOURCE})
+        self.context.releases.append({"tag_name": "v2.0.0"})
+        selected = self.resolve(update=True)["dependencies"]
+        self.assertEqual({name: record["version"] for name, record in selected.items()},
+                         {"fixed_one": "1.9.0", "fixed_two": "1.10.0", "rolling": "2.0.0"})
+        self.context.releases.append({"tag_name": "v3.0.0"})
+        next_selection = self.resolve(update=True, only=["rolling"])["dependencies"]
+        self.assertEqual(next_selection["rolling"]["version"], "3.0.0")
+        for name in ["fixed_one", "fixed_two"]:
+            self.assertEqual(next_selection[name], selected[name])
+
     def test_selecting_the_already_locked_version_needs_no_network(self):
         self.resolve()
         self.context.offline = True
