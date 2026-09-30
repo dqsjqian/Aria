@@ -426,7 +426,7 @@ Also in this pass:
 * `Tests 75+` and `Build` shields were stale hand-maintained numbers →
   replaced by the live CI workflow badge.
 * The Chinese README still cloned `dqsjqian/aria.git` and `cd aria`;
-  commit 120142c fixed only the English copy.
+  commit d270d06 fixed only the English copy.
 * `README.html` / `README.en.html` deleted along with
   `scripts/open-readme.sh`. They were hand-maintained mirrors of the
   Markdown — every doc change had to be made twice, and both copies

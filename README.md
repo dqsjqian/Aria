@@ -515,7 +515,7 @@ ctest --test-dir build/flavors/release --no-tests=error --output-on-failure
 ## 📊 性能基准
 
 2026-09-13，Apple M3 Pro / Apple Clang 21 / C++20 Release（`-O3 -DNDEBUG`）。
-下面是五次配对运行中，各次平均耗时的中位数；原版为 `eeb613f`，新版测量快照为 2.0 改造提交 `c33850d`。
+下面是五次配对运行中，各次平均耗时的中位数；原版为 `aa039f6`，新版测量快照为 2.0 改造提交 `2f22e17`。
 
 | 操作 | 原版 | 新版 |
 |---|---:|---:|

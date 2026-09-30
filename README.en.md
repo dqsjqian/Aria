@@ -589,7 +589,7 @@ build options. See [CI results](https://github.com/dqsjqian/Aria/actions/workflo
 
 Measured on 2026-09-13: Apple M3 Pro / Apple Clang 21 / C++20 Release
 (`-O3 -DNDEBUG`). Each entry is the median of five paired runs' mean operation
-times, comparing original revision `eeb613f` with 2.0 snapshot `c33850d`.
+times, comparing original revision `aa039f6` with 2.0 snapshot `2f22e17`.
 
 | Operation | Original | Current |
 |---|---:|---:|

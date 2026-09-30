@@ -129,8 +129,8 @@ comparisons constant-time.
 
 Measured on an Apple M3 Pro with Apple Clang 21.0.0, C++20 Release,
 `-O3 -DNDEBUG`, using the same benchmark sources and compiler flags against
-both complete production trees. The old revision is `eeb613f`; the measured
-2.0 snapshot is `c33850d`, including the ABI 2 and collection fixes documented
+both complete production trees. The old revision is `aa039f6`; the measured
+2.0 snapshot is `2f22e17`, including the ABI 2 and collection fixes documented
 in the changelog.
 Each executable had one discarded warmup, followed by five alternating
 paired runs. Values below are medians of the reported mean time per operation,
