@@ -19,7 +19,7 @@ The available, case-sensitive names are: `json`, `doctest`, `mira`, `openssl`. R
 
 To keep two dependencies fixed while updating the third, add `"version": "3.12.0"` to the existing JSON entry and `"version": "4.0.3"` to the existing OpenSSL entry; preserve all their source fields. Leave `mira` without a `version` field. A plain updater run then respects the two fixed versions and selects the latest stable release for each unpinned dependency. `--only mira` instead changes only Mira, leaving every other record untouched. No script edits are needed.
 
-Precedence: this invocation's `--version` overrides the manifest; explicit manifest versions override defaults. Without an explicit request, ordinary resolution reuses the lock and deliberate updating discovers the latest stable version. A command-line selection remains locked for normal builds, but does not constrain a later update unless repeated or placed in the manifest. To unpin a library, remove its manifest `version` and deliberately update it.
+Precedence: this invocation's `--version` overrides the manifest; explicit manifest versions override defaults. Without an explicit request, ordinary resolution reuses the lock and deliberate updating discovers the latest stable version. A command-line selection remains locked when the manifest does not explicitly request a different version. If it does, the next resolution without that override restores the manifest request. Command-line overrides do not change persistent manifest requirements; record them there if they should constrain later updates. To unpin a library, remove its manifest `version` and deliberately update it.
 
 ## Fetch, build, verify and commit
 

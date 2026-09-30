@@ -60,7 +60,7 @@ python scripts/update_dependencies.py --only json --only mira --version json=3.1
 1. 本次 `--version NAME=VERSION` 高于 manifest 的 `version`。
 2. manifest 明确版本约束长期生效，后续更新也遵守。
 3. 没有显式版本时，普通解析复用有效锁；主动更新才重新选择最新稳定版。
-4. 命令行选中的结果会留在锁中，普通构建继续复用；下一次主动更新若仍需固定，请写入 manifest 或再次传参数。
+4. 命令行选中的结果会留在锁中。manifest 没有不同的显式版本时，后续普通解析继续复用；manifest 若指定了另一版本，下一次不传覆盖参数的解析会恢复 manifest 的要求。要长期固定，请修改 manifest；本次参数不会改写其中的长期要求。
 
 ## 更新完成后怎么用
 
