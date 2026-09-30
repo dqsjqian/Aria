@@ -43,11 +43,11 @@
         "checksum_source": "github-release-asset",
         "request_hash": "8586774eb848fe437236e66f9f300291a015b405e00aee192b38e0fec53db970",
         "requested": "latest",
-        "revision": "4fe72621c9f5b904aae2ac49bb61fd581ff046f9",
-        "sha256": "3290abda456d4897103f160e0905d09c5b29dfc973ec15024b8f76ce705dd856",
-        "tag": "v0.4.0",
-        "url": "https://github.com/dqsjqian/Mira/releases/download/v0.4.0/Mira-0.4.0.tar.gz",
-        "version": "0.4.0"
+        "revision": "9386d89d2a259303a0a2c3b1539a5cb0e3fc0be5",
+        "sha256": "4faf1f34c6dc8f7d5cd92fd24f657a28153caac789d121a2fdf2259d9d0cd508",
+        "tag": "v1.0.0",
+        "url": "https://github.com/dqsjqian/Mira/releases/download/v1.0.0/Mira-1.0.0.tar.gz",
+        "version": "1.0.0"
       },
       "tag_prefix": "v"
     },

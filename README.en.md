@@ -285,7 +285,7 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 
 ## 📋 Requirements
 
-- **CMake** >= 3.20
+- **CMake** >= 3.21
 - **Compiler** with full C++23 support:
   - GCC >= 14 (the MSYS2 UCRT64 toolchain on Windows)
   - Clang >= 19 (AppleClang 21+ on macOS)

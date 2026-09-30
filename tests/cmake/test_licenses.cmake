@@ -19,6 +19,7 @@ file(WRITE "${TEST_ROOT}/sources/json/NOTICE" "selected JSON notice\n")
 file(WRITE "${TEST_ROOT}/sources/json/include/nlohmann/example.hpp"
     "// SPDX-FileCopyrightText: fixture Björn\n// SPDX-License-Identifier: MIT\n")
 file(WRITE "${TEST_ROOT}/sources/mira/LICENSE" "selected Mira license\n")
+file(WRITE "${TEST_ROOT}/sources/mira/THIRD_PARTY_NOTICES.md" "selected Mira dependency notices\n")
 file(WRITE "${TEST_ROOT}/sources/openssl/LICENSE.txt" "selected OpenSSL license\n")
 file(WRITE "${TEST_ROOT}/project/CMakeLists.txt" [=[
 cmake_minimum_required(VERSION 3.20)
@@ -53,6 +54,7 @@ foreach(index RANGE ${last})
     endif()
 endforeach()
 if(NOT EXISTS "${TEST_ROOT}/release/share/licenses/aria/json/NOTICE"
+   OR NOT EXISTS "${TEST_ROOT}/release/share/licenses/aria/mira/THIRD_PARTY_NOTICES.md"
    OR NOT EXISTS "${TEST_ROOT}/release/THIRD_PARTY_NOTICES.md")
     message(FATAL_ERROR "Package omitted notices")
 endif()

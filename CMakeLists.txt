@@ -1,10 +1,10 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 
 # Allow third-party CMake projects (older doctest etc.) that target old policies.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "")
 
 project(aria
-    VERSION 3.0.2
+    VERSION 3.1.0
     DESCRIPTION "Modern MVVM framework for C++23 — cross-platform, layered, coroutine-first"
     HOMEPAGE_URL "https://github.com/dqsjqian/Aria"
     LANGUAGES CXX

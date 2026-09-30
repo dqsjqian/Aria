@@ -37,7 +37,7 @@ In a separate application directory, save the next example as `main.cpp` and
 create this `CMakeLists.txt`:
 
 ```cmake
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 project(greeting LANGUAGES CXX)
 find_package(aria 3.0 CONFIG REQUIRED COMPONENTS core)
 add_executable(greeting main.cpp)

@@ -95,7 +95,12 @@ function(_aria_resolve_http output)
     # Resolve the bundled OpenSSL first: Mira's own dependency discovery must
     # not bind a static Mira built with OpenSSL 4 to a system OpenSSL 3.
     if(ARIA_HTTP_NEEDS_MIRA)
-        find_package(Mira CONFIG QUIET)
+        set(_aria_mira_components transport http)
+        if(ARIA_HTTP_HAS_TLS)
+            list(APPEND _aria_mira_components tls)
+        endif()
+        find_package(Mira @ARIA_HTTP_MIRA_VERSION@ EXACT CONFIG QUIET
+            COMPONENTS ${_aria_mira_components})
         if(NOT Mira_FOUND)
             set(_aria_http_error "Aria static HTTP dependency Mira was not found: ${Mira_NOT_FOUND_MESSAGE}" PARENT_SCOPE)
             return()

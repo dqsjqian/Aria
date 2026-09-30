@@ -14,6 +14,17 @@ All notable changes to **aria** are documented here.
 
 ---
 
+## 3.1.0 — 2026-09-30
+
+- Adapt the HTTP/TLS backend to Mira 1.0.0, including loop-bound TLS stream
+  construction. Keep WebSocket, HTTP/2 and HTTP/3 disabled for this integration.
+- Require CMake 3.21 and preserve the actual Mira version in static SDK
+  dependency discovery. Consumers must rebuild against the selected Mira SDK;
+  its source compatibility policy does not promise a stable binary ABI.
+- Retain Mira's third-party inventory alongside its MIT license in SDK packages.
+- Exercise HTTPS with independent certificate and hostname verification, and
+  cover shutdown with established and pending TLS connections.
+
 ## 3.0.2 — 2026-09-30
 
 - Include the framework and selected HTTP dependencies' license texts and

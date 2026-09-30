@@ -24,6 +24,7 @@ set(MIRA_BUILD_TESTS OFF)
 set(MIRA_BUILD_EXAMPLES OFF)
 set(MIRA_ENABLE_HTTP2 OFF)
 set(MIRA_ENABLE_HTTP3 OFF)
+set(MIRA_ENABLE_WEBSOCKET OFF)
 set(MIRA_ENABLE_TLS ${ARIA_HTTP_ENABLE_TLS})
 if(NOT ARIA_BUILD_SHARED)
     # Static aria_http: consumer link lines end at the Mira archives,
@@ -31,6 +32,15 @@ if(NOT ARIA_BUILD_SHARED)
     set(MIRA_INSTALL ON)
 endif()
 add_subdirectory(${ARIA_PINNED_MIRA_SOURCE_DIR} Mira)
+get_directory_property(_aria_mira_version DIRECTORY "${ARIA_PINNED_MIRA_SOURCE_DIR}"
+    DEFINITION PROJECT_VERSION)
+if(_aria_mira_version VERSION_LESS 1.0)
+    message(FATAL_ERROR "Aria HTTP requires Mira 1.0 or later; update the selected Mira dependency")
+endif()
+# Mira promises source compatibility, not a stable binary ABI. A static SDK must
+# resolve the same Mira version used to compile its HTTP implementation.
+set(ARIA_HTTP_MIRA_VERSION "${_aria_mira_version}" PARENT_SCOPE)
+
 
 # Sanitizers must reach Mira as well: MSVC refuses to link annotated
 # and unannotated TUs together (LNK2038 on the container-annotation

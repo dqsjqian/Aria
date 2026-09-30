@@ -12,7 +12,7 @@ See the [dependency guide](docs/dependencies.md) and update instructions
 
 | Component | Current resolution | License | Use |
 |---|---|---|---|
-| [Mira](https://github.com/dqsjqian/Mira) | 0.4.0 | MIT | Optional HTTP adapter transport; TLS when enabled. HTTP/2 and HTTP/3 are disabled in this integration. |
+| [Mira](https://github.com/dqsjqian/Mira) | 1.0.0 | MIT | Optional HTTP adapter transport; TLS when enabled. WebSocket, HTTP/2 and HTTP/3 are disabled in this integration. |
 | [nlohmann/json](https://github.com/nlohmann/json) | 3.12.0 | MIT | Optional HTTP adapter JSON implementation; compiled template code can be present in binaries. |
 | [OpenSSL](https://github.com/openssl/openssl) | 4.0.3 | Apache-2.0 | HTTP TLS when enabled; the bundled build produces static libraries. |
 | [doctest](https://github.com/doctest/doctest) | 2.5.3 | MIT; embedded portions under Boost-1.0 | Tests only; not part of the installed Aria library. |
@@ -21,7 +21,7 @@ See the [dependency guide](docs/dependencies.md) and update instructions
 ## Source notices
 
 - Mira: Copyright (c) 2026 dqsjqian. See the selected source's `LICENSE`
-  ([current revision](https://github.com/dqsjqian/Mira/blob/4fe72621c9f5b904aae2ac49bb61fd581ff046f9/LICENSE)).
+  ([current revision](https://github.com/dqsjqian/Mira/blob/9386d89d2a259303a0a2c3b1539a5cb0e3fc0be5/LICENSE)).
 - nlohmann/json: Copyright (c) 2013–2025 Niels Lohmann. See `LICENSE.MIT`
   ([current revision](https://github.com/nlohmann/json/blob/55f93686c01528224f448c19128836e7df245f72/LICENSE.MIT)).
   Embedded MIT portions also credit Evan Nemerson (2016–2021), in

@@ -150,6 +150,7 @@ public:
     }
 
     [[nodiscard]] bool connected() const noexcept { return handle_ != kInvalidSocket; }
+    [[nodiscard]] SocketHandle native_handle() const noexcept { return handle_; }
 
     /// Write a complete request. Keep-alive: call again on the same client.
     void send(std::string_view method, std::string_view target,

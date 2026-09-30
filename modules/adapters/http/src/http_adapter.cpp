@@ -1208,7 +1208,7 @@ Task<void> HttpAdapter::Impl::connection_task_tls(Mira::transport::tcp::Socket s
     options.request_timeout = EventLoop::Duration::zero();
 
     const OperationOptions io{.stop = options.stop};
-    auto stream = Mira::tls::Stream<Mira::transport::tcp::Socket>::create(socket, *tls_context);
+    auto stream = Mira::tls::Stream<Mira::transport::tcp::Socket>::create(*loop, socket, *tls_context);
     if (!stream) co_return;
     auto handshake = co_await stream->handshake(io);
     if (!handshake) co_return;

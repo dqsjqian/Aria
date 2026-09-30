@@ -67,7 +67,7 @@ version. The current checked-in selection is:
 
 | Dependency | Version | Source |
 |---|---|---|
-| Mira | 0.4.0 | GitHub release asset |
+| Mira | 1.0.0 | GitHub release asset |
 | nlohmann/json | 3.12.0 | `json.tar.xz` release asset |
 | doctest | 2.5.3 | raw header at locked commit |
 | OpenSSL (TLS builds) | 4.0.3 | GitHub release asset |
