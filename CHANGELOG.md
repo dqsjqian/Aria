@@ -14,7 +14,7 @@ All notable changes to **aria** are documented here.
 
 ---
 
-## Unreleased
+## 3.0.1 — 2026-09-30
 
 - Harden derived-list reentrancy and projection failure recovery, invalidate
   reactive dependents after a partially failing mutation, and reject callable

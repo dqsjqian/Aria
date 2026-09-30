@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "")
 
 project(aria
-    VERSION 3.0.0
+    VERSION 3.0.1
     DESCRIPTION "Modern MVVM framework for C++23 — cross-platform, layered, coroutine-first"
     HOMEPAGE_URL "https://github.com/dqsjqian/Aria"
     LANGUAGES CXX
@@ -34,7 +34,7 @@ project(aria
 # CMAKE_SOURCE_DIR.
 option(ARIA_ALLOW_BUILD_ROOT "Permit configuring directly into build/ (not recommended)" OFF)
 # Guard fires only when Aria is the top-level project. When Aria is pulled in
-# via add_subdirectory() (AriaRead / AriaTools / AriaAgent submodules),
+# via add_subdirectory() (AriaRead / AriaTools / AriaAgent source consumers),
 # CMAKE_SOURCE_DIR is the consumer's root and the consumer owns its build
 # layout — e.g. a plain `build/` there is perfectly valid and must not fail.
 if(NOT ARIA_ALLOW_BUILD_ROOT AND CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)

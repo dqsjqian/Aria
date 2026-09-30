@@ -89,7 +89,7 @@ auto sub = selection.selected().on_changed([](auto& row){ /* ... */ });
 - Every observer-adding API returns a `Subscription`. Store it (often in a
   `SubscriptionBag` on the owning ViewModel); dropping it disconnects.
 
-## Unreleased HTTP protocol 2 and callback dispatch
+## Aria 3.0 HTTP protocol 2 and callback dispatch
 
 Upgrade the bundled web SDK with the HTTP adapter. Safe 64-bit integers remain
 Numbers; values beyond ±9007199254740991 are decimal strings on the wire and
