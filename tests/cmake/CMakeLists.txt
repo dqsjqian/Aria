@@ -12,6 +12,13 @@ add_test(NAME dependency_selection
         -P "${CMAKE_CURRENT_SOURCE_DIR}/test_dependencies.cmake")
 set_tests_properties(dependency_selection PROPERTIES TIMEOUT 60)
 
+add_test(NAME license_packaging
+    COMMAND ${CMAKE_COMMAND}
+        "-DARIA_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/license-packaging"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/test_licenses.cmake")
+set_tests_properties(license_packaging PROPERTIES TIMEOUT 60)
+
 find_package(Python3 3.10 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME dependency_resolver

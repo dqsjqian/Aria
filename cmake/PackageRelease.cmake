@@ -42,6 +42,7 @@ add_custom_target(package-release
 # retired content (such as the former examples/ tree) would survive forever in
 # build/dist/tree and leak into release archives.
 add_custom_command(TARGET package-release PRE_BUILD
+    COMMAND ${CMAKE_COMMAND} -P "${ARIA_LICENSE_CHECK_SCRIPT}"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${ARIA_RELEASE_DIR}"
     COMMENT "  - cleaning previous release tree"
 )
@@ -55,7 +56,7 @@ add_custom_command(TARGET package-release POST_BUILD
 )
 
 # Step 2b: copy top-level docs
-foreach(doc_file LICENSE README.md README.en.md CHANGELOG.md)
+foreach(doc_file LICENSE THIRD_PARTY_NOTICES.md README.md README.en.md CHANGELOG.md)
     if(EXISTS "${PROJECT_SOURCE_DIR}/${doc_file}")
         add_custom_command(TARGET package-release POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different

@@ -14,6 +14,14 @@ All notable changes to **aria** are documented here.
 
 ---
 
+## 3.0.2 — 2026-09-30
+
+- Include the framework and selected HTTP dependencies' license texts and
+  attributions in installed SDKs and release archives. Validate missing
+  distribution material against the actual selected sources and supplied targets.
+- Refresh third-party notices and document Qt/runtime distribution obligations.
+  Dependency licenses remain separate from the framework's MIT license.
+
 ## 3.0.1 — 2026-09-30
 
 - Resolve unspecified dependencies to the latest stable release once, then

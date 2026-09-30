@@ -19,6 +19,7 @@
 # Override for offline work: -DARIA_PIN_MIRA_SOURCE_DIR=/path/to/Mira
 include("${CMAKE_CURRENT_LIST_DIR}/../../../cmake/ariaFetchPinned.cmake")
 aria_fetch_pinned_archive(NAME Mira)
+set(_aria_mira_license_source "${ARIA_PINNED_MIRA_SOURCE_DIR}" PARENT_SCOPE)
 set(MIRA_BUILD_TESTS OFF)
 set(MIRA_BUILD_EXAMPLES OFF)
 set(MIRA_ENABLE_HTTP2 OFF)

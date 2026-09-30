@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "")
 
 project(aria
-    VERSION 3.0.1
+    VERSION 3.0.2
     DESCRIPTION "Modern MVVM framework for C++23 — cross-platform, layered, coroutine-first"
     HOMEPAGE_URL "https://github.com/dqsjqian/Aria"
     LANGUAGES CXX
@@ -131,8 +131,10 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ariaFetchPinned.cmake")
 
 # JSON belongs to the HTTP adapter. Core-only builds must not require its
 # download; a parent can also provide its own namespaced target.
+set(_aria_json_license_source "")
 if(ARIA_BUILD_HTTP AND NOT TARGET nlohmann_json::nlohmann_json)
     aria_fetch_pinned_archive(NAME json)
+    set(_aria_json_license_source "${ARIA_PINNED_JSON_SOURCE_DIR}")
     add_library(nlohmann_json INTERFACE)
     target_include_directories(nlohmann_json SYSTEM INTERFACE
         $<BUILD_INTERFACE:${ARIA_PINNED_JSON_SOURCE_DIR}/include>
@@ -272,6 +274,7 @@ endif()
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     include(GNUInstallDirs)
     include(CMakePackageConfigHelpers)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ariaLicenses.cmake")
 
     set(ARIA_CORE_INSTALL_TARGETS
         aria_warnings
@@ -423,6 +426,7 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
         cmake/ariaConfig.cmake.in
         ${CMAKE_CURRENT_BINARY_DIR}/ariaConfig.cmake
         INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/aria
+        PATH_VARS ARIA_LICENSE_INSTALL_DIR
     )
     write_basic_package_version_file(
         ${CMAKE_CURRENT_BINARY_DIR}/ariaConfigVersion.cmake

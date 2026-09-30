@@ -1,6 +1,7 @@
 @PACKAGE_INIT@
 
 set(_aria_package_prefix "${PACKAGE_PREFIX_DIR}")
+set(ARIA_LICENSE_DIR "@PACKAGE_ARIA_LICENSE_INSTALL_DIR@")
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
 
