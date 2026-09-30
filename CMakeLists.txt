@@ -104,9 +104,9 @@ if(ARIA_BUILD_WASM)
 endif()
 
 # ── Includes ─────────────────────────────────────────────────────────────────
-include(PlatformDetect)
-include(CompilerWarnings)
-include(Sanitizers)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PlatformDetect.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CompilerWarnings.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/Sanitizers.cmake")
 
 # Common warnings target
 add_library(aria_warnings INTERFACE)
@@ -122,7 +122,7 @@ find_package(Threads REQUIRED)
 # pinned in-tree, and cached under build/_deps across build flavors. See
 # cmake/ariaFetchPinned.cmake. Overrides: -DARIA_DEPS_CACHE_DIR=<dir> and
 # -DARIA_PIN_<NAME>_SOURCE_DIR (archives) for offline development.
-include(ariaFetchPinned)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ariaFetchPinned.cmake")
 
 # JSON belongs to the HTTP adapter. Core-only builds must not require its
 # download; a parent can also provide its own namespaced target.
@@ -145,7 +145,7 @@ if(ARIA_BUILD_TESTS)
     enable_testing()
     # doctest is a hash-pinned single header (no vendored source, no network
     # surprises); see cmake/ariaFetchPinned.cmake for the verification rules.
-    include(ariaFetchPinned)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ariaFetchPinned.cmake")
     aria_fetch_pinned_file(
         NAME doctest
         URL "https://raw.githubusercontent.com/doctest/doctest/v2.5.3/doctest/doctest.h"
@@ -185,7 +185,7 @@ if(ARIA_BUILD_HTTP)
     if(ARIA_HTTP_ENABLE_TLS)
         # Reuse complete parent targets, otherwise build vendored OpenSSL.
         # The helper rejects missing source/partial parent configuration.
-        include(BuildOpenSSL)
+        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildOpenSSL.cmake")
     endif()
     add_subdirectory(modules/adapters/http)
 endif()
@@ -434,7 +434,7 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
         ${CMAKE_CURRENT_BINARY_DIR}/ariaConfigVersion.cmake
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/aria
     )
-    include(PackageRelease)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PackageRelease.cmake")
 endif()
 
 # ── Summary ──────────────────────────────────────────────────────────────────

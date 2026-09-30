@@ -32,7 +32,9 @@ All notable changes to **aria** are documented here.
 - Propagate C++23 to installed consumers, isolate optional adapter exports,
   repair static HTTP/TLS SDK dependencies, and verify cached dependency bytes
   under a shared configure lock. Add offline cache and relocated SDK tests,
-  plus a static TLS CI job; update stale integration instructions.
+  plus a static TLS CI job; update stale integration instructions. Resolve
+  framework-owned CMake helpers by path so parent projects cannot shadow
+  dependency verification with a stale helper of the same name.
 
 ## 3.0.0 — 2026-09-25
 

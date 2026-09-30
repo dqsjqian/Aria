@@ -54,7 +54,7 @@ endif()
 
 # OpenSSL itself is a hash-pinned release download (no vendored source, no
 # submodule); see cmake/ariaFetchPinned.cmake for the verification rules.
-include(ariaFetchPinned)
+include("${CMAKE_CURRENT_LIST_DIR}/ariaFetchPinned.cmake")
 aria_fetch_pinned_archive(
     NAME openssl
     VERSION 4.0.2

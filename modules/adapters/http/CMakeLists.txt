@@ -17,7 +17,7 @@
 # is enabled; HTTP/2 and HTTP/3 stay off. Mira requires C++23, and the
 # adapter propagates cxx_std_23 PUBLIC for exactly that reason.
 # Override for offline work: -DARIA_PIN_MIRA_SOURCE_DIR=/path/to/Mira
-include(ariaFetchPinned)
+include("${CMAKE_CURRENT_LIST_DIR}/../../../cmake/ariaFetchPinned.cmake")
 aria_fetch_pinned_archive(
     NAME Mira
     VERSION 0.4.0
