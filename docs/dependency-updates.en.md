@@ -2,7 +2,7 @@
 
 Run these commands from the **Aria repository root**. Use Python 3.10+ with its standard library; substitute `python3` when required on macOS/Linux. Online resolution can use an authenticated `gh` CLI, or the public GitHub API. Install the compiler, CMake and platform SDKs listed in the README separately.
 
-`dependencies.json` declares sources and optional persistent `version` requirements. `dependencies.lock.json` records selected versions, complete Git commits and download SHA256 values. Commit both files when they change. Normal builds reuse matching locks; a missing selection resolves the latest stable release once. Updating is explicit and excludes prereleases and development branches.
+`dependencies.json` is the only project dependency file. Each entry contains its source fields, an optional outer `version`, and a script-maintained `resolved` object. Sources are not duplicated. Omit `version`, use an empty string, or use `"latest"` for the stable-release policy. `resolved` stores the selected version, complete commit, download checksum and a `request_hash` tying the result to its declaration. Normal builds reuse matching results; missing/stale results require resolution, and deliberate updates discover new releases. Commit this one file and do not edit generated hashes.
 
 ## Commands
 
@@ -19,7 +19,7 @@ The available, case-sensitive names are: `json`, `doctest`, `mira`, `openssl`. R
 
 To keep two dependencies fixed while updating the third, add `"version": "3.12.0"` to the existing JSON entry and `"version": "4.0.3"` to the existing OpenSSL entry; preserve all their source fields. Leave `mira` without a `version` field. A plain updater run then respects the two fixed versions and selects the latest stable release for each unpinned dependency. `--only mira` instead changes only Mira, leaving every other record untouched. No script edits are needed.
 
-Precedence: this invocation's `--version` overrides the manifest; explicit manifest versions override defaults. Without an explicit request, ordinary resolution reuses the lock and deliberate updating discovers the latest stable version. A command-line selection remains locked when the manifest does not explicitly request a different version. If it does, the next resolution without that override restores the manifest request. Command-line overrides do not change persistent manifest requirements; record them there if they should constrain later updates. To unpin a library, remove its manifest `version` and deliberately update it.
+Precedence: this invocation's `--version` overrides the declaration; explicit declaration versions override defaults. Without an explicit request, ordinary resolution reuses the lock and deliberate updating discovers the latest stable version. A command-line selection remains locked when the declaration does not explicitly request a different version. If it does, the next resolution without that override restores the declaration request. Command-line overrides do not change persistent declaration requirements; record them there if they should constrain later updates. To unpin a library, remove its declaration `version` and deliberately update it.
 
 ## Fetch, build, verify and commit
 
@@ -31,16 +31,16 @@ cmake --build build/flavors/dependency-check --config Release --parallel 3
 ctest --test-dir build/flavors/dependency-check -C Release --output-on-failure --no-tests=error
 ```
 
-Follow the [README](../README.en.md) for platform SDK selection and additional probes. Use the same configuration for build and CTest. Review `git diff -- dependencies.json dependencies.lock.json` and commit changed declarations and locks only after the build/tests succeed. Do not commit ignored downloads, source caches or build-directory effective locks. CI and releases consume checked-in selections.
+Follow the [README](../README.en.md) for platform SDK selection and additional probes. Use the same configuration for build and CTest. Review `git diff -- dependencies.json` and commit the changed dependency file only after the build/tests succeed. Do not commit ignored downloads, source caches or build-directory effective locks. CI and releases consume checked-in selections.
 
 ## Existing locks, offline operation and overrides
 
 ```bash
-python scripts/dependencies.py resolve --manifest dependencies.json --lock dependencies.lock.json
-python scripts/dependencies.py resolve --manifest dependencies.json --lock dependencies.lock.json --offline
+python scripts/dependencies.py resolve --file dependencies.json
+python scripts/dependencies.py resolve --file dependencies.json --offline
 ```
 
-`resolve` fills missing/mismatched entries and preserves valid selections. Its offline mode requires a matching lock; successful offline resolution does not ensure source archives are cached. `update --offline` cannot discover new releases. A deleted lock causes fresh resolution, but loses prior selections; prefer the updater for controlled upgrades.
+`resolve` fills missing/mismatched entries and preserves valid selections. Its offline mode requires a matching lock; successful offline resolution does not ensure source archives are cached. `update --offline` cannot discover new releases. Do not delete the complete dependency file: it also contains source declarations. Removing a single `resolved` object requires fresh resolution for that entry; prefer the updater for controlled upgrades.
 
 
 
@@ -48,6 +48,6 @@ Aria source builds support CMake library overrides such as `-DARIA_DEP_JSON_VERS
 
 ## Errors and rollback
 
-Resolution failures leave the existing lock unchanged. Correct invalid names/versions, network failures or API limits and retry; do not disable integrity checks. A successful resolution followed by a failed build means compatibility still needs work. Restore the manifest and lock from a known-good Git revision after preserving local changes, then repeat fetch/build/tests. Restoring metadata alone does not restore binaries. Never edit checksums to accept changed bytes.
+Resolution failures leave the existing lock unchanged. Correct invalid names/versions, network failures or API limits and retry; do not disable integrity checks. A successful resolution followed by a failed build means compatibility still needs work. Restore the dependency file from a known-good Git revision after preserving local changes, then repeat fetch/build/tests. Restoring metadata alone does not restore binaries. Never edit checksums to accept changed bytes.
 
-Additional arguments: `--manifest PATH`, `--lock PATH`, `--base-lock PATH`, `--cache-dir PATH`, and `--offline`. Custom output locks do not automatically reconfigure consumers: pass consistent manifest/lock arguments to fetch/build tools and `-DARIA_DEPENDENCY_MANIFEST=... -DARIA_DEPENDENCY_LOCK=...` to Aria CMake source integrations. Run `--help` for the parser's complete interface.
+Additional arguments: `--file PATH`, `--output PATH`, `--cache-dir PATH`, and `--offline`. Normally the updater edits `--file` atomically. `--output` creates an isolated effective file while preserving that input. To select another complete dependency file in CMake, pass `-DARIA_DEPENDENCIES_FILE=...`. CMake version overrides use ignored build-directory effective files; the repository still has only one dependency file to commit. Run `--help` for the complete interface.

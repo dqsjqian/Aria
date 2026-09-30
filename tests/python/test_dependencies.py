@@ -58,15 +58,21 @@ class DependencyTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.manifest = self.root / "dependencies.json"
-        self.lock = self.root / "dependencies.lock.json"
+        self.lock = self.manifest
         self.context = FakeContext()
         self.write_manifest({"library": SOURCE})
 
     def write_manifest(self, dependencies):
-        self.manifest.write_text(json.dumps({"schema": 1, "dependencies": dependencies}))
+        previous = json.loads(self.manifest.read_text())["dependencies"] if self.manifest.exists() else {}
+        entries = {}
+        for name, spec in dependencies.items():
+            entries[name] = dict(spec)
+            if name in previous and "resolved" in previous[name]:
+                entries[name]["resolved"] = previous[name]["resolved"]
+        self.manifest.write_text(json.dumps({"schema": 2, "dependencies": entries}))
 
     def resolve(self, **kwargs):
-        return deps.resolve(self.manifest, self.lock, context=self.context, **kwargs)
+        return deps.resolve(self.manifest, context=self.context, **kwargs)
 
     def test_latest_means_highest_stable_release(self):
         record = self.resolve()["dependencies"]["library"]
@@ -111,7 +117,8 @@ class DependencyTests(unittest.TestCase):
         self.assertEqual({name: record["version"] for name, record in selected.items()},
                          {"fixed_one": "1.9.0", "fixed_two": "1.10.0", "rolling": "2.0.0"})
         self.context.releases.append({"tag_name": "v3.0.0"})
-        next_selection = self.resolve(update=True, only=["rolling"])["dependencies"]
+        self.resolve(update=True, only=["rolling"])
+        next_selection = deps.read_resolved(self.manifest)["dependencies"]
         self.assertEqual(next_selection["rolling"]["version"], "3.0.0")
         for name in ["fixed_one", "fixed_two"]:
             self.assertEqual(next_selection[name], selected[name])
@@ -122,10 +129,16 @@ class DependencyTests(unittest.TestCase):
         record = self.resolve(versions={"library": "1.10.0"})["dependencies"]["library"]
         self.assertEqual(record["requested"], "1.10.0")
 
+    def test_explicit_latest_policy_still_locks_normal_builds(self):
+        self.write_manifest({"library": {**SOURCE, "version": "latest"}})
+        self.resolve(versions={"library": "1.9.0"})
+        self.context.offline = True
+        self.assertEqual(self.resolve()["dependencies"]["library"]["version"], "1.9.0")
+
     def test_unknown_version_override_is_rejected(self):
         with self.assertRaisesRegex(deps.DependencyError, "declared dependency"):
             self.resolve(versions={"typo": "1.0"})
-        self.assertFalse(self.lock.exists())
+        self.assertNotIn("resolved", json.loads(self.manifest.read_text())["dependencies"]["library"])
 
     def test_explicit_branch_or_prerelease_is_rejected_before_network(self):
         for version in ["main", "2.0.0-rc1", "v2.0.0-beta", "../bad"]:
@@ -137,12 +150,12 @@ class DependencyTests(unittest.TestCase):
         self.write_manifest({"library": SOURCE, "other": SOURCE})
         with self.assertRaisesRegex(deps.DependencyError, "selected by --only"):
             self.resolve(only=["library"], versions={"other": "1.9.0"})
-        self.assertFalse(self.lock.exists())
+        self.assertNotIn("resolved", json.loads(self.manifest.read_text())["dependencies"]["library"])
 
     def test_malformed_locked_record_is_reported_without_mutation(self):
-        self.lock.write_text(json.dumps({"schema": 1, "dependencies": {"library": []}}))
+        self.lock.write_text(json.dumps({"schema": 2, "dependencies": {"library": {**SOURCE, "resolved": []}}}))
         before = self.lock.read_bytes()
-        with self.assertRaisesRegex(deps.DependencyError, "Invalid locked"):
+        with self.assertRaisesRegex(deps.DependencyError, "invalid resolved"):
             self.resolve()
         self.assertEqual(self.lock.read_bytes(), before)
 
@@ -150,14 +163,14 @@ class DependencyTests(unittest.TestCase):
         self.resolve()
         old = self.lock.read_bytes()
         self.context.offline = True
-        with self.assertRaisesRegex(deps.DependencyError, "matching lock"):
+        with self.assertRaisesRegex(deps.DependencyError, "matching resolved"):
             self.resolve(versions={"library": "1.9.0"})
         self.assertEqual(self.lock.read_bytes(), old)
 
     def test_resolution_failure_is_transactional(self):
         self.resolve()
-        old = self.lock.read_bytes()
         self.write_manifest({"library": SOURCE, "broken": {"provider": "unsupported"}})
+        old = self.lock.read_bytes()
         with self.assertRaisesRegex(deps.DependencyError, "Unsupported"):
             self.resolve(update=True)
         self.assertEqual(self.lock.read_bytes(), old)
@@ -166,7 +179,7 @@ class DependencyTests(unittest.TestCase):
         self.resolve()
         original = self.lock.read_bytes()
         effective = self.root / "build" / "effective.json"
-        result = deps.resolve(self.manifest, effective, base_lock=self.lock,
+        result = deps.resolve(self.manifest, effective,
                               versions={"library": "1.9.0"}, context=self.context)
         self.assertEqual(self.lock.read_bytes(), original)
         self.assertEqual(result["dependencies"]["library"]["version"], "1.9.0")
@@ -198,6 +211,53 @@ class DependencyTests(unittest.TestCase):
         self.assertEqual(record["tag"], "curl-8_22_0")
         self.assertEqual(record["sha256"], DIGEST)
         self.assertEqual(record["checksum_source"], "github-release-asset")
+
+    def test_request_fingerprint_is_portable_and_detects_edits(self):
+        self.assertEqual(deps.request_hash(SOURCE),
+                         "1044731845c62e4a50b0251f6039d78e6ce1233cdcac02a2b086809fb6526f54")
+        self.resolve()
+        value = json.loads(self.manifest.read_text())
+        self.assertNotIn("source", value["dependencies"]["library"]["resolved"])
+        value["dependencies"]["library"]["repo"] = "example/another"
+        self.manifest.write_text(json.dumps(value))
+        with self.assertRaisesRegex(deps.DependencyError, "declaration changed"):
+            deps.read_resolved(self.manifest)
+        self.context.offline = True
+        with self.assertRaisesRegex(deps.DependencyError, "matching resolved"):
+            self.resolve()
+
+    def test_effective_output_tracks_base_changes_and_keeps_other_overrides(self):
+        self.write_manifest({"library": SOURCE, "other": SOURCE})
+        self.resolve()
+        effective = self.root / "build" / "effective.json"
+        deps.resolve(self.manifest, effective, versions={"library": "1.9.0"},
+                     only=["library"], context=self.context)
+        deps.resolve(self.manifest, effective, versions={"other": "1.9.0"},
+                     only=["other"], context=self.context)
+        self.assertEqual(deps.read_resolved(effective)["dependencies"]["library"]["version"], "1.9.0")
+        before = self.manifest.read_bytes()
+        self.context.offline = True
+        deps.resolve(self.manifest, effective, versions={"library": "1.9.0"},
+                     only=["library"], context=self.context)
+        self.assertEqual(self.manifest.read_bytes(), before)
+        # Deleting a persisted result invalidates the isolated output too.
+        value = json.loads(self.manifest.read_text())
+        del value["dependencies"]["library"]["resolved"]
+        self.manifest.write_text(json.dumps(value))
+        with self.assertRaisesRegex(deps.DependencyError, "matching resolved"):
+            deps.resolve(self.manifest, effective, only=["library"], context=self.context)
+        self.context.offline = False
+        self.context.releases.append({"tag_name": "v3.0.0"})
+        selected = deps.resolve(self.manifest, effective, only=["library"], context=self.context)
+        self.assertEqual(selected["dependencies"]["library"]["version"], "3.0.0")
+
+    def test_read_only_selection_allows_an_unresolved_other_entry(self):
+        self.write_manifest({"library": SOURCE, "other": SOURCE})
+        self.resolve(only=["library"])
+        record = deps.read_resolved(self.manifest, only=["library"])["dependencies"]["library"]
+        self.assertEqual(record["version"], "1.10.0")
+        with self.assertRaisesRegex(deps.DependencyError, "Missing or invalid"):
+            deps.read_resolved(self.manifest)
 
 
 if __name__ == "__main__":

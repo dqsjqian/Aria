@@ -17,7 +17,7 @@ All notable changes to **aria** are documented here.
 ## 3.0.1 — 2026-09-30
 
 - Resolve unspecified dependencies to the latest stable release once, then
-  reuse a checked-in version/commit/SHA256 lock. Explicit versions take
+  reuse embedded version/commit/SHA256 results in one `dependencies.json`. Explicit versions take
   precedence; `scripts/update_dependencies.py` refreshes all or selected
   entries atomically. CMake overrides use isolated build-directory locks,
   and installed Qt discovery supports an exact version request. Validate

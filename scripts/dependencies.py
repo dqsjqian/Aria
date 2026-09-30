@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve stable dependency releases and maintain reproducible JSON locks.
+"""Resolve stable releases in one dependency file with embedded locked results.
 
 Normal resolution reuses matching locked records without network access.
 Only missing/changed requests, or an explicit update, query upstream releases.
@@ -30,14 +30,65 @@ class DependencyError(ValueError):
 
 def load_json(path: Path, *, optional: bool = False) -> dict:
     if optional and not path.exists():
-        return {"schema": 1, "dependencies": {}}
+        return {"schema": 2, "dependencies": {}}
     with path.open(encoding="utf-8") as stream:
         value = json.load(stream)
-    if not isinstance(value, dict) or value.get("schema") != 1:
+    if not isinstance(value, dict) or value.get("schema") != 2:
         raise DependencyError(f"Unsupported dependency schema: {path}")
     if not isinstance(value.get("dependencies"), dict):
         raise DependencyError(f"Missing dependency dictionary: {path}")
     return value
+
+
+def dependency_spec(entry: dict) -> dict:
+    if not isinstance(entry, dict):
+        raise DependencyError("Dependency entries must be objects")
+    return {key: value for key, value in entry.items() if key != "resolved"}
+
+
+def request_hash(spec: dict) -> str:
+    """Portable length-prefixed UTF-8 encoding, also implemented by CMake."""
+    encoded = bytearray(b"aria-dependency-request-v1\n")
+    for key, value in sorted(spec.items()):
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", key) or not isinstance(value, str):
+            raise DependencyError("Dependency declarations require simple string fields")
+        for part in (key, value):
+            data = part.encode("utf-8")
+            encoded.extend(str(len(data)).encode("ascii") + b":" + data)
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _entry_record(entry: dict, *, allow_missing: bool = False) -> dict | None:
+    spec = dependency_spec(entry)
+    fingerprint = request_hash(spec)
+    resolved = entry.get("resolved")
+    if resolved is None and allow_missing:
+        return None
+    if not isinstance(resolved, dict):
+        raise DependencyError("Missing or invalid resolved dependency result")
+    if resolved.get("request_hash") != fingerprint:
+        if allow_missing:
+            return None
+        raise DependencyError("Dependency declaration changed; resolve it before building")
+    record = {**resolved, "source": spec}
+    validate_record(record)
+    return record
+
+
+def read_resolved(file: Path, only: list | None = None) -> dict:
+    """Read/verify selected results without discovery or changing the file.
+
+    The returned source field is an in-memory compatibility view, not another
+    persisted declaration. A prior CLI override is accepted here; resolve()
+    alone performs version selection when a new invocation requests it.
+    """
+    entries = load_json(file)["dependencies"]
+    selected = set(only or entries)
+    if selected - entries.keys():
+        raise DependencyError("Selections must name a declared dependency")
+    return {"schema": 1, "dependencies": {
+        name: _entry_record(entries[name]) for name in sorted(selected)
+    }}
 
 
 def atomic_json(path: Path, value: dict) -> None:
@@ -316,63 +367,86 @@ def resolve_record(spec: dict, requested: str, context: Context) -> dict:
     return record
 
 
-def resolve(manifest: Path, lock: Path, *, base_lock: Path | None = None,
+def resolve(file: Path, effective_file: Path | None = None, *,
             versions: dict | None = None, only: list | None = None,
             update: bool = False, context: Context | None = None) -> dict:
-    specs = load_json(manifest)["dependencies"]
+    """Resolve selected entries atomically in one file, or an isolated output.
+
+    An effective output binds the complete input-file hash, so editing the
+    checked-in resolution cannot resurrect an older build-directory selection.
+    Returns a verified in-memory view for the selected names only.
+    """
+    output = effective_file or file
     versions = versions or {}
-    selected = set(only or specs)
-    if (set(versions) | selected) - specs.keys():
-        raise DependencyError("Version overrides and selections must name a declared dependency")
-    if set(versions) - selected:
-        raise DependencyError("Every version override must also be selected by --only")
-    context = context or Context(manifest.parent / "build/deps/resolver")
-    with lock_output(lock):
-        base = load_json(base_lock, optional=True)["dependencies"] if base_lock else {}
-        previous = load_json(lock, optional=True)["dependencies"]
-        result = {"schema": 1, "dependencies": {**base, **previous}}
+    context = context or Context(file.parent / "build/deps/resolver")
+    with lock_output(output):
+        document = load_json(file)
+        entries = document["dependencies"]
+        selected = set(only or entries)
+        if (set(versions) | selected) - entries.keys():
+            raise DependencyError("Version overrides and selections must name a declared dependency")
+        if set(versions) - selected:
+            raise DependencyError("Every version override must also be selected by --only")
+        separate = output.resolve() != file.resolve()
+        source_hash = hashlib.sha256(file.read_bytes()).hexdigest()
+        previous = load_json(output, optional=True) if separate else document
+        effective_entries = (previous["dependencies"]
+                             if separate and previous.get("_base_sha256") == source_hash else {})
+        # Copy declaration/result objects so no partial mutation is exposed on
+        # disk if a later selected dependency fails to resolve.
+        result = {"schema": 2, "dependencies": json.loads(json.dumps(entries))}
+        if separate:
+            result["_base_sha256"] = source_hash
+            for name, entry in effective_entries.items():
+                if name in entries and dependency_spec(entry) == dependency_spec(entries[name]):
+                    old = _entry_record(entry, allow_missing=True)
+                    if old:
+                        result["dependencies"][name]["resolved"] = dict(entry["resolved"])
         for name in sorted(selected):
-            spec = specs[name]
-            if not isinstance(spec, dict):
-                raise DependencyError(f"Invalid dependency declaration: {name}")
+            spec = dependency_spec(entries[name])
+            fingerprint = request_hash(spec)
             requested = versions.get(name, spec.get("version") or "latest")
             if not isinstance(requested, str) or not requested.strip():
                 raise DependencyError(f"Invalid version selector: {name}")
-            old = result["dependencies"].get(name)
-            if old is not None and not isinstance(old, dict):
-                raise DependencyError(f"Invalid locked dependency record: {name}")
-            explicit = name in versions or bool(spec.get("version"))
-            matches = old and old.get("source") == spec and (
-                not explicit or old.get("requested") == requested
-                or requested in {old.get("version"), old.get("tag")})
-            if not update and matches:
-                validate_record(old)
-                if explicit and requested != old.get("requested"):
-                    result["dependencies"][name] = {**old, "requested": requested}
-                continue
-            if context.offline:
-                raise DependencyError(f"No matching lock record for {name} ({requested}); resolve online first")
-            result["dependencies"][name] = resolve_record(spec, requested, context)
-        # Commit all selections together; a failed lookup cannot leave a mix
-        # of old and newly resolved records in the dependency lock.
-        atomic_json(lock, result)
-        return result
+            explicit = name in versions or spec.get("version") not in (None, "", "latest")
+            record = None
+            if not update:
+                candidates = [entries[name]]
+                if name in effective_entries and dependency_spec(effective_entries[name]) == spec:
+                    candidates.append(effective_entries[name])
+                for candidate in candidates:
+                    old = _entry_record(candidate, allow_missing=True)
+                    if old and (not explicit or requested == old.get("requested")
+                                or requested in {old.get("version"), old.get("tag")}):
+                        record = dict(old)
+                        if explicit:
+                            record["requested"] = requested
+                        break
+            if record is None:
+                if context.offline:
+                    raise DependencyError(f"No matching resolved result for {name} ({requested}); resolve online first")
+                record = resolve_record(spec, requested, context)
+            result["dependencies"][name]["resolved"] = {
+                **{key: value for key, value in record.items() if key != "source"},
+                "request_hash": fingerprint,
+            }
+        atomic_json(output, result)
+        return read_resolved(output, only=sorted(selected))
 
 
-def main(argv=None, *, command=None, manifest=None, lock=None) -> int:
+def main(argv=None, *, command=None, file=None) -> int:
     description = ("Update dependency selections atomically. Explicit --version overrides "
                    "manifest versions; unspecified versions resolve the latest stable release. "
-                   "Run the normal build and tests after reviewing the lock diff.") if command == "update" else __doc__
+                   "Run the normal build and tests after reviewing the dependency-file diff.") if command == "update" else __doc__
     parser = argparse.ArgumentParser(description=description)
     if command is None:
         parser.add_argument("command", choices=("resolve", "update"))
     else:
         parser.set_defaults(command=command)
-    parser.add_argument("--manifest", type=Path, default=manifest, required=manifest is None,
-                        help="Source declarations and persistent version requirements")
-    parser.add_argument("--lock", type=Path, default=lock, required=lock is None,
-                        help="Output dependency lock (existing unselected records are preserved)")
-    parser.add_argument("--base-lock", type=Path, help="Optional initial lock for a separate output")
+    parser.add_argument("--file", type=Path, default=file, required=file is None,
+                        help="Single dependency file containing requirements and resolved results")
+    parser.add_argument("--output", type=Path,
+                        help="Optional isolated effective file; normally update --file in place")
     parser.add_argument("--cache-dir", type=Path, help="Download checksum discovery cache")
     parser.add_argument("--version", action="append", default=[], metavar="NAME=VERSION",
                         help="Override one version for this invocation; repeat for different names")
@@ -388,9 +462,9 @@ def main(argv=None, *, command=None, manifest=None, lock=None) -> int:
             if not separator or not name or not version or name in versions:
                 raise DependencyError("Use each --version NAME=VERSION override at most once")
             versions[name] = version
-        result = resolve(args.manifest, args.lock, base_lock=args.base_lock,
+        result = resolve(args.file, args.output,
                          versions=versions, only=args.only, update=args.command == "update",
-                         context=Context(args.cache_dir or args.manifest.parent / "build/deps/resolver",
+                         context=Context(args.cache_dir or args.file.parent / "build/deps/resolver",
                                          offline=args.offline))
         for name in sorted(args.only or result["dependencies"]):
             record = result["dependencies"][name]

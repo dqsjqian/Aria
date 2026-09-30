@@ -61,7 +61,7 @@ adapter.register_command("view-id", "custom-route",
 `third_party/` (cpp-httplib, doctest, nlohmann_json) and the OpenSSL git
 submodule are removed. Dependencies default to the latest stable release on
 first resolution, then use the versions and SHA256 hashes recorded in
-`dependencies.lock.json`. Explicit versions take precedence. See
+`dependencies.json`. Explicit versions take precedence. See
 [dependency versions](dependencies.md) for updating the lock and selecting a
 version. The current checked-in selection is:
 

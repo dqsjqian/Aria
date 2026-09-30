@@ -1,33 +1,73 @@
 {
-  "schema": 1,
   "dependencies": {
-    "json": {
-      "provider": "github",
-      "repo": "nlohmann/json",
-      "artifact": "release-asset",
-      "asset": "json.tar.xz",
-      "tag_prefix": "v"
-    },
     "doctest": {
-      "provider": "github",
-      "repo": "doctest/doctest",
       "artifact": "file",
       "path": "doctest/doctest.h",
+      "provider": "github",
+      "repo": "doctest/doctest",
+      "resolved": {
+        "checksum_source": "downloaded-over-https",
+        "request_hash": "30449623d6b34480b30001f35173e4927ff706adb9a3f6ae20dc3c39f5cbbda5",
+        "requested": "latest",
+        "revision": "2d0a9359a60c51affe2a9bebb1be1dca47868151",
+        "sha256": "cfd518a3ef90f67e1f3ba514df23fb3627437de1a2feeba78cf5062a40021421",
+        "tag": "v2.5.3",
+        "url": "https://raw.githubusercontent.com/doctest/doctest/2d0a9359a60c51affe2a9bebb1be1dca47868151/doctest/doctest.h",
+        "version": "2.5.3"
+      },
+      "tag_prefix": "v"
+    },
+    "json": {
+      "artifact": "release-asset",
+      "asset": "json.tar.xz",
+      "provider": "github",
+      "repo": "nlohmann/json",
+      "resolved": {
+        "checksum_source": "downloaded-over-https",
+        "request_hash": "baa350ef77c98d8ffe6b2094634ff0fb558dc6c28441274545b8b70ff7d6580d",
+        "requested": "latest",
+        "revision": "55f93686c01528224f448c19128836e7df245f72",
+        "sha256": "42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa",
+        "tag": "v3.12.0",
+        "url": "https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz",
+        "version": "3.12.0"
+      },
       "tag_prefix": "v"
     },
     "mira": {
-      "provider": "github",
-      "repo": "dqsjqian/Mira",
       "artifact": "release-asset",
       "asset": "Mira-{version}.tar.gz",
+      "provider": "github",
+      "repo": "dqsjqian/Mira",
+      "resolved": {
+        "checksum_source": "github-release-asset",
+        "request_hash": "8586774eb848fe437236e66f9f300291a015b405e00aee192b38e0fec53db970",
+        "requested": "latest",
+        "revision": "4fe72621c9f5b904aae2ac49bb61fd581ff046f9",
+        "sha256": "3290abda456d4897103f160e0905d09c5b29dfc973ec15024b8f76ce705dd856",
+        "tag": "v0.4.0",
+        "url": "https://github.com/dqsjqian/Mira/releases/download/v0.4.0/Mira-0.4.0.tar.gz",
+        "version": "0.4.0"
+      },
       "tag_prefix": "v"
     },
     "openssl": {
-      "provider": "github",
-      "repo": "openssl/openssl",
       "artifact": "release-asset",
       "asset": "openssl-{version}.tar.gz",
+      "provider": "github",
+      "repo": "openssl/openssl",
+      "resolved": {
+        "checksum_source": "github-release-asset",
+        "request_hash": "35cb93240a2dfd4b632de747bd697f985ca353abe5f5826a136bb10c9651e6c8",
+        "requested": "latest",
+        "revision": "af1775b60dfa141a4ad762585052cabeb9f37e9e",
+        "sha256": "325b5c806167c13b40b1ffeadfe0248197c00eccc4cf123ec1e28d2d2fd216d9",
+        "tag": "openssl-4.0.3",
+        "url": "https://github.com/openssl/openssl/releases/download/openssl-4.0.3/openssl-4.0.3.tar.gz",
+        "version": "4.0.3"
+      },
       "tag_prefix": "openssl-"
     }
-  }
+  },
+  "schema": 2
 }

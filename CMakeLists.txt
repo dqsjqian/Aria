@@ -124,7 +124,7 @@ find_package(Threads REQUIRED)
 
 # ── Hash-pinned dependencies (no vendored source, no submodules) ────────────
 # Managed dependencies resolve the latest stable release once, retain that
-# selection in dependencies.lock.json, and verify cached bytes. See
+# selection in dependencies.json, and verify cached bytes. See
 # cmake/ariaFetchPinned.cmake. Overrides: -DARIA_DEPS_CACHE_DIR=<dir> and
 # -DARIA_PIN_<NAME>_SOURCE_DIR (archives) for offline development.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ariaFetchPinned.cmake")
