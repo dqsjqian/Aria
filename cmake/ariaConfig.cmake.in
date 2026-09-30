@@ -9,7 +9,8 @@ set(_aria_qt6_ready FALSE)
 if(ARIA_BUILT_WITH_QT6 AND (NOT aria_FIND_COMPONENTS OR "qt6" IN_LIST aria_FIND_COMPONENTS))
     # find_dependency inherits aria's REQUIRED flag, which would make a
     # missing OPTIONAL_COMPONENT fatal. Check availability before importing it.
-    find_package(Qt6 QUIET COMPONENTS Core Widgets)
+    include("${CMAKE_CURRENT_LIST_DIR}/ariaFindQt.cmake")
+    aria_find_qt6(QUIET COMPONENTS Core Widgets)
     set(_aria_qt6_ready ${Qt6_FOUND})
     if(NOT _aria_qt6_ready AND (NOT aria_FIND_COMPONENTS OR aria_FIND_REQUIRED_qt6))
         set(aria_FOUND FALSE)

@@ -1,7 +1,7 @@
 # ariaFetchPinned.cmake — hash-pinned third-party dependencies, the Mira way.
 #
 # Aria carries no vendored third-party source and no git submodules. Every
-# external dependency is downloaded once, verified against a hard-coded
+# external dependency is downloaded once, verified against a locked
 # SHA256, cached across build flavors, and only then used. A corrupted or
 # tampered archive is a hard configure error — we never build unverified code.
 #
@@ -31,6 +31,7 @@
 #   files/<name>-<sha-prefix>          verified single files
 
 include_guard(GLOBAL)
+include("${CMAKE_CURRENT_LIST_DIR}/ariaDependencies.cmake")
 
 function(_aria_deps_cache_dir out)
     if(ARIA_DEPS_CACHE_DIR)
@@ -81,19 +82,29 @@ endfunction()
 
 function(aria_fetch_pinned_archive)
     cmake_parse_arguments(PIN "" "NAME;VERSION;URL;SHA256" "" ${ARGN})
-    foreach(required NAME VERSION URL SHA256)
-        if(NOT PIN_${required})
-            message(FATAL_ERROR "aria_fetch_pinned_archive(${PIN_NAME}): missing ${required}")
-        endif()
-    endforeach()
+    if(NOT PIN_NAME)
+        message(FATAL_ERROR "aria_fetch_pinned_archive: missing NAME")
+    endif()
 
     string(TOUPPER "${PIN_NAME}" _upper)
     set(_override "ARIA_PIN_${_upper}_SOURCE_DIR")
     if(${_override})
+        if(NOT IS_DIRECTORY "${${_override}}")
+            message(FATAL_ERROR "Aria deps: ${_override} is not a source directory: ${${_override}}")
+        endif()
         set(ARIA_PINNED_${_upper}_SOURCE_DIR "${${_override}}" PARENT_SCOPE)
         message(STATUS "Aria deps: ${PIN_NAME} from override ${${_override}} (not verified)")
         return()
     endif()
+    if(NOT PIN_VERSION AND NOT PIN_URL AND NOT PIN_SHA256)
+        aria_resolve_dependency(NAME "${PIN_NAME}"
+            VERSION PIN_VERSION URL PIN_URL SHA256 PIN_SHA256)
+    endif()
+    foreach(required VERSION URL SHA256)
+        if(NOT PIN_${required})
+            message(FATAL_ERROR "aria_fetch_pinned_archive(${PIN_NAME}): missing ${required}")
+        endif()
+    endforeach()
 
     _aria_deps_cache_dir(_cache)
     file(MAKE_DIRECTORY "${_cache}")
@@ -127,6 +138,9 @@ function(aria_fetch_pinned_archive)
 
     set(_temporary "${_cache}/archives/.${PIN_NAME}-${PIN_VERSION}.part")
     if(NOT EXISTS "${_archive}")
+        if(ARIA_DEPENDENCIES_OFFLINE)
+            message(FATAL_ERROR "Aria deps: offline mode requires cached archive '${_archive}'")
+        endif()
         message(STATUS "Aria deps: downloading ${PIN_NAME} ${PIN_VERSION}")
         file(MAKE_DIRECTORY "${_cache}/archives")
         file(DOWNLOAD "${PIN_URL}" "${_temporary}"
@@ -199,6 +213,9 @@ endfunction()
 
 function(aria_fetch_pinned_file)
     cmake_parse_arguments(PIN "" "NAME;URL;SHA256;AS" "" ${ARGN})
+    if(PIN_NAME AND NOT PIN_URL AND NOT PIN_SHA256)
+        aria_resolve_dependency(NAME "${PIN_NAME}" URL PIN_URL SHA256 PIN_SHA256)
+    endif()
     foreach(required NAME URL SHA256)
         if(NOT PIN_${required})
             message(FATAL_ERROR "aria_fetch_pinned_file(${PIN_NAME}): missing ${required}")
@@ -220,6 +237,9 @@ function(aria_fetch_pinned_file)
     set(_target_file "${_base}/${PIN_AS}")
 
     if(NOT EXISTS "${_target_file}")
+        if(ARIA_DEPENDENCIES_OFFLINE)
+            message(FATAL_ERROR "Aria deps: offline mode requires cached file '${_target_file}'")
+        endif()
         message(STATUS "Aria deps: downloading ${PIN_NAME}")
         file(MAKE_DIRECTORY "${_base}")
         get_filename_component(_parent "${_target_file}" DIRECTORY)

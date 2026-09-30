@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 # Aria must load its own implementation, including in optional modules.
 file(REMOVE_RECURSE "${TEST_ROOT}")
 file(MAKE_DIRECTORY "${TEST_ROOT}/parent/cmake")
-foreach(module PlatformDetect CompilerWarnings Sanitizers ariaFetchPinned BuildOpenSSL PackageRelease)
+foreach(module PlatformDetect CompilerWarnings Sanitizers ariaFetchPinned ariaDependencies ariaFindQt BuildOpenSSL PackageRelease)
     file(WRITE "${TEST_ROOT}/parent/cmake/${module}.cmake"
         "message(FATAL_ERROR \"Host ${module} shadowed Aria's own helper\")\n")
 endforeach()

@@ -18,10 +18,11 @@ cmake --build build/flavors/cxx23 -j
 ctest --test-dir build/flavors/cxx23 --no-tests=error --output-on-failure
 ```
 
-CMake downloads the SHA256-pinned doctest header and other dependencies
-through `cmake/ariaFetchPinned.cmake`. Downloads are cached across build
-flavors. For offline builds, populate the cache first or use the documented
-`ARIA_PIN_<NAME>_SOURCE_DIR` archive overrides.
+CMake reads the checked-in dependency lock and verifies downloaded and cached
+bytes. Dependencies default to the latest stable release on first resolution,
+then retain that selection until explicitly updated. See
+[dependency versions](dependencies.md) for explicit versions, lock updates,
+offline builds and `ARIA_PIN_<NAME>_SOURCE_DIR` archive overrides.
 
 ## Use Aria in an application
 

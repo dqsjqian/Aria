@@ -59,16 +59,18 @@ adapter.register_command("view-id", "custom-route",
 ## Dependencies: pinned downloads instead of third_party
 
 `third_party/` (cpp-httplib, doctest, nlohmann_json) and the OpenSSL git
-submodule are removed. Dependencies are downloaded at configure time and
-verified against SHA256 hashes pinned in the CMake files
-(`cmake/ariaFetchPinned.cmake`):
+submodule are removed. Dependencies default to the latest stable release on
+first resolution, then use the versions and SHA256 hashes recorded in
+`dependencies.lock.json`. Explicit versions take precedence. See
+[dependency versions](dependencies.md) for updating the lock and selecting a
+version. The current checked-in selection is:
 
 | Dependency | Version | Source |
 |---|---|---|
 | Mira | 0.4.0 | GitHub release asset |
 | nlohmann/json | 3.12.0 | `json.tar.xz` release asset |
-| doctest | 2.5.3 | raw header at tag |
-| OpenSSL (TLS builds) | 4.0.2 | GitHub release asset |
+| doctest | 2.5.3 | raw header at locked commit |
+| OpenSSL (TLS builds) | 4.0.3 | GitHub release asset |
 
 - First configure needs network access; the cache lives under `build/_deps`
   and is shared by every build flavor.

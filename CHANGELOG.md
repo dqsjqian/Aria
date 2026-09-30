@@ -16,6 +16,12 @@ All notable changes to **aria** are documented here.
 
 ## 3.0.1 — 2026-09-30
 
+- Resolve unspecified dependencies to the latest stable release once, then
+  reuse a checked-in version/commit/SHA256 lock. Explicit versions take
+  precedence; `scripts/update_dependencies.py` refreshes all or selected
+  entries atomically. CMake overrides use isolated build-directory locks,
+  and installed Qt discovery supports an exact version request. Validate
+  the selected OpenSSL 4.0.3 and doctest 2.5.3 with the framework tests.
 - Harden derived-list reentrancy and projection failure recovery, invalidate
   reactive dependents after a partially failing mutation, and reject callable
   wrappers that would return dangling references. Sorted views retain an

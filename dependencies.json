@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "dependencies": {
+    "json": {
+      "provider": "github",
+      "repo": "nlohmann/json",
+      "artifact": "release-asset",
+      "asset": "json.tar.xz",
+      "tag_prefix": "v"
+    },
+    "doctest": {
+      "provider": "github",
+      "repo": "doctest/doctest",
+      "artifact": "file",
+      "path": "doctest/doctest.h",
+      "tag_prefix": "v"
+    },
+    "mira": {
+      "provider": "github",
+      "repo": "dqsjqian/Mira",
+      "artifact": "release-asset",
+      "asset": "Mira-{version}.tar.gz",
+      "tag_prefix": "v"
+    },
+    "openssl": {
+      "provider": "github",
+      "repo": "openssl/openssl",
+      "artifact": "release-asset",
+      "asset": "openssl-{version}.tar.gz",
+      "tag_prefix": "openssl-"
+    }
+  }
+}

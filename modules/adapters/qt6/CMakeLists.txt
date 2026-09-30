@@ -6,7 +6,8 @@
 #
 # Then configure with: cmake -DARIA_BUILD_QT6=ON ...
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+include("${CMAKE_CURRENT_LIST_DIR}/../../../cmake/ariaFindQt.cmake")
+aria_find_qt6(REQUIRED COMPONENTS Core Widgets)
 
 # Reject cross-toolchain Qt kits. An MSVC build that consumes a MinGW/MSYS2
 # Qt (e.g. via a stale Qt6_DIR cache entry or PATH-derived search prefixes)

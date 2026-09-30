@@ -1,6 +1,6 @@
 # Provide OpenSSL::SSL and OpenSSL::Crypto for HTTP TLS. A parent can supply
 # both targets, or an openssl_external producer plus FindOpenSSL-style paths.
-# Otherwise build the vendored source with the active target toolchain.
+# Otherwise build the locked release source with the active target toolchain.
 set(ARIA_BUNDLED_OPENSSL OFF)
 if(TARGET OpenSSL::SSL AND TARGET OpenSSL::Crypto)
     message(STATUS "Aria TLS: using parent OpenSSL targets")
@@ -55,12 +55,7 @@ endif()
 # OpenSSL itself is a hash-pinned release download (no vendored source, no
 # submodule); see cmake/ariaFetchPinned.cmake for the verification rules.
 include("${CMAKE_CURRENT_LIST_DIR}/ariaFetchPinned.cmake")
-aria_fetch_pinned_archive(
-    NAME openssl
-    VERSION 4.0.2
-    URL "https://github.com/openssl/openssl/releases/download/openssl-4.0.2/openssl-4.0.2.tar.gz"
-    SHA256 736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8
-)
+aria_fetch_pinned_archive(NAME openssl)
 set(OPENSSL_SOURCE_DIR "${ARIA_PINNED_OPENSSL_SOURCE_DIR}")
 if(NOT EXISTS "${OPENSSL_SOURCE_DIR}/Configure")
     message(FATAL_ERROR

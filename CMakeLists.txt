@@ -123,8 +123,8 @@ add_library(aria::warnings ALIAS aria_warnings)
 find_package(Threads REQUIRED)
 
 # ── Hash-pinned dependencies (no vendored source, no submodules) ────────────
-# Every external dependency is downloaded once, verified against a SHA256
-# pinned in-tree, and cached under build/_deps across build flavors. See
+# Managed dependencies resolve the latest stable release once, retain that
+# selection in dependencies.lock.json, and verify cached bytes. See
 # cmake/ariaFetchPinned.cmake. Overrides: -DARIA_DEPS_CACHE_DIR=<dir> and
 # -DARIA_PIN_<NAME>_SOURCE_DIR (archives) for offline development.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ariaFetchPinned.cmake")
@@ -132,12 +132,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ariaFetchPinned.cmake")
 # JSON belongs to the HTTP adapter. Core-only builds must not require its
 # download; a parent can also provide its own namespaced target.
 if(ARIA_BUILD_HTTP AND NOT TARGET nlohmann_json::nlohmann_json)
-    aria_fetch_pinned_archive(
-        NAME json
-        VERSION 3.12.0
-        URL "https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz"
-        SHA256 42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
-    )
+    aria_fetch_pinned_archive(NAME json)
     add_library(nlohmann_json INTERFACE)
     target_include_directories(nlohmann_json SYSTEM INTERFACE
         $<BUILD_INTERFACE:${ARIA_PINNED_JSON_SOURCE_DIR}/include>
@@ -153,8 +148,6 @@ if(ARIA_BUILD_TESTS)
     include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ariaFetchPinned.cmake")
     aria_fetch_pinned_file(
         NAME doctest
-        URL "https://raw.githubusercontent.com/doctest/doctest/v2.5.3/doctest/doctest.h"
-        SHA256 cfd518a3ef90f67e1f3ba514df23fb3627437de1a2feeba78cf5062a40021421
         AS doctest/doctest.h
     )
     # One upstream quirk, handled without touching the pinned bytes: doctest
@@ -439,6 +432,7 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     install(FILES
         ${CMAKE_CURRENT_BINARY_DIR}/ariaConfig.cmake
         ${CMAKE_CURRENT_BINARY_DIR}/ariaConfigVersion.cmake
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/ariaFindQt.cmake
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/aria
     )
     include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PackageRelease.cmake")

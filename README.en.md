@@ -506,8 +506,10 @@ The HTTP adapter ships a small server (`HttpAdapter`) that exposes any
 ViewModel over a JSON REST + Server-Sent-Events protocol, plus a
 vanilla-JS browser SDK (`aria_client.js`). The server is built on the
 coroutine-native **Mira** networking library (HTTP/1.1 + SSE) and
-**nlohmann::json** (encode/decode). CMake fetches pinned, checksum-verified
-archives into the ignored build dependency cache;
+**nlohmann::json** (encode/decode). Dependencies default to the latest stable
+release on first resolution and remain locked until explicitly updated;
+explicit versions take precedence. CMake fetches checksum-verified archives
+into the ignored build dependency cache; see [dependency versions](docs/dependencies.md).
 aria itself owns the wire protocol, view registry, subscription dispatch
 and SSE fan-out. It is the right shape for
 desktop apps that want a web UI on the side, headless services, and

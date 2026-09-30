@@ -18,12 +18,7 @@
 # adapter propagates cxx_std_23 PUBLIC for exactly that reason.
 # Override for offline work: -DARIA_PIN_MIRA_SOURCE_DIR=/path/to/Mira
 include("${CMAKE_CURRENT_LIST_DIR}/../../../cmake/ariaFetchPinned.cmake")
-aria_fetch_pinned_archive(
-    NAME Mira
-    VERSION 0.4.0
-    URL "https://github.com/dqsjqian/Mira/releases/download/v0.4.0/Mira-0.4.0.tar.gz"
-    SHA256 3290abda456d4897103f160e0905d09c5b29dfc973ec15024b8f76ce705dd856
-)
+aria_fetch_pinned_archive(NAME Mira)
 set(MIRA_BUILD_TESTS OFF)
 set(MIRA_BUILD_EXAMPLES OFF)
 set(MIRA_ENABLE_HTTP2 OFF)
