@@ -57,8 +57,8 @@ try {
     # -- MSBuild v180 (VS 2026) Path/PATH case-conflict bug ------------------
     # .NET's ProcessStartInfo.EnvironmentVariables is a case-sensitive
     # StringDictionary. If the process environment block holds several case
-    # variants ("Path"/"PATH"/"path" -- some parent processes such as
-    # launchers create them), MSBuild throws ArgumentException ("An item
+    # variants ("Path"/"PATH"/"path" inherited from parent processes),
+    # MSBuild throws ArgumentException ("An item
     # with the same key has already been added") when spawning CL.exe,
     # which breaks CMake's compiler identification ("The CXX compiler
     # identification is unknown").
