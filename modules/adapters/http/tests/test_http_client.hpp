@@ -125,7 +125,18 @@ public:
         return *this;
     }
 
-    /// Unblock a concurrent reader and close. Safe to call twice.
+    /// Unblock a concurrent reader without racing its access to the handle.
+    /// Join that reader before calling stop() to close/recycle the descriptor.
+    void interrupt() const {
+        if (handle_ == kInvalidSocket) return;
+#if defined(_WIN32)
+        shutdown(handle_, SD_BOTH);
+#else
+        ::shutdown(handle_, SHUT_RDWR);
+#endif
+    }
+
+    /// Close after all readers have stopped. Safe to call twice.
     void stop() {
         if (handle_ == kInvalidSocket) return;
 #if defined(_WIN32)
@@ -379,8 +390,9 @@ public:
     }
 
     ~Stream() {
-        client_->stop();  // unblocks the reader; the 5s deadline is the backstop
+        client_->interrupt();  // the 5s read deadline is the backstop
         if (thread_.joinable()) thread_.join();
+        client_->stop();
     }
 
     [[nodiscard]] bool connected() const { return connected_; }

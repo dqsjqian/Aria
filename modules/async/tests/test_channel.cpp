@@ -8,6 +8,7 @@
 #include <doctest/doctest.h>
 #include <memory>
 #include <semaphore>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -51,6 +52,31 @@ Task<void> send_value(Channel<T>& ch, T value) {
 template<typename T>
 Task<std::optional<T>> receive_one(Channel<T>& ch) {
     co_return co_await ch.recv();
+}
+
+struct ThrowingChannelValue {
+    std::shared_ptr<int> fail_value;
+    int value;
+
+    ThrowingChannelValue(std::shared_ptr<int> fail, int v)
+        : fail_value(std::move(fail)), value(v) {}
+    // This fixture deliberately models a throwing move and keeps the shared
+    // failure control in the source so a failed delivery can be retried.
+    // NOLINTNEXTLINE(bugprone-exception-escape,cppcoreguidelines-noexcept-move-operations,performance-noexcept-move-constructor)
+    ThrowingChannelValue(ThrowingChannelValue&& other)
+        // NOLINTNEXTLINE(performance-move-constructor-init)
+        : fail_value(other.fail_value), value(other.value) {
+        if (*fail_value == value) { throw std::runtime_error("channel move failed"); }
+    }
+    ~ThrowingChannelValue() = default;
+    ThrowingChannelValue(const ThrowingChannelValue&) = delete;
+    ThrowingChannelValue& operator=(const ThrowingChannelValue&) = delete;
+    ThrowingChannelValue& operator=(ThrowingChannelValue&&) = delete;
+};
+
+template<typename Awaiter>
+Task<void> await_send_operation(Awaiter* operation) {
+    co_await *operation;
 }
 
 // Delay the caller's await_resume, not Channel internals: this models a
@@ -278,6 +304,69 @@ TEST_CASE("Channel: move-only values survive direct and buffered delivery") {
     REQUIRE(*transferred != nullptr);
     CHECK(**buffered == 20);
     CHECK(**transferred == 30);
+}
+
+// Doctest macro internals introduce the flagged branches/type traits.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("Channel: failed send propagates and preserves a waiting receiver") {
+    auto fail = std::make_shared<int>(-1);
+    Channel<ThrowingChannelValue> ch{1};
+    auto receiver = receive_one(ch);
+    SUBCASE("buffered send") {}
+    SUBCASE("direct delivery to a parked receiver") { receiver.start(); }
+
+    auto operation = ch.send(ThrowingChannelValue{fail, 7});
+    *fail = 7;
+    // Doctest macro internals introduce the flagged branches/type traits.
+    // NOLINTNEXTLINE(modernize-type-traits)
+    CHECK_THROWS_WITH_AS(await_send_operation(&operation).blocking_get(),
+                         "channel move failed", std::runtime_error);
+    *fail = -1;
+    CHECK(ch.size() == 0);
+    CHECK_NOTHROW(send_value(ch, ThrowingChannelValue{fail, 9}).blocking_get());
+    if (!receiver.done() && ch.size() != 0) { receiver.start(); }
+    REQUIRE(receiver.done());
+    auto value = receiver.blocking_get();
+    REQUIRE(value.has_value());
+    if (value.has_value()) { CHECK(value->value == 9); }
+}
+
+// Doctest macro internals introduce the flagged branches/type traits.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("Channel: failed receive retains the parked sender for retry or close") {
+    auto fail = std::make_shared<int>(-1);
+    std::size_t capacity = 0;
+    SUBCASE("rendezvous delivery") {}
+    SUBCASE("refill after consuming a buffered value") { capacity = 1; }
+    Channel<ThrowingChannelValue> ch{capacity};
+    if (capacity != 0) { send_value(ch, ThrowingChannelValue{fail, 1}).blocking_get(); }
+    auto sender = send_value(ch, ThrowingChannelValue{fail, 2});
+    sender.start();
+    REQUIRE_FALSE(sender.done());
+    *fail = 2;
+    // Doctest macro internals introduce the flagged branches/type traits.
+    // NOLINTNEXTLINE(modernize-type-traits)
+    CHECK_THROWS_WITH_AS(receive_one(ch).blocking_get(),
+                         "channel move failed", std::runtime_error);
+    CHECK_FALSE(sender.done());
+    *fail = -1;
+    auto received = receive_one(ch).blocking_get();
+    REQUIRE(received.has_value());
+    if (received.has_value()) { CHECK(received->value == 2); }
+    CHECK(sender.done());
+    ch.close();
+}
+
+TEST_CASE("Channel: moving the delivered result can throw without terminating") {
+    auto fail = std::make_shared<int>(-1);
+    Channel<ThrowingChannelValue> ch{1};
+    send_value(ch, ThrowingChannelValue{fail, 3}).blocking_get();
+    auto receiver = ch.recv();
+    CHECK_FALSE(receiver.await_suspend(std::noop_coroutine()));
+    *fail = 3;
+    // Doctest macro internals introduce the flagged branches/type traits.
+    // NOLINTNEXTLINE(modernize-type-traits)
+    CHECK_THROWS_WITH_AS(receiver.await_resume(), "channel move failed", std::runtime_error);
 }
 
 TEST_CASE("Channel: bounded concurrent producers and consumers deliver exactly once") {

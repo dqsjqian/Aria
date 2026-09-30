@@ -295,3 +295,82 @@ TEST_CASE("MappedList: mapper invocation count matches new-item count") {
     src->clear();
     CHECK(invocations == 4);
 }
+
+// Each CHECK expands exception-handling branches inside doctest.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("MappedList: mapper may read its own view") {
+    auto source = std::make_shared<ObservableList<int>>();
+    MappedList<int, int>* view = nullptr;
+    MappedList<int, int> mapped{source, [&](const int& value) {
+        if (view) { CHECK(view->snapshot().size() == view->size()); }
+        return std::make_shared<int>(value * 2);
+    }};
+    view = &mapped;
+    source->emplace_back(3);
+    REQUIRE(mapped.size() == 1);
+    CHECK(*mapped.at(0) == 6);
+    source->replace_at(0, std::make_shared<int>(4));
+    CHECK(*mapped.at(0) == 8);
+}
+
+// Each CHECK expands exception-handling branches inside doctest.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("MappedList: target retirement may read its own view") {
+    struct Target {
+        Target() = default;
+        Target(const Target&) = delete;
+        Target& operator=(const Target&) = delete;
+        Target(Target&&) = delete;
+        Target& operator=(Target&&) = delete;
+        std::function<void()> on_destroy;
+        ~Target() noexcept {
+            try { if (on_destroy) { on_destroy(); } }
+            catch (...) { std::terminate(); }
+        }
+    };
+    auto source = std::make_shared<ObservableList<int>>();
+    MappedList<int, Target> mapped{source, [](const int&) {
+        return std::make_shared<Target>();
+    }};
+    source->emplace_back(1);
+    int destroyed = 0;
+    mapped.at(0)->on_destroy = [&] {
+        CHECK(mapped.size() == 1);
+        ++destroyed;
+    };
+    source->replace_at(0, std::make_shared<int>(2));
+    CHECK(destroyed == 1);
+    mapped.at(0)->on_destroy = [&] {
+        CHECK(mapped.empty());
+        ++destroyed;
+    };
+    source->clear();
+    CHECK(destroyed == 2);
+}
+
+// Each CHECK expands exception-handling branches inside doctest.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("MappedList: mapper failure recovers before applying later indices") {
+    auto source = std::make_shared<ObservableList<int>>();
+    bool fail = true;
+    MappedList<int, int> mapped{source, [&](const int& value) {
+        if (fail) { throw std::runtime_error("mapping unavailable"); }
+        return std::make_shared<int>(value * 2);
+    }};
+    std::vector<ListChange<int>> events;
+    auto subscription = mapped.observe([&](const auto& event) { events.push_back(event); });
+    source->emplace_back(3);
+    CHECK(mapped.empty());
+    fail = false;
+    source->emplace_back(4);
+    REQUIRE(mapped.size() == 2);
+    CHECK(*mapped.at(0) == 6);
+    CHECK(*mapped.at(1) == 8);
+    REQUIRE(events.size() == 1);
+    CHECK(events.at(0).kind == ListChangeKind::Reset);
+    REQUIRE(events.at(0).snapshot);
+    CHECK(events.at(0).snapshot->size() == 2);
+    source->remove_at(0);
+    REQUIRE(mapped.size() == 1);
+    CHECK(*mapped.at(0) == 8);
+}

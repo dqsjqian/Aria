@@ -83,6 +83,34 @@ jobs:
           cmake --build build/flavors/appkit -j
           ctest --test-dir build/flavors/appkit -R "appkit_" --output-on-failure
 
+  # Static exports and bundled TLS have a different dependency graph from
+  # the ordinary shared-library jobs. Exercise the relocated SDK as a consumer.
+  static-tls:
+    name: Static HTTP + bundled TLS SDK
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build g++-14
+      - name: Configure
+        env:
+          CC: gcc-14
+          CXX: g++-14
+        run: |
+          cmake -S . -B build/flavors/static-tls -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARIA_BUILD_SHARED=OFF \
+            -DARIA_BUILD_HTTP=ON \
+            -DARIA_HTTP_ENABLE_TLS=ON \
+            -DARIA_BUILD_BENCHMARK=OFF
+      - name: Build and verify transport and installed SDK
+        run: |
+          cmake --build build/flavors/static-tls -j 2
+          ctest --test-dir build/flavors/static-tls --output-on-failure --no-tests=error \
+            -R "installed_sdk|pinned_dependency_cache|http_adapter|http_guide_example"
+
   # ────────────────────────────────────────────────────────────────────
   # UIKit adapter — compile and run the shared conformance battery inside
   # an iOS simulator. This used to live inside an example app and therefore

@@ -86,7 +86,7 @@ that should *not* register a dependency edge.
 
 ### `aria-async`
 
-C++ coroutine support, available in both C++20 and C++23 modes. Built around a minimal `Task<T>` (lazy, single-shot,
+C++ coroutine support, with C++23 as the framework minimum. Built around a minimal `Task<T>` (lazy, single-shot,
 exception-safe), an `IExecutor` interface, and a `ThreadPoolExecutor`. The
 `schedule_on(executor)` awaitable lets you hop between threads with
 `co_await`.

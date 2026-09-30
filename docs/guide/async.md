@@ -1,6 +1,6 @@
 # Async & Coroutines
 
-Aria's async layer supports C++23 with a C++20 minimum and provides coroutine-based primitives for asynchronous work, built on top of the reactive graph. The key types:
+Aria's async layer requires C++23 and provides coroutine-based primitives for asynchronous work, built on top of the reactive graph. The key types:
 
 - **`Task<T>`** — lazy, single-shot coroutine awaitable
 - **`AsyncCommand<R, Args...>`** — three-state async action (executing / error / result)
@@ -257,7 +257,8 @@ When `PollingVm` is destroyed, `scope_` calls `cancel_and_join()` (default 5 s t
 
 ### when_all
 
-Wait for all tasks to complete:
+Wait for all tasks to complete. The result is a tuple; a `Task<void>` child
+occupies a `std::monostate` slot, including when mixed with value-returning tasks:
 
 ```cpp
 aria::async::Task<void> load_all() {

@@ -1,6 +1,6 @@
 # Aria Documentation
 
-Modern C++ MVVM for industrial-grade cross-platform software. One C++ core, six platforms, elegant architecture, and explicit engineering contracts. C++23 supported, C++20 minimum.
+Modern C++ MVVM for industrial-grade cross-platform software. One C++ core, six platforms, elegant architecture, and explicit engineering contracts. C++23 minimum.
 
 Build shared business logic with reactive state and coroutines, connect native UIs through a common adapter protocol, and verify behavior against documented lifecycle, error, and performance contracts.
 

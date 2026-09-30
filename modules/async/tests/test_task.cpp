@@ -87,6 +87,11 @@ Task<std::shared_ptr<FrameLifetime>> tracked_result(std::shared_ptr<FrameLifetim
     co_return lifetime;
 }
 
+template<typename T>
+Task<void> await_task(Task<T> task) {
+    (void)co_await std::move(task);
+}
+
 }  // namespace
 
 TEST_CASE("Task<int>: blocking_get returns value") {
@@ -108,6 +113,27 @@ TEST_CASE("Task: chained co_await works") {
 TEST_CASE("Task: exceptions propagate via blocking_get") {
     auto t = throws_one();
     CHECK_THROWS_AS(t.blocking_get(), std::runtime_error);
+}
+
+// Doctest macro internals introduce the flagged branches/type traits.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity,readability-math-missing-parentheses)
+TEST_CASE_TEMPLATE("Task: awaiting an empty or moved-from task reports an error", T, void, int) {
+    Task<T> empty;
+    // Doctest macro internals introduce the flagged branches/type traits.
+    // NOLINTNEXTLINE(modernize-type-traits)
+    CHECK_THROWS_WITH_AS(await_task(std::move(empty)).blocking_get(),
+                         "Task: empty handle", std::runtime_error);
+
+    int completed = 0;
+    auto original = tracked_task<T>({}, nullptr, completed);
+    auto owner = std::move(original);
+    // Intentionally exercise the documented empty state after moving; the
+    // type-traits diagnostic comes from doctest's exception assertion macro.
+    // NOLINTNEXTLINE(bugprone-use-after-move,modernize-type-traits)
+    CHECK_THROWS_WITH_AS(await_task(std::move(original)).blocking_get(),
+                         "Task: empty handle", std::runtime_error);
+    CHECK_NOTHROW(await_task(std::move(owner)).blocking_get());
+    CHECK(completed == 1);
 }
 
 TEST_CASE_TEMPLATE("Task: synchronous detach releases the frame exactly once", T, void, int) {

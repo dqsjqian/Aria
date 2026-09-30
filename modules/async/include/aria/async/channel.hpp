@@ -29,6 +29,9 @@
 // channel must outlive concurrent method calls, and parked coroutine frames
 // must remain alive until resumed. Destroying a suspended Task is not a
 // cancellation operation.
+// Allocation and value-move failures propagate to the awaiting coroutine.
+// A failed delivery retains any queued waiter so it can be retried or closed;
+// a throwing move may leave its source value moved-from (basic guarantee).
 
 #include "aria/async/task.hpp"
 
@@ -81,7 +84,7 @@ public:
 
             // Reserve delivery for a waiting receiver before considering
             // the buffer. Publish its value before resuming outside the lock.
-            bool await_suspend(std::coroutine_handle<> h) noexcept {
+            bool await_suspend(std::coroutine_handle<> h) {
                 std::coroutine_handle<> wake;
                 bool suspend = false;
                 {
@@ -98,7 +101,7 @@ public:
                     } else if (self->buffer_.size() < self->cap_) {
                         self->buffer_.push_back(std::move(value));
                     } else {
-                        self->send_waiters_.push_back({h, std::move(value)});
+                        self->send_waiters_.push_back({h, &value});
                         suspend = true;
                     }
                 }
@@ -142,7 +145,7 @@ public:
 
             // Returns false (do not suspend) if a value was consumed or the
             // channel is closed; true (suspend) once the handle is registered.
-            bool await_suspend(std::coroutine_handle<> h) noexcept {
+            bool await_suspend(std::coroutine_handle<> h) {
                 std::coroutine_handle<> wake;
                 bool suspend;
                 {
@@ -152,17 +155,17 @@ public:
                         self->buffer_.pop_front();
                         // A blocked sender can now deposit its value.
                         if (!self->send_waiters_.empty()) {
-                            auto w = std::move(self->send_waiters_.front());
+                            const auto w = self->send_waiters_.front();
+                            self->buffer_.push_back(std::move(*w.value));
                             self->send_waiters_.pop_front();
-                            self->buffer_.push_back(std::move(w.value));
                             wake = w.handle;
                         }
                         suspend = false;
                     } else if (!self->send_waiters_.empty()) {
                         // Direct rendezvous, including capacity zero.
-                        auto sender = std::move(self->send_waiters_.front());
+                        const auto sender = self->send_waiters_.front();
+                        value.emplace(std::move(*sender.value));
                         self->send_waiters_.pop_front();
-                        value.emplace(std::move(sender.value));
                         wake = sender.handle;
                         suspend = false;
                     } else if (self->closed_) {
@@ -178,7 +181,7 @@ public:
                 return suspend;
             }
 
-            std::optional<T> await_resume() noexcept {
+            std::optional<T> await_resume() {
                 // This receive owns its value before it is resumed. Never
                 // race another consumer for a value in the shared buffer.
                 return std::move(value);
@@ -210,7 +213,7 @@ public:
             receiver.handle.resume();
         for (auto& sender : senders)
             sender.handle.resume();
-        // Pending send values are destroyed here, outside the channel mutex.
+        // Each resumed sender releases its own pending value outside the mutex.
     }
 
     [[nodiscard]] bool is_closed() const {
@@ -231,7 +234,7 @@ private:
 
     struct PendingSend {
         std::coroutine_handle<> handle;
-        T value;
+        T* value;
     };
 
     mutable std::mutex mu_;

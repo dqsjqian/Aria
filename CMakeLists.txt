@@ -5,7 +5,7 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "")
 
 project(aria
     VERSION 3.0.0
-    DESCRIPTION "Modern MVVM framework for C++23 (C++20 minimum) — cross-platform, layered, coroutine-first"
+    DESCRIPTION "Modern MVVM framework for C++23 — cross-platform, layered, coroutine-first"
     HOMEPAGE_URL "https://github.com/dqsjqian/Aria"
     LANGUAGES CXX
 )
@@ -65,7 +65,7 @@ if(NOT DEFINED CMAKE_CXX_STANDARD)
     set(CMAKE_CXX_STANDARD 23)
 endif()
 if(CMAKE_CXX_STANDARD LESS 23)
-    message(FATAL_ERROR "Aria requires C++23 or later (2.1+; the HTTP adapter is built on Mira)")
+    message(FATAL_ERROR "Aria requires C++23 or later (3.0+; the HTTP adapter is built on Mira)")
 endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -124,9 +124,9 @@ find_package(Threads REQUIRED)
 # -DARIA_PIN_<NAME>_SOURCE_DIR (archives) for offline development.
 include(ariaFetchPinned)
 
-# nlohmann/json is fetched only when the host does not already provide the
-# namespaced target — AriaRead, for instance, installs its own pinned copy.
-if(NOT TARGET nlohmann_json::nlohmann_json)
+# JSON belongs to the HTTP adapter. Core-only builds must not require its
+# download; a parent can also provide its own namespaced target.
+if(ARIA_BUILD_HTTP AND NOT TARGET nlohmann_json::nlohmann_json)
     aria_fetch_pinned_archive(
         NAME json
         VERSION 3.12.0
@@ -275,7 +275,7 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     include(GNUInstallDirs)
     include(CMakePackageConfigHelpers)
 
-    set(ARIA_INSTALL_TARGETS
+    set(ARIA_CORE_INSTALL_TARGETS
         aria_warnings
         aria_abi
         aria_core
@@ -283,6 +283,7 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
         aria_runtime
         aria_binding
     )
+    set(ARIA_INSTALL_TARGETS ${ARIA_CORE_INSTALL_TARGETS})
     if(ARIA_BUILD_QT6)
         list(APPEND ARIA_INSTALL_TARGETS aria_qt6)
     endif()
@@ -320,13 +321,26 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
         unset(aria_target_type)
     endif()
 
-    install(TARGETS ${ARIA_INSTALL_TARGETS}
-        EXPORT ariaTargets
-        ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        RUNTIME  DESTINATION ${CMAKE_INSTALL_BINDIR}
-        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    )
+    # Keep optional adapter exports separate. A single export set forces a
+    # core-only find_package() to resolve Mira/Qt even when they are unused.
+    set(ARIA_ADAPTER_EXPORTS "")
+    foreach(aria_target IN LISTS ARIA_INSTALL_TARGETS)
+        if(aria_target IN_LIST ARIA_CORE_INSTALL_TARGETS)
+            set(aria_export ariaTargets)
+        else()
+            set(aria_export "${aria_target}Targets")
+            list(APPEND ARIA_ADAPTER_EXPORTS "${aria_export}")
+        endif()
+        install(TARGETS ${aria_target}
+            EXPORT ${aria_export}
+            ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME  DESTINATION ${CMAKE_INSTALL_BINDIR}
+            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        )
+    endforeach()
+    unset(aria_target)
+    unset(aria_export)
 
     # Strip the "aria_" prefix on export so installed targets become
     # aria::core / aria::abi / aria::async / ... matching the in-tree aliases.
@@ -389,6 +403,13 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
         NAMESPACE aria::
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/aria
     )
+    foreach(aria_export IN LISTS ARIA_ADAPTER_EXPORTS)
+        install(EXPORT ${aria_export}
+            FILE "${aria_export}.cmake"
+            NAMESPACE aria::
+            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/aria)
+    endforeach()
+    unset(aria_export)
 
     # Static HTTP builds install the Mira package and expect consumers
     # to resolve it; shared builds absorb Mira into the aria_http dylib.

@@ -1,11 +1,21 @@
 @PACKAGE_INIT@
 
+set(_aria_package_prefix "${PACKAGE_PREFIX_DIR}")
 include(CMakeFindDependencyMacro)
 find_dependency(Threads)
 
 set(ARIA_BUILT_WITH_QT6 @ARIA_BUILD_QT6@)
-if(ARIA_BUILT_WITH_QT6)
-    find_dependency(Qt6 COMPONENTS Core Widgets)
+set(_aria_qt6_ready FALSE)
+if(ARIA_BUILT_WITH_QT6 AND (NOT aria_FIND_COMPONENTS OR "qt6" IN_LIST aria_FIND_COMPONENTS))
+    # find_dependency inherits aria's REQUIRED flag, which would make a
+    # missing OPTIONAL_COMPONENT fatal. Check availability before importing it.
+    find_package(Qt6 QUIET COMPONENTS Core Widgets)
+    set(_aria_qt6_ready ${Qt6_FOUND})
+    if(NOT _aria_qt6_ready AND (NOT aria_FIND_COMPONENTS OR aria_FIND_REQUIRED_qt6))
+        set(aria_FOUND FALSE)
+        set(aria_NOT_FOUND_MESSAGE "Aria qt6 component requires Qt6 Core and Widgets")
+        return()
+    endif()
 endif()
 
 set(ARIA_BUILT_WITH_HTTP @ARIA_BUILD_HTTP@)
@@ -13,46 +23,79 @@ set(ARIA_HTTP_HAS_TLS @ARIA_HTTP_ENABLE_TLS@)
 if(NOT ARIA_BUILT_WITH_HTTP)
     set(ARIA_HTTP_HAS_TLS OFF)
 endif()
-# Static HTTP builds link Mira archives directly, so consumers need the
-# Mira package resolvable; shared builds absorb Mira into the dylib.
 set(ARIA_HTTP_NEEDS_MIRA @ARIA_HTTP_NEEDS_MIRA@)
-if(ARIA_HTTP_NEEDS_MIRA)
-    find_dependency(Mira CONFIG)
-endif()
-if(ARIA_BUILT_WITH_HTTP AND ARIA_HTTP_HAS_TLS)
-    if((TARGET OpenSSL::SSL AND NOT TARGET OpenSSL::Crypto) OR
-       (TARGET OpenSSL::Crypto AND NOT TARGET OpenSSL::SSL))
-        set(aria_FOUND FALSE)
-        set(aria_NOT_FOUND_MESSAGE "Aria HTTP TLS requires both parent OpenSSL targets")
-        return()
-    endif()
-    if(NOT TARGET OpenSSL::SSL)
-        if(@ARIA_BUNDLED_OPENSSL@)
-            # Preserve PACKAGE_PREFIX_DIR across dependency config files on
-            # CMake versions where find_dependency can change that variable.
-            set(_aria_prefix "${PACKAGE_PREFIX_DIR}")
-            set(_aria_had_static_option FALSE)
-            if(DEFINED OPENSSL_USE_STATIC_LIBS)
-                set(_aria_had_static_option TRUE)
-                set(_aria_static_option "${OPENSSL_USE_STATIC_LIBS}")
-            endif()
-            set(OPENSSL_USE_STATIC_LIBS TRUE)
-            find_dependency(OpenSSL CONFIG PATHS
-                "${_aria_prefix}/@CMAKE_INSTALL_LIBDIR@/aria/openssl/lib/cmake/OpenSSL"
-                NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-            set(PACKAGE_PREFIX_DIR "${_aria_prefix}")
-            if(_aria_had_static_option)
-                set(OPENSSL_USE_STATIC_LIBS "${_aria_static_option}")
+
+# Scope dependency hints so even a failed optional dependency cannot change
+# the application's OPENSSL_USE_STATIC_LIBS or PACKAGE_PREFIX_DIR settings.
+function(_aria_resolve_http output)
+    set(${output} FALSE PARENT_SCOPE)
+    if(ARIA_HTTP_HAS_TLS)
+        if((TARGET OpenSSL::SSL AND NOT TARGET OpenSSL::Crypto) OR
+           (TARGET OpenSSL::Crypto AND NOT TARGET OpenSSL::SSL))
+            set(_aria_http_error "Aria HTTP TLS requires both parent OpenSSL targets" PARENT_SCOPE)
+            return()
+        endif()
+        if(NOT TARGET OpenSSL::SSL)
+            if(@ARIA_BUNDLED_OPENSSL@)
+                set(OPENSSL_USE_STATIC_LIBS TRUE)
+                # A cached OpenSSL_DIR otherwise takes precedence even over
+                # PATHS/NO_DEFAULT_PATH. Shadow it locally, never in CACHE.
+                set(OpenSSL_DIR "${_aria_package_prefix}/@CMAKE_INSTALL_LIBDIR@/aria/openssl/lib/cmake/OpenSSL")
+                find_package(OpenSSL CONFIG QUIET PATHS
+                    "${OpenSSL_DIR}"
+                    NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
             else()
-                unset(OPENSSL_USE_STATIC_LIBS)
+                find_package(OpenSSL 3.0 QUIET)
             endif()
-        else()
-            find_dependency(OpenSSL 1.1.1)
+            if((NOT OpenSSL_FOUND AND NOT OPENSSL_FOUND) OR
+               NOT TARGET OpenSSL::SSL OR NOT TARGET OpenSSL::Crypto)
+                set(_aria_http_error "Aria HTTP TLS dependency OpenSSL was not found" PARENT_SCOPE)
+                return()
+            endif()
         endif()
     endif()
+    # Resolve the bundled OpenSSL first: Mira's own dependency discovery must
+    # not bind a static Mira built with OpenSSL 4 to a system OpenSSL 3.
+    if(ARIA_HTTP_NEEDS_MIRA)
+        find_package(Mira CONFIG QUIET)
+        if(NOT Mira_FOUND)
+            set(_aria_http_error "Aria static HTTP dependency Mira was not found: ${Mira_NOT_FOUND_MESSAGE}" PARENT_SCOPE)
+            return()
+        endif()
+    endif()
+    set(${output} TRUE PARENT_SCOPE)
+endfunction()
+
+set(_aria_http_ready FALSE)
+if(ARIA_BUILT_WITH_HTTP AND (NOT aria_FIND_COMPONENTS OR "http" IN_LIST aria_FIND_COMPONENTS))
+    _aria_resolve_http(_aria_http_ready)
+    if(NOT _aria_http_ready AND (NOT aria_FIND_COMPONENTS OR aria_FIND_REQUIRED_http))
+        set(aria_FOUND FALSE)
+        set(aria_NOT_FOUND_MESSAGE "${_aria_http_error}")
+        return()
+    endif()
 endif()
+set(PACKAGE_PREFIX_DIR "${_aria_package_prefix}")
+unset(_aria_package_prefix)
+unset(_aria_http_error)
 
 include("${CMAKE_CURRENT_LIST_DIR}/ariaTargets.cmake")
+foreach(_aria_adapter qt6 http jni appkit uikit)
+    if(NOT aria_FIND_COMPONENTS OR _aria_adapter IN_LIST aria_FIND_COMPONENTS)
+        if((_aria_adapter STREQUAL "qt6" AND NOT _aria_qt6_ready) OR
+           (_aria_adapter STREQUAL "http" AND NOT _aria_http_ready))
+            continue()
+        endif()
+        if(_aria_adapter MATCHES "^(jni|appkit|uikit)$")
+            set(_aria_adapter_export "aria_adapters_${_aria_adapter}Targets.cmake")
+        else()
+            set(_aria_adapter_export "aria_${_aria_adapter}Targets.cmake")
+        endif()
+        include("${CMAKE_CURRENT_LIST_DIR}/${_aria_adapter_export}" OPTIONAL)
+    endif()
+endforeach()
+unset(_aria_adapter)
+unset(_aria_adapter_export)
 
 # Convenience aggregate target — depends on everything users normally need.
 if(NOT TARGET aria::aria)
@@ -69,7 +112,10 @@ foreach(_aria_component IN LISTS aria_FIND_COMPONENTS)
     else()
         set(_aria_component_target "aria::${_aria_component}")
     endif()
-    if(TARGET "${_aria_component_target}")
+    if((_aria_component STREQUAL "qt6" AND NOT _aria_qt6_ready) OR
+       (_aria_component STREQUAL "http" AND NOT _aria_http_ready))
+        set(aria_${_aria_component}_FOUND FALSE)
+    elseif(TARGET "${_aria_component_target}")
         set(aria_${_aria_component}_FOUND TRUE)
     else()
         set(aria_${_aria_component}_FOUND FALSE)
@@ -83,3 +129,5 @@ unset(_aria_component)
 unset(_aria_component_target)
 
 check_required_components(aria)
+unset(_aria_qt6_ready)
+unset(_aria_http_ready)

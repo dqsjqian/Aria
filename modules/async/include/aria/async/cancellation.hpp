@@ -197,15 +197,18 @@ public:
     /// Register a callback fired (synchronously) when source is cancelled.
     /// If already cancelled, invoked immediately.
     void on_cancel(std::function<void()> cb) {
-        if (!state_) return;
-        if (is_cancelled()) { cb(); return; }
-        std::lock_guard lk(state_->m);
-        if (state_->cancelled.load(std::memory_order_acquire)) {
-            // Race: cancellation happened while we were locking — fire now.
-            cb();
-        } else {
-            state_->callbacks.push_back(std::move(cb));
+        // A synchronous callback may destroy this token and the source. Keep
+        // the state alive and never call user code while its mutex is held.
+        const auto state = state_;
+        if (!state || !cb) return;
+        {
+            std::lock_guard lk(state->m);
+            if (!state->cancelled.load(std::memory_order_acquire)) {
+                state->callbacks.push_back(std::move(cb));
+                return;
+            }
         }
+        cb();
     }
 
     /// Always-cancellable empty token (useful as a default).

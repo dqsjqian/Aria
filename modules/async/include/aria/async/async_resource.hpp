@@ -188,14 +188,15 @@ public:
     }
 
     void clear() {
+        const auto state = state_;
         cancel();
-        state_->has_key = false;
-        state_->dirty.store(false, std::memory_order_release);
-        state_->is_loading    = false;
-        state_->error         = std::nullopt;
-        state_->error_message = "";
-        state_->data          = std::optional<T>{};
-        state_->recompute_loadable_();
+        state->has_key = false;
+        state->dirty.store(false, std::memory_order_release);
+        state->is_loading    = false;
+        state->error         = std::nullopt;
+        state->error_message = "";
+        state->data          = std::optional<T>{};
+        state->recompute_loadable_();
     }
 
     /// Cancel any in-flight fetch and drop its pending write-back, WITHOUT
@@ -217,27 +218,28 @@ public:
     /// Thread: must be called on the graph thread (it writes the observable
     /// Properties), exactly like `clear()` / `fetch()`.
     void cancel() {
+        const auto state = state_;
         // 1. Flip the cooperative-cancel tokens every in-flight coroutine
         //    is holding; they unwind at their next `throw_if_cancelled`
         //    probe (after the ui/worker hops). The detached-task path
         //    swallows the resulting OperationCancelled.
-        state_->cancel.cancel();
+        state->cancel.cancel();
         // 2. Re-arm with a fresh source so future fetches are cancellable
         //    again (move-assign drops our handle to the now-cancelled state;
         //    in-flight coroutines keep their own token alive via shared_ptr).
-        state_->cancel = CancellationSource{};
+        state->cancel = CancellationSource{};
         // 3. Bump the generation so any run that lands after this point is
         //    dropped by the stale-gen guard in `run_one_`, and release the
         //    in-flight flag (R-1: we are now the flag's owner).
-        state_->gen.fetch_add(1, std::memory_order_acq_rel);
-        state_->in_flight.store(false, std::memory_order_release);
+        state->gen.fetch_add(1, std::memory_order_acq_rel);
+        state->in_flight.store(false, std::memory_order_release);
         // 4. Surface a non-loading state (SWR: last `data` is kept).
-        state_->is_loading = false;
-        state_->recompute_loadable_();
+        state->is_loading = false;
+        state->recompute_loadable_();
         if (::aria::has_trace_sink()) {
             ::aria::publish_trace_unchecked(::aria::TraceCategory::Async,
                 ::aria::trace::Async{"AsyncResource", "cancel",
-                                     state_->gen.load(std::memory_order_relaxed)});
+                                     state->gen.load(std::memory_order_relaxed)});
         }
     }
 
@@ -267,38 +269,41 @@ public:
 
 private:
     void do_fetch_(Key key) {
-        state_->in_flight.store(true, std::memory_order_release);
-        state_->dirty.store(false, std::memory_order_release);
-        auto my_gen = state_->gen.fetch_add(1, std::memory_order_acq_rel) + 1;
+        // Property observers run synchronously and may destroy this resource.
+        // Own everything needed by the operation before the first publication.
+        const auto state = state_;
+        auto fetcher = fetcher_;
+        const auto tok = state->cancel.token();
+        state->in_flight.store(true, std::memory_order_release);
+        state->dirty.store(false, std::memory_order_release);
+        const auto my_gen = state->gen.fetch_add(1, std::memory_order_acq_rel) + 1;
+        auto current = [&] {
+            return !tok.is_cancelled() && state->gen.load(std::memory_order_acquire) == my_gen;
+        };
         // Synchronously surface the in-flight state on the public
         // Properties so observers see Loading / Refreshing the moment
-        // `fetch()` returns -- not after the worker hop. The same
-        // assignments happen again inside `run_one_` after the UI
-        // hop; equality-gated `set()` (E-11 / L-21) drops the second
-        // write as a no-op.
-        state_->is_loading    = true;
-        state_->error         = std::nullopt;
-        state_->error_message = "";
-        state_->recompute_loadable_();
+        // `fetch()` returns -- not after the worker hop.
+        state->is_loading = true;
+        if (!current()) { return; }
+        state->error = std::nullopt;
+        if (!current()) { return; }
+        state->error_message = "";
+        if (!current()) { return; }
+        state->recompute_loadable_();
+        if (!current()) { return; }
         if (::aria::has_trace_sink()) {
             ::aria::publish_trace_unchecked(::aria::TraceCategory::Async,
                 ::aria::trace::Async{"AsyncResource", "fetch_start", my_gen});
         }
-        auto runner = run_one_(key, my_gen);
+        auto runner = run_one_(state, std::move(fetcher), std::move(key), my_gen, tok);
         std::move(runner).start_detached();
     }
 
-    Task<void> run_one_(Key key, std::uint64_t my_gen) {
-        auto state   = state_;
-        auto fetcher = fetcher_;
-        auto tok     = state->cancel.token();
-
+    static Task<void> run_one_(std::shared_ptr<State> state, Fetcher fetcher,
+                               Key key, std::uint64_t my_gen, CancellationToken tok) {
         co_await schedule_on(*state->ui);
         tok.throw_if_cancelled();
-        state->is_loading    = true;
-        state->error         = std::nullopt;
-        state->error_message = "";
-        state->recompute_loadable_();
+        if (state->gen.load(std::memory_order_acquire) != my_gen) { co_return; }
 
         std::exception_ptr ex;
         std::optional<T> result;
@@ -369,8 +374,17 @@ private:
                     ::aria::trace::Async{"AsyncResource", "fetch_finish", my_gen});
             }
         }
-        state->is_loading = false;
+        finish_fetch(state, my_gen, tok);
+    }
+
+    static void finish_fetch(const std::shared_ptr<State>& state,
+                             std::uint64_t my_gen, const CancellationToken& tok) {
+        // A result/error observer may synchronously start a newer fetch.
+        if (tok.is_cancelled() || state->gen.load(std::memory_order_acquire) != my_gen) {
+            return;
+        }
         state->in_flight.store(false, std::memory_order_release);
+        state->is_loading = false;
         state->recompute_loadable_();
     }
 };

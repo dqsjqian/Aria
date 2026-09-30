@@ -56,6 +56,42 @@
 
 namespace aria {
 
+namespace detail {
+#ifdef __has_builtin
+#  if __has_builtin(__reference_converts_from_temporary)
+#    define ARIA_DETAIL_HAS_REFERENCE_TEMPORARY_BUILTIN
+#  endif
+#endif
+
+// is_invocable_r alone accepts a reference bound to a conversion temporary.
+// Reject those targets before instantiating the erased invocation thunk.
+template<class R, class Fn, class... Args>
+inline constexpr bool safely_invocable_r_v = [] {
+    if constexpr (!std::is_invocable_r_v<R, Fn, Args...>) {
+        return false;
+    } else if constexpr (std::is_reference_v<R>) {
+        using Result = std::invoke_result_t<Fn, Args...>;
+#if defined(__cpp_lib_reference_from_temporary) && __cpp_lib_reference_from_temporary >= 202202L
+        return !std::reference_converts_from_temporary_v<R, Result>;
+#elifdef ARIA_DETAIL_HAS_REFERENCE_TEMPORARY_BUILTIN
+        // Android NDK libc++ can lack the standard trait even when its
+        // Clang frontend implements the underlying C++23 lifetime check.
+        return !__reference_converts_from_temporary(R, Result);
+#else
+        // A conservative fallback for incomplete C++23 libraries: accept
+        // direct reference qualification/base conversions only. Conversions
+        // through a value or proxy must not silently return a dangling ref.
+        return std::is_reference_v<Result> &&
+               std::is_convertible_v<std::add_pointer_t<std::remove_reference_t<Result>>,
+                                     std::add_pointer_t<std::remove_reference_t<R>>>;
+#endif
+    } else {
+        return true;
+    }
+}();
+#undef ARIA_DETAIL_HAS_REFERENCE_TEMPORARY_BUILTIN
+} // namespace detail
+
 template<class Sig>
 class function_ref;  // primary template intentionally undefined
 
@@ -81,7 +117,7 @@ public:
     template<class Fp,
              std::enable_if_t<std::is_pointer_v<Fp> &&
                               std::is_function_v<std::remove_pointer_t<Fp>> &&
-                              std::is_invocable_r_v<R, Fp, Args...>, int> = 0>
+                              detail::safely_invocable_r_v<R, Fp, Args...>, int> = 0>
     function_ref(Fp fp) noexcept
         : target_{.function = reinterpret_cast<ErasedFunction>(fp)},
           invoke_(fp ? &invoke_function_pointer_<Fp> : nullptr) {}
@@ -95,7 +131,7 @@ public:
                  !std::is_pointer_v<std::remove_cvref_t<Fn>> &&
                  !std::is_function_v<std::remove_reference_t<Fn>> &&
                  !std::is_member_pointer_v<std::remove_cvref_t<Fn>> &&
-                 std::is_invocable_r_v<R, Fn&, Args...>>>
+                 detail::safely_invocable_r_v<R, Fn&, Args...>>>
     function_ref(Fn&& fn) noexcept
         : target_{.object = static_cast<const void*>(std::addressof(fn))},
           invoke_(&invoke_callable_<std::remove_reference_t<Fn>>) {}
@@ -119,7 +155,7 @@ public:
     template<class Fp,
              std::enable_if_t<std::is_pointer_v<Fp> &&
                               std::is_function_v<std::remove_pointer_t<Fp>> &&
-                              std::is_invocable_r_v<R, Fp, Args...>, int> = 0>
+                              detail::safely_invocable_r_v<R, Fp, Args...>, int> = 0>
     function_ref& operator=(Fp fp) noexcept {
         target_.function = reinterpret_cast<ErasedFunction>(fp);
         invoke_ = fp ? &invoke_function_pointer_<Fp> : nullptr;
@@ -132,7 +168,7 @@ public:
                  !std::is_pointer_v<std::remove_cvref_t<Fn>> &&
                  !std::is_function_v<std::remove_reference_t<Fn>> &&
                  !std::is_member_pointer_v<std::remove_cvref_t<Fn>> &&
-                 std::is_invocable_r_v<R, Fn&, Args...>>>
+                 detail::safely_invocable_r_v<R, Fn&, Args...>>>
     function_ref& operator=(Fn&& fn) noexcept {
         target_.object = static_cast<const void*>(std::addressof(fn));
         invoke_ = &invoke_callable_<std::remove_reference_t<Fn>>;

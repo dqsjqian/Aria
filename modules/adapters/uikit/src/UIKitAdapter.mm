@@ -262,14 +262,17 @@ struct UIKitAdapter::Impl {
     };
 
     std::mutex                                                                mu;
+    bool active = true;
     std::unordered_map<Key, std::unique_ptr<Bridge>, KeyHash>                 bridges;
-    std::unordered_map<const void*, std::vector<::aria::Subscription>>        destroy_subs;
+    std::unordered_map<Key, ::aria::Subscription, KeyHash>                    destroy_subs;
     // Handle → IView cache backing `view_for`. One UIKitView per UIView, so
     // repeated `view_for(control)` calls share a single per-view
     // subscription bucket inside BindingEngine.
     std::unordered_map<const void*, std::unique_ptr<UIKitView>>               views;
 
-    ~Impl() {
+    ~Impl() { close(); }
+
+    void close() noexcept {
         // Cached UIKitViews are moved out and destroyed AFTER the lock is
         // released: ~UIKitView fires IView::on_destroy, whose handlers
         // include our own `bridges.erase` lambda (which relocks `mu`) plus
@@ -281,6 +284,8 @@ struct UIKitAdapter::Impl {
         decltype(views) doomed;
         {
             std::lock_guard lk{mu};
+            if (!active) return;
+            active = false;
             doomed.swap(views);
         }
         doomed.clear();
@@ -304,31 +309,33 @@ struct UIKitAdapter::Impl {
     }
 
     template<class WireFn>
-    Bridge& bridge_for(::aria::binding::IView& view, UIView* obj, char kind, WireFn&& wire) {
+    Bridge* bridge_for(::aria::binding::IView& view, UIView* obj, char kind, WireFn&& wire) {
         const void* key_ptr = (__bridge const void*)obj;
         std::lock_guard lk{mu};
+        if (!active) return nullptr;
         auto it = bridges.find(Key{key_ptr, kind});
-        if (it != bridges.end()) return *it->second;
+        if (it != bridges.end()) return it->second.get();
 
         auto br = std::make_unique<Bridge>();
         Bridge* raw = br.get();
         wire(*raw);
         bridges.emplace(Key{key_ptr, kind}, std::move(br));
 
-        auto& subs = destroy_subs[key_ptr];
-        subs.push_back(view.on_destroy([this, k = Key{key_ptr, kind}]() {
+        destroy_subs.emplace(Key{key_ptr, kind}, view.on_destroy([this, k = Key{key_ptr, kind}]() {
             decltype(bridges)::node_type retired;
+            decltype(destroy_subs)::node_type retired_listener;
             {
                 std::lock_guard lk2{mu};
                 retired = bridges.extract(k);
+                retired_listener = destroy_subs.extract(k);
             }
         }));
-        return *raw;
+        return raw;
     }
 };
 
 UIKitAdapter::UIKitAdapter() : p_(std::make_unique<Impl>()) {}
-UIKitAdapter::~UIKitAdapter() = default;
+UIKitAdapter::~UIKitAdapter() { p_->close(); }
 
 // ── view_for / release_view ────────────────────────────────────────────
 
@@ -338,6 +345,7 @@ UIKitView& UIKitAdapter::view_for(UIView* view) {
 
     const void* key = (__bridge const void*)view;
     std::lock_guard lk{p_->mu};
+    if (!p_->active) throw std::logic_error("UIKitAdapter::view_for: adapter is closing");
     auto it = p_->views.find(key);
     if (it != p_->views.end()) return *it->second;
 
@@ -389,7 +397,7 @@ std::string UIKitAdapter::get_text(::aria::binding::IView& v) {
     if (![o isKindOfClass:[UITextField class]]) { warn_unsupported_("on_text_changed", o); return {}; }
     UITextField* tf = (UITextField*)o;
 
-    auto& br = p_->bridge_for(v, o, 't', [tf](Bridge& bridge) {
+    auto* br = p_->bridge_for(v, o, 't', [tf](Bridge& bridge) {
         AriaUITextTarget* t = [[AriaUITextTarget alloc]
             initWithCallback:[weak = std::weak_ptr{bridge.sig}](std::string_view sv) {
                 StringArgs a{sv};
@@ -400,10 +408,11 @@ std::string UIKitAdapter::get_text(::aria::binding::IView& v) {
                 action:@selector(fire:)
       forControlEvents:UIControlEventEditingChanged];
     });
-    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
+    if (!br) return {};
+    auto id = br->sig->connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<StringArgs*>(args)->sv);
     }));
-    auto weak = br.sig->weak_handle();
+    auto weak = br->sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -433,7 +442,7 @@ bool UIKitAdapter::get_bool(::aria::binding::IView& v) {
     if (![o isKindOfClass:[UISwitch class]]) { warn_unsupported_("on_bool_changed", o); return {}; }
     UISwitch* sw = (UISwitch*)o;
 
-    auto& br = p_->bridge_for(v, o, 'b', [sw](Bridge& bridge) {
+    auto* br = p_->bridge_for(v, o, 'b', [sw](Bridge& bridge) {
         AriaUIToggleTarget* t = [[AriaUIToggleTarget alloc]
             initWithCallback:[weak = std::weak_ptr{bridge.sig}](bool x) {
                 BoolArgs a{x};
@@ -444,10 +453,11 @@ bool UIKitAdapter::get_bool(::aria::binding::IView& v) {
                 action:@selector(fire:)
       forControlEvents:UIControlEventValueChanged];
     });
-    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
+    if (!br) return {};
+    auto id = br->sig->connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<BoolArgs*>(args)->v);
     }));
-    auto weak = br.sig->weak_handle();
+    auto weak = br->sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -480,7 +490,7 @@ int UIKitAdapter::get_int(::aria::binding::IView& v) {
     if (![o isKindOfClass:UIStepper.class] && ![o isKindOfClass:UISlider.class]) { warn_unsupported_("on_int_changed", o); return {}; }
     UIControl* ctl = (UIControl*)o;
 
-    auto& br = p_->bridge_for(v, o, 'i', [ctl](Bridge& bridge) {
+    auto* br = p_->bridge_for(v, o, 'i', [ctl](Bridge& bridge) {
         AriaUIStepperTarget* t = [[AriaUIStepperTarget alloc]
             initWithCallback:[weak = std::weak_ptr{bridge.sig}](int x) {
                 IntArgs a{x};
@@ -491,10 +501,11 @@ int UIKitAdapter::get_int(::aria::binding::IView& v) {
                  action:@selector(fire:)
        forControlEvents:UIControlEventValueChanged];
     });
-    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
+    if (!br) return {};
+    auto id = br->sig->connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<IntArgs*>(args)->v);
     }));
-    auto weak = br.sig->weak_handle();
+    auto weak = br->sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -566,7 +577,7 @@ double UIKitAdapter::get_double(::aria::binding::IView& v) {
     if (![o isKindOfClass:UIStepper.class] && ![o isKindOfClass:UISlider.class]) { warn_unsupported_("on_double_changed", o); return {}; }
     UIControl* ctl = (UIControl*)o;
 
-    auto& br = p_->bridge_for(v, o, 'd', [ctl](Bridge& bridge) {
+    auto* br = p_->bridge_for(v, o, 'd', [ctl](Bridge& bridge) {
         AriaUISliderTarget* t = [[AriaUISliderTarget alloc]
             initWithCallback:[weak = std::weak_ptr{bridge.sig}](double x) {
                 DoubleArgs a{x};
@@ -577,10 +588,11 @@ double UIKitAdapter::get_double(::aria::binding::IView& v) {
                  action:@selector(fire:)
        forControlEvents:UIControlEventValueChanged];
     });
-    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
+    if (!br) return {};
+    auto id = br->sig->connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<DoubleArgs*>(args)->v);
     }));
-    auto weak = br.sig->weak_handle();
+    auto weak = br->sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -610,7 +622,7 @@ void UIKitAdapter::set_enabled(::aria::binding::IView& v, bool enabled) {
     if (![o isKindOfClass:[UIButton class]]) { warn_unsupported_("on_click", o); return {}; }
     UIButton* btn = (UIButton*)o;
 
-    auto& br = p_->bridge_for(v, o, 'c', [btn](Bridge& bridge) {
+    auto* br = p_->bridge_for(v, o, 'c', [btn](Bridge& bridge) {
         AriaUIClickTarget* t = [[AriaUIClickTarget alloc]
             initWithCallback:[weak = std::weak_ptr{bridge.sig}]() {
                 VoidArgs a{};
@@ -621,10 +633,11 @@ void UIKitAdapter::set_enabled(::aria::binding::IView& v, bool enabled) {
                  action:@selector(fire:)
        forControlEvents:UIControlEventTouchUpInside];
     });
-    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* /*args*/) {
+    if (!br) return {};
+    auto id = br->sig->connect(make_slot([cb = std::move(cb)](void* /*args*/) {
         cb();
     }));
-    auto weak = br.sig->weak_handle();
+    auto weak = br->sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};

@@ -10,21 +10,22 @@ build, test, and submit changes.
   diagnostics) must stay A-grade before adapter surface grows. New features
   land behind a pinned contract + tests, not ahead of them.
 - **No new external runtime dependency** in the core/runtime/binding layers.
-  Adapters may vendor single-header libs under `third_party/`.
+  Adapter dependencies must be versioned and SHA256-pinned through
+  `cmake/ariaFetchPinned.cmake`.
 - **Every change passes `ctest --output-on-failure`** on at least one of the
   supported toolchains before review.
 
 ## Prerequisites
 
 - CMake >= 3.20
-- A full C++20 compiler: GCC >= 12, Clang >= 15 (AppleClang 15+), or
+- A C++23 compiler: GCC >= 14, Clang >= 19 (AppleClang 21+), or
   MSVC v143 (VS 2022)
 - *(optional)* Qt6 >= 6.4 for the Qt adapter
 
 ## Build & test
 
-C++20 is the default and minimum. Opt into supported C++23 mode with
-`-DCMAKE_CXX_STANDARD=23`; both modes share the same public API.
+C++23 is the default and minimum for every module and consumer. Exported
+CMake targets propagate this requirement to applications.
 
 ```bash
 cmake -B build/flavors/release -DCMAKE_BUILD_TYPE=Release
@@ -56,7 +57,7 @@ Common options (all default to the value shown; flip on the existing
 | `ARIA_BUILD_SHARED` | `ON` | runtime/binding as SHARED (required by the cross-dylib acceptance test) |
 | `ARIA_BUILD_QT6` | `OFF` | Qt6 adapter |
 | `ARIA_BUILD_HTTP` | `OFF` | HTTP/REST/SSE adapter |
-| `ARIA_ENABLE_ASAN` / `_UBSAN` / `_TSAN` | `OFF` | sanitizer passes (use a *throwaway* tree only here, e.g. `build-asan/`, since the flags change the ABI) |
+| `ARIA_ENABLE_ASAN` / `_UBSAN` / `_TSAN` | `OFF` | sanitizer passes (use a *throwaway* tree only here, e.g. `build/flavors/asan/`, since the flags change the ABI) |
 
 > The one legitimate reason to keep a second tree is a sanitizer/ABI-altering
 > build (`-DARIA_ENABLE_ASAN=ON` etc.), because those flags are not safe to
@@ -76,9 +77,9 @@ Run the fuzzers (lifecycle / re-entrancy invariants) before touching the
 reactive core:
 
 ```bash
-cmake -B build -DARIA_ENABLE_ASAN=ON
-cmake --build build -j --target aria_fuzz
-ARIA_FUZZ_ITERS=200000 ./build/bin/aria_fuzz
+cmake -B build/flavors/asan -DARIA_ENABLE_ASAN=ON -DARIA_ENABLE_UBSAN=ON
+cmake --build build/flavors/asan -j --target aria_fuzz
+ARIA_FUZZ_ITERS=200000 ./build/flavors/asan/bin/aria_fuzz
 ```
 
 ## Code style
@@ -87,7 +88,7 @@ ARIA_FUZZ_ITERS=200000 ./build/bin/aria_fuzz
 
   ```bash
   clang-format -i $(git diff --name-only --diff-filter=ACM | grep -E '\.(hpp|cpp|h)$')
-  clang-tidy -p build <changed files>
+  clang-tidy -p build/flavors/release <changed files>
   ```
 
 - Public symbols live in `aria::` (or `aria::reactive::` / `aria::async::` /

@@ -15,7 +15,7 @@
 # `add_subdirectory()` use; the canonical entry is via the option.
 #
 # Platform requirements:
-#   - Android NDK r26+ (C++20 minimum; C++23 mode supported by recent NDKs)
+#   - Android NDK r29+ (C++23)
 #   - CMake 3.20+
 #   - Android API level 21+ (Android 5.0 Lollipop)
 #
@@ -40,7 +40,7 @@ target_include_directories(aria_adapters_jni PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-target_compile_features(aria_adapters_jni PUBLIC cxx_std_20)
+target_compile_features(aria_adapters_jni PUBLIC cxx_std_23)
 
 target_link_libraries(aria_adapters_jni
     PUBLIC  aria::core aria::binding

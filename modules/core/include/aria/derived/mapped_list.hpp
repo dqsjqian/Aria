@@ -58,6 +58,7 @@
 #include "aria/subscription.hpp"
 #include "aria/detail/list_signal_mixin.hpp"
 #include "aria/detail/typed_signal.hpp"
+#include "aria/detail/list_replay.hpp"
 
 #include <cstddef>
 #include <memory>
@@ -110,6 +111,7 @@ public:
         {
             std::unique_lock lk(state_->m);
             auto snap = source_->snapshot();
+            state_->source_items = snap;
             state_->targets.reserve(snap.size());
             for (const auto& s : snap) {
                 state_->targets.push_back(state_->mapper(*s));
@@ -159,6 +161,11 @@ private:
         Mapper                               mapper;
         bool                                 remap_on_change{false};
         std::vector<std::shared_ptr<Target>> targets;
+        // The source serializes its event stream. Retain a replay mirror so
+        // a failed mapper can recover from the next event, without reading
+        // a source snapshot that may already include a later batch edit.
+        std::vector<std::shared_ptr<Source>> source_items;
+        bool needs_rebuild = false;
     };
 
     std::shared_ptr<SourceList> source_;
@@ -169,24 +176,32 @@ private:
     static void dispatch_source_change_(SharedState& st,
                                         Signal& sig,
                                         const ListChange<Source>& ch) {
-        switch (ch.kind) {
-        case ListChangeKind::Insert:      handle_insert_(st, sig, ch);           return;
-        case ListChangeKind::Remove:      handle_remove_(st, sig, ch);           return;
-        case ListChangeKind::Replace:     handle_replace_(st, sig, ch);          return;
-        case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, ch);     return;
-        case ListChangeKind::Move:        handle_move_(st, sig, ch);             return;
-        case ListChangeKind::Reset:       handle_reset_(st, sig, ch);           return;
+        detail::replay_list_change(st.source_items, ch);
+        if (st.needs_rebuild) {
+            handle_reset_(st, sig, ListChange<Source>::reset(st.source_items));
+            st.needs_rebuild = false;
+            return;
         }
+        // If a mapper/allocation fails, the ABI boundary reports it. Preserve
+        // a valid old projection and rebuild before interpreting more indices.
+        st.needs_rebuild = true;
+        switch (ch.kind) {
+        case ListChangeKind::Insert:      handle_insert_(st, sig, ch);       break;
+        case ListChangeKind::Remove:      handle_remove_(st, sig, ch);       break;
+        case ListChangeKind::Replace:     handle_replace_(st, sig, ch);      break;
+        case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, ch); break;
+        case ListChangeKind::Move:        handle_move_(st, sig, ch);         break;
+        case ListChangeKind::Reset:       handle_reset_(st, sig, ch);        break;
+        }
+        st.needs_rebuild = false;
     }
 
     static void handle_insert_(SharedState& st, Signal& sig,
                                const ListChange<Source>& ch) {
-        std::shared_ptr<Target> t;
+        auto t = st.mapper(*ch.item);
         {
             std::unique_lock lk(st.m);
             const std::size_t idx = ch.index;
-            auto shared_src = ch.item;
-            t = st.mapper(*shared_src);
             st.targets.insert(st.targets.begin()
                               + static_cast<std::ptrdiff_t>(idx), t);
         }
@@ -210,16 +225,13 @@ private:
 
     static void handle_replace_(SharedState& st, Signal& sig,
                                 const ListChange<Source>& ch) {
-        std::shared_ptr<Target> t;
+        auto t = st.mapper(*ch.item);
+        std::shared_ptr<Target> retired;
         {
             std::unique_lock lk(st.m);
             const std::size_t idx = ch.index;
             if (idx >= st.targets.size()) return;
-            auto shared_new = ch.item;
-            t = st.mapper(*shared_new);
-            // Overwriting st.targets[idx] drops the old Target; any
-            // external shared_ptr keeps it alive.
-            st.targets[idx] = t;
+            retired = std::exchange(st.targets[idx], t);
         }
         sig.emit(ListChange<Target>{ListChangeKind::Replace, ch.index,
                                      t, 0});
@@ -227,16 +239,15 @@ private:
 
     static void handle_item_changed_(SharedState& st, Signal& sig,
                                      const ListChange<Source>& ch) {
-        std::shared_ptr<Target> t;
+        auto t = st.remap_on_change ? st.mapper(*ch.item) : std::shared_ptr<Target>{};
+        std::shared_ptr<Target> retired;
         {
             std::unique_lock lk(st.m);
             const std::size_t idx = ch.index;
             if (idx >= st.targets.size()) return;
 
             if (st.remap_on_change) {
-                auto shared_new = ch.item;
-                t = st.mapper(*shared_new);
-                st.targets[idx] = t;
+                retired = std::exchange(st.targets[idx], t);
             } else {
                 // Preserve Target identity; downstream observers that
                 // want "refresh" semantics should subscribe to the
@@ -271,18 +282,19 @@ private:
 
     static void handle_reset_(SharedState& st, Signal& sig,
                               const ListChange<Source>& ch) {
-        ListChange<Target> reset;
+        std::vector<std::shared_ptr<Target>> replacement;
+        replacement.reserve(ch.snapshot->size());
+        for (const auto& item : *ch.snapshot) {
+            replacement.push_back(st.mapper(*item));
+        }
+        auto reset = ListChange<Target>::reset(replacement);
         {
             std::unique_lock lk(st.m);
-            st.targets.clear();
-            const auto& snap = *ch.snapshot;
-            st.targets.reserve(snap.size());
-            for (const auto& s : snap) {
-                st.targets.push_back(st.mapper(*s));
-            }
-            reset = ListChange<Target>::reset(st.targets);
+            st.targets.swap(replacement);
         }
         sig.emit(std::move(reset));
+        // Retired targets and their capture destructors run after unlocking.
+
     }
 };
 

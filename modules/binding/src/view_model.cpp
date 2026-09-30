@@ -4,6 +4,7 @@
 #include <utility>
 #include <vector>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace aria::binding {
 
@@ -12,7 +13,21 @@ struct ViewModel::Impl {
     Property<bool> is_active{false};
     std::vector<std::shared_ptr<ViewModel>> children;
     std::vector<std::function<void()>> on_destroy_hooks;
+    bool transitioning = false;
 };
+
+namespace {
+struct LifecycleTransition {
+    bool* active;
+    explicit LifecycleTransition(bool& flag) : active(&flag) { *active = true; }
+    ~LifecycleTransition() { *active = false; }
+    LifecycleTransition(const LifecycleTransition&) = delete;
+    LifecycleTransition& operator=(const LifecycleTransition&) = delete;
+    LifecycleTransition(LifecycleTransition&&) = delete;
+    LifecycleTransition& operator=(LifecycleTransition&&) = delete;
+    void finish() const { *active = false; }
+};
+}
 
 ViewModel::ViewModel() : impl_(std::make_unique<Impl>()) {}
 
@@ -43,7 +58,8 @@ SubscriptionBag& ViewModel::bag() { return impl_->bag; }
 
 void ViewModel::activate() {
     auto keep_alive = weak_from_this().lock();
-    if (impl_->is_active.get()) return;
+    if (impl_->is_active.get() || impl_->transitioning) return;
+    LifecycleTransition transition{impl_->transitioning};
 
     // Run the user-defined `on_activate()` BEFORE flipping the
     // `is_active` flag, then propagate to children, and only then flip
@@ -58,12 +74,16 @@ void ViewModel::activate() {
     ::aria::reactive::batch([&]{
         impl_->is_active.set(true);
         for (const auto& c : children) c->activate();
+        // The transition is complete before the batch delivers observers,
+        // which may legitimately request the opposite lifecycle operation.
+        transition.finish();
     });
 }
 
 void ViewModel::deactivate() {
     auto keep_alive = weak_from_this().lock();
-    if (!impl_->is_active.get()) return;
+    if (!impl_->is_active.get() || impl_->transitioning) return;
+    LifecycleTransition transition{impl_->transitioning};
 
     // Symmetric to `activate()`: deactivate children first, run the
     // user hook with the flag still `true` (so the hook sees a live
@@ -73,12 +93,28 @@ void ViewModel::deactivate() {
         for (const auto& c : children) c->deactivate();
         on_deactivate();
         impl_->is_active.set(false);
+        transition.finish();
     });
 }
 
 void ViewModel::add_child(std::shared_ptr<ViewModel> child) {
     if (!child || child.get() == this) {
         throw std::invalid_argument("ViewModel::add_child: child must be a distinct non-null ViewModel");
+    }
+    // A shared child graph may be a DAG, but a back edge would both leak
+    // shared ownership and make lifecycle traversal recurse indefinitely.
+    std::vector<ViewModel*> pending{child.get()};
+    std::unordered_set<ViewModel*> visited;
+    while (!pending.empty()) {
+        auto* node = pending.back();
+        pending.pop_back();
+        if (node == this) {
+            throw std::invalid_argument("ViewModel::add_child: child would create an ownership cycle");
+        }
+        if (!visited.insert(node).second) { continue; }
+        for (const auto& descendant : node->impl_->children) {
+            pending.push_back(descendant.get());
+        }
     }
     impl_->children.push_back(std::move(child));
 }

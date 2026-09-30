@@ -13,6 +13,24 @@
 
 namespace conformance = ::aria::binding::testing::conformance;
 
+TEST_CASE("UIKit adapter teardown rejects reentrant view and bridge registration") {
+    using namespace ::aria::adapters::uikit;
+    UIButton* first = [[UIButton alloc] initWithFrame:CGRectZero];
+    UIButton* second = [[UIButton alloc] initWithFrame:CGRectZero];
+    UIKitView external(second);
+    auto adapter = std::make_unique<UIKitAdapter>();
+    auto* raw = adapter.get();
+    auto& view = adapter->view_for(first);
+    bool notified = false;
+    auto on_destroy = view.on_destroy([&] {
+        notified = true;
+        CHECK_THROWS_AS((void)raw->view_for(second), std::logic_error);
+        CHECK_FALSE(raw->on_click(external, [] {}).active());
+    });
+    adapter.reset();
+    CHECK(notified);
+}
+
 namespace {
 
 void fire_actions(UIControl* control, UIControlEvents events) {

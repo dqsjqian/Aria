@@ -28,6 +28,26 @@
 
 namespace aria::binding {
 
+namespace detail {
+
+// Aggregates do not own their fields. NodeHandle is invalidated when an Aria
+// property is destroyed, so surviving fields can still trigger recomputation
+// without accessing a retired field. Custom reactive sources retain their
+// existing caller-managed lifetime contract.
+template<class Source, class Value, class Project = std::identity>
+auto form_reader(Source& source, Value expired, Project project = {}) {
+    if constexpr (std::derived_from<Source, ::aria::reactive::Node>) {
+        return [&source, handle = ::aria::reactive::detail::NodeHandle{&source},
+                expired = std::move(expired), project = std::move(project)] -> Value {
+            return handle ? project(source.get()) : expired;
+        };
+    } else {
+        return [&source, project = std::move(project)] -> Value { return project(source.get()); };
+    }
+}
+
+}  // namespace detail
+
 template<PropertyValue T>
 class FormField {
 public:
@@ -124,8 +144,8 @@ public:
     template<typename Field>
     void track(Field& f) {
         fields_.push_back(FieldHooks{
-            [&f] { return f.is_valid.get(); },
-            [&f] { return f.dirty.get(); }
+            detail::form_reader(f.is_valid, true),
+            detail::form_reader(f.dirty, false)
         });
         bag_ += f.is_valid.on_changed([this](bool) { recompute_(); });
         bag_ += f.dirty.on_changed([this](bool) { recompute_(); });
@@ -180,15 +200,19 @@ public:
 
     template<typename Field>
     void track(Field& f) {
-        auto pending = [&f] {
-            if constexpr (requires { f.validator.state(); }) return f.validator.state().get().pending;
-            else return false;
+        auto pending = [&f] -> std::function<bool()> {
+            if constexpr (requires { f.validator.state(); }) {
+                return detail::form_reader(f.validator.state(), false,
+                    [](const ValidationState& state) { return state.pending; });
+            } else {
+                return [] { return false; };
+            }
         };
         fields_.push_back(FieldHooks{
-            [&f] { return f.is_valid.get(); },
-            [&f] { return f.dirty.get(); },
-            std::move(pending),
-            [&f] { return f.error_full.get(); },
+            detail::form_reader(f.is_valid, true),
+            detail::form_reader(f.dirty, false),
+            pending(),
+            detail::form_reader(f.error_full, std::optional<::aria::Error>{}),
         });
         ++revision_;
         bag_ += f.is_valid.on_changed   ([this](bool) { recompute_(); });

@@ -53,6 +53,12 @@ endif()
 if(ARIA_ENABLE_UBSAN AND NOT MSVC)
     list(APPEND _mira_san_flags -fsanitize=undefined -fno-sanitize-recover=undefined)
 endif()
+if(ARIA_ENABLE_TSAN AND NOT MSVC)
+    list(APPEND _mira_san_flags -fsanitize=thread)
+endif()
+if(ARIA_ENABLE_MSAN AND NOT MSVC)
+    list(APPEND _mira_san_flags -fsanitize=memory -fsanitize-memory-track-origins -fno-omit-frame-pointer)
+endif()
 if(_mira_san_flags)
     foreach(_mira_target mira_core mira_transport mira_http mira_tls)
         if(TARGET ${_mira_target})
@@ -115,7 +121,9 @@ endif()
 
 target_link_libraries(aria_http
     PUBLIC  aria::core aria::abi aria::binding
-    PRIVATE aria::warnings nlohmann_json::nlohmann_json
+    # JSON is used only in compiled implementation files. Static exports must
+    # not reference this private, uninstalled header-only build target.
+    PRIVATE aria::warnings $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
 )
 
 set_target_properties(aria_http PROPERTIES

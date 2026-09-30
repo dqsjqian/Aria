@@ -270,3 +270,183 @@ TEST_CASE("Derived chain: Filter → Map live-updates under rapid bursts") {
     CHECK(bridge->empty());
     CHECK(mapped->empty());
 }
+
+// Each CHECK expands exception-handling branches inside doctest.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("Derived audit: filter callbacks can read and update their own view") {
+    auto source = std::make_shared<ObservableList<int>>();
+    std::shared_ptr<FilteredList<int>> view;
+    bool nested = false;
+    view = filtered(source, [&](const int& value) {
+        if (view) {
+            CHECK(view->snapshot().size() == view->size());
+            if (value == 1 && !nested) {
+                nested = true;
+                view->set_predicate([](const int& n) { return n % 2 == 0; });
+                source->emplace_back(2);
+            }
+        }
+        return true;
+    });
+    std::vector<std::shared_ptr<int>> mirror;
+    auto sub = view->observe([&](const auto& event) { detail::replay_list_change(mirror, event); });
+    source->emplace_back(1);
+    REQUIRE(view->size() == 1);
+    CHECK(*view->at(0) == 2);
+    CHECK(mirror == view->snapshot());
+}
+
+// Each CHECK expands exception-handling branches inside doctest.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("Derived audit: filter failure preserves old state and recovers") {
+    auto source = std::make_shared<ObservableList<int>>();
+    bool fail = false;
+    auto view = filtered(source, [&](const int& value) {
+        if (fail) { throw std::runtime_error("predicate failed"); }
+        return value % 2 != 0;
+    });
+    source->emplace_back(1);
+    std::vector<std::shared_ptr<int>> mirror = view->snapshot();
+    auto sub = view->observe([&](const auto& event) { detail::replay_list_change(mirror, event); });
+    fail = true;
+    source->emplace_back(3);
+    CHECK(view->snapshot() == mirror);
+    fail = false;
+    source->emplace_back(5);
+    REQUIRE(view->size() == 3);
+    CHECK(mirror == view->snapshot());
+    CHECK_THROWS(view->set_predicate([](const int&) -> bool { throw std::runtime_error("new predicate failed"); }));
+    source->emplace_back(7);
+    REQUIRE(view->size() == 4);
+    CHECK(mirror == view->snapshot());
+}
+
+// Each CHECK expands exception-handling branches inside doctest.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("Derived audit: sort callbacks can read and update their own view") {
+    auto source = std::make_shared<ObservableList<int>>();
+    std::shared_ptr<SortedList<int>> view;
+    bool nested = false;
+    view = sorted(source, [&](const int& a, const int& b) {
+        if (view) {
+            CHECK(view->snapshot().size() == view->size());
+            if (!nested) {
+                nested = true;
+                view->set_comparator([](const int& lhs, const int& rhs) { return lhs > rhs; });
+                source->emplace_back(3);
+            }
+        }
+        return a < b;
+    });
+    std::vector<std::shared_ptr<int>> mirror;
+    auto sub = view->observe([&](const auto& event) { detail::replay_list_change(mirror, event); });
+    source->emplace_back(2);
+    source->emplace_back(1);
+    REQUIRE(view->size() == 3);
+    CHECK(*view->at(0) == 3);
+    CHECK(*view->at(1) == 2);
+    CHECK(*view->at(2) == 1);
+    CHECK(mirror == view->snapshot());
+}
+
+// Each CHECK expands exception-handling branches inside doctest.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("Derived audit: comparator failure preserves old state and recovers") {
+    auto source = std::make_shared<ObservableList<int>>();
+    bool fail = false;
+    auto view = sorted(source, [&](const int& a, const int& b) {
+        if (fail) { throw std::runtime_error("comparator failed"); }
+        return a < b;
+    });
+    source->emplace_back(3);
+    std::vector<std::shared_ptr<int>> mirror = view->snapshot();
+    auto sub = view->observe([&](const auto& event) { detail::replay_list_change(mirror, event); });
+    fail = true;
+    source->emplace_back(1);
+    CHECK(view->snapshot() == mirror);
+    fail = false;
+    source->emplace_back(2);
+    REQUIRE(view->size() == 3);
+    CHECK(*view->at(0) == 1);
+    CHECK(*view->at(1) == 2);
+    CHECK(*view->at(2) == 3);
+    CHECK(mirror == view->snapshot());
+    CHECK_THROWS(view->set_comparator([](const int&, const int&) -> bool {
+        throw std::runtime_error("new comparator failed");
+    }));
+    source->emplace_back(0);
+    REQUIRE(view->size() == 4);
+    CHECK(*view->at(0) == 0);
+    CHECK(mirror == view->snapshot());
+}
+
+// Each CHECK expands exception-handling branches inside doctest.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("Derived audit: failed batched projections recover from consumed events only") {
+    auto source = std::make_shared<ObservableList<int>>();
+    bool filter_fail = true;
+    bool sort_fail = true;
+    bool map_fail = true;
+    auto filtered_view = filtered(source, [&](const int&) {
+        if (std::exchange(filter_fail, false)) { throw std::runtime_error("filter once"); }
+        return true;
+    });
+    auto sorted_view = sorted(source, [&](const int& a, const int& b) {
+        if (std::exchange(sort_fail, false)) { throw std::runtime_error("sort once"); }
+        return a < b;
+    });
+    auto mapped_view = mapped<int>(source, [&](const int& value) {
+        if (std::exchange(map_fail, false)) { throw std::runtime_error("map once"); }
+        return std::make_shared<int>(value * 2);
+    });
+    std::vector<std::shared_ptr<int>> filtered_mirror;
+    std::vector<std::shared_ptr<int>> sorted_mirror;
+    std::vector<std::shared_ptr<int>> mapped_mirror;
+    auto fs = filtered_view->observe([&](const auto& e) { detail::replay_list_change(filtered_mirror, e); });
+    auto ss = sorted_view->observe([&](const auto& e) { detail::replay_list_change(sorted_mirror, e); });
+    auto ms = mapped_view->observe([&](const auto& e) { detail::replay_list_change(mapped_mirror, e); });
+    const std::vector rows{std::make_shared<int>(3), std::make_shared<int>(1), std::make_shared<int>(2)};
+    source->insert_range(0, rows.begin(), rows.end());
+    CHECK(filtered_view->snapshot() == filtered_mirror);
+    CHECK(sorted_view->snapshot() == sorted_mirror);
+    CHECK(mapped_view->snapshot() == mapped_mirror);
+    REQUIRE(filtered_view->size() == 3);
+    REQUIRE(sorted_view->size() == 3);
+    REQUIRE(mapped_view->size() == 3);
+    CHECK(*sorted_view->at(0) == 1);
+    CHECK(*sorted_view->at(2) == 3);
+    CHECK(*mapped_view->at(0) == 6);
+    CHECK(*mapped_view->at(2) == 4);
+}
+
+// Each CHECK expands exception-handling branches inside doctest.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("Derived audit: replaced callback captures can read their view on destruction") {
+    struct Capture {
+        Capture() = default;
+        Capture(const Capture&) = delete;
+        Capture& operator=(const Capture&) = delete;
+        Capture(Capture&&) = delete;
+        Capture& operator=(Capture&&) = delete;
+        std::function<void()> retire;
+        ~Capture() noexcept {
+            try { if (retire) { retire(); } }
+            catch (...) { std::terminate(); }
+        }
+    };
+    auto source = std::make_shared<ObservableList<int>>();
+    source->emplace_back(1);
+    int retired = 0;
+    auto filter_capture = std::make_shared<Capture>();
+    auto filtered_view = filtered(source, [filter_capture](const int&) { return true; });
+    filter_capture->retire = [&] { CHECK(filtered_view->size() == 1); ++retired; };
+    filter_capture.reset();
+    filtered_view->set_predicate([](const int&) { return true; });
+    CHECK(retired == 1);
+    auto sort_capture = std::make_shared<Capture>();
+    auto sorted_view = sorted(source, [sort_capture](const int& a, const int& b) { return a < b; });
+    sort_capture->retire = [&] { CHECK(sorted_view->size() == 1); ++retired; };
+    sort_capture.reset();
+    sorted_view->set_comparator([](const int& a, const int& b) { return a > b; });
+    CHECK(retired == 2);
+}

@@ -20,6 +20,42 @@ TEST_CASE("Converters: large finite doubles are formatted without truncation") {
 }
 using namespace aria::binding::testing;
 
+TEST_CASE("BindingEngine: initial native setter may change its source without losing the update") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+    Property<std::string> source("initial");
+    FakeView view;
+    auto subscription = adapter->on_text_changed(view, [&](std::string_view value) {
+        if (value == "initial") { source.set("normalized"); }
+    });
+    SUBCASE("one-way") { engine.bind_text_oneway(source, view); }
+    SUBCASE("two-way") { engine.bind_text(source, view); }
+    CHECK(source.get() == "normalized");
+    CHECK(view.text == "normalized");
+}
+
+TEST_CASE("BindingEngine: initial projection may update its source without publishing the stale result") {
+    auto adapter = std::make_shared<FakeAdapter>();
+    BindingEngine engine(adapter);
+    Property<int> source(1);
+    FakeView view;
+    auto project = [&](int value) {
+        if (value == 1) { source.set(2); }
+        return std::to_string(value);
+    };
+    SUBCASE("one-way") { engine.bind_text_projected(source, view, project); }
+    SUBCASE("converted") {
+        engine.bind_text_converted(source, view,
+            Converter<int, std::string>{
+                .to_view = project,
+                .to_model = [](const std::string& value) { return std::stoi(value); },
+                .try_to_model = {},
+            });
+    }
+    CHECK(source.get() == 2);
+    CHECK(view.text == "2");
+}
+
 TEST_CASE("BindingEngine: enum integer conversion maps values in both directions") {
     enum class Category { Temperature = 10, Length = 30, Weight = 80 };
     Converter<Category, int> conv{

@@ -16,6 +16,7 @@ namespace ck = std::chrono;
 namespace {
 
 Task<int> make_int(int x) { co_return x; }
+Task<void> make_void() { co_return; }
 
 Task<int> throws() {
     throw std::runtime_error("boom");
@@ -83,6 +84,29 @@ TEST_CASE("when_all: heterogeneous types") {
         co_return static_cast<int>(std::get<0>(result).size()) + std::get<1>(result);
     }();
     CHECK(t.blocking_get() == 44);  // "hi" len 2 + 42
+}
+
+TEST_CASE("when_all: void tasks compose with values and propagate errors") {
+    auto mixed = [] -> Task<int> {
+        auto result = co_await when_all(make_void(), make_int(17), make_void());
+        static_assert(std::is_same_v<decltype(result),
+                                    std::tuple<std::monostate, int, std::monostate>>);
+        co_return std::get<1>(result);
+    }();
+    CHECK(mixed.blocking_get() == 17);
+
+    auto all_void = [] -> Task<void> {
+        auto result = co_await when_all(make_void(), make_void());
+        static_assert(std::tuple_size_v<decltype(result)> == 2);
+    }();
+    CHECK_NOTHROW(all_void.blocking_get());
+
+    auto failed = [] -> Task<void> {
+        (void)co_await when_all(make_void(), throws());
+    }();
+    // Doctest macro internals introduce the flagged branches/type traits.
+    // NOLINTNEXTLINE(modernize-type-traits)
+    CHECK_THROWS_WITH_AS(failed.blocking_get(), "boom", std::runtime_error);
 }
 
 TEST_CASE("when_all: runs its children concurrently") {

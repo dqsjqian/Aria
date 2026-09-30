@@ -12,6 +12,7 @@
 #include <exception>
 #include <optional>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace aria::async {
@@ -118,6 +119,7 @@ public:
             }
 
             T await_resume() {
+                if (!h) { throw std::runtime_error("Task: empty handle"); }
                 auto& p = h.promise();
                 if (p.exception) std::rethrow_exception(p.exception);
                 if constexpr (!std::is_void_v<T>) {

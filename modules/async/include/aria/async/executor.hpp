@@ -4,7 +4,6 @@
 #include "aria/scheduler.hpp"
 
 #include <atomic>
-#include <cassert>
 #include <condition_variable>
 #include <coroutine>
 #include <deque>
@@ -14,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -73,8 +73,22 @@ public:
     explicit ThreadPoolExecutor(std::size_t threads = std::thread::hardware_concurrency())
         : stop_(false) {
         if (threads == 0) threads = 1;
-        for (std::size_t i = 0; i < threads; ++i) {
-            workers_.emplace_back([this]() { worker_loop_(); });
+        try {
+            for (std::size_t i = 0; i < threads; ++i) {
+                workers_.emplace_back([this]() { worker_loop_(); });
+            }
+        } catch (...) {
+            // A failed thread creation must not destroy joinable std::threads
+            // (which terminates the process). Stop and join the started prefix.
+            {
+                std::scoped_lock lk(mutex_);
+                stop_ = true;
+            }
+            cv_.notify_all();
+            for (auto& worker : workers_) {
+                if (worker.joinable()) { worker.join(); }
+            }
+            throw;
         }
     }
 
@@ -218,8 +232,7 @@ public:
 /// any scenario that mixes a thread-pool worker with reactive Property
 /// writes. The owner thread is established lazily by the first call to
 /// `drain()`, `pump_until()` or `pump_one()`; subsequent attempts to
-/// pump from a different thread trip a debug assert (and a runtime
-/// throw in Release).
+/// pump from a different thread throw std::logic_error in every build.
 ///
 /// Usage (test):
 ///
@@ -243,12 +256,31 @@ public:
 ///   * `post(fn)` is callable from ANY thread.
 ///   * `drain()` / `pump_until()` / `pump_one()` / `run_one()` are owner-
 ///     thread-only; the first such call locks the owner identity.
-///   * `pending()`, `is_owner_thread()`, `clear()` are thread-safe.
+///   * `pending()` and `is_owner_thread()` are thread-safe.
+///   * `clear()` is owner-thread-only, just like pumping.
 class MainThreadExecutor : public IExecutor {
 public:
+    MainThreadExecutor() = default;
+    MainThreadExecutor(const MainThreadExecutor&) = delete;
+    MainThreadExecutor& operator=(const MainThreadExecutor&) = delete;
+    MainThreadExecutor(MainThreadExecutor&&) = delete;
+    MainThreadExecutor& operator=(MainThreadExecutor&&) = delete;
+
+    ~MainThreadExecutor() override {
+        std::deque<std::function<void()>> retired;
+        {
+            std::scoped_lock lk(m_);
+            closed_ = true;
+            retired.swap(queue_);
+        }
+        // Reject work posted by capture destructors while all members are live.
+    }
+
     void post(std::function<void()> fn) override {
+        if (!fn) { return; }
         {
             std::lock_guard lk(m_);
+            if (closed_) { return; }
             queue_.push_back(std::move(fn));
         }
         cv_.notify_one();
@@ -360,7 +392,7 @@ public:
     }
 
     /// Drop all pending callables without running them. Owner-thread-only.
-    void clear() noexcept {
+    void clear() {
         bind_owner_();
         std::deque<std::function<void()>> retired;
         {
@@ -372,7 +404,7 @@ public:
     }
 
 private:
-    void bind_owner_() noexcept {
+    void bind_owner_() {
         std::thread::id expected{};
         const auto self = std::this_thread::get_id();
         if (owner_.compare_exchange_strong(expected, self,
@@ -380,16 +412,17 @@ private:
             return;  // we just claimed ownership
         }
         // Already bound — must match.
-        assert(expected == self
-               && "MainThreadExecutor pumped from a non-owner thread. "
-                  "post() is fine from any thread, but drain/pump/run_one "
-                  "must run on the thread that originally bound the executor.");
+        if (expected != self) {
+            throw std::logic_error(
+                "MainThreadExecutor must be pumped or cleared on its owner thread");
+        }
     }
 
     mutable std::mutex m_;
     std::condition_variable cv_;
     std::deque<std::function<void()>> queue_;
     std::atomic<std::thread::id> owner_{};
+    bool closed_ = false;
 };
 
 /// Schedule a coroutine to resume on the given executor.

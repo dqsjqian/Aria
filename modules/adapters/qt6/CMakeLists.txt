@@ -51,7 +51,7 @@ target_include_directories(aria_qt6 PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-target_compile_features(aria_qt6 PUBLIC cxx_std_20)
+target_compile_features(aria_qt6 PUBLIC cxx_std_23)
 
 # Disable Qt's "emit"/"signals"/"slots" macros - they collide with our
 # SignalErased::emit() method and any user method named `signals`/`slots`.

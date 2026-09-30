@@ -354,3 +354,21 @@ TEST_CASE("inplace_function: typed null pointers are empty and void signatures d
     inplace_function<void(int)> discard_pointer = if_free::triple;
     discard_pointer(3);
 }
+
+TEST_CASE("inplace_function: const wrappers support mutable targets") {
+    const inplace_function<int()> function = [count = 0] mutable { return ++count; };
+    CHECK(function() == 1);
+    CHECK(function() == 2);
+}
+
+TEST_CASE("inplace_function: reference return cannot bind to a temporary") {
+    using Reference = inplace_function<const int&()>;
+    auto value = [] { return 42; };
+    auto conversion = [] -> const short& { static const short n = 42; return n; };
+    static_assert(!std::is_constructible_v<Reference, decltype(value)>);
+    static_assert(!std::is_assignable_v<Reference&, decltype(value)>);
+    static_assert(!std::is_constructible_v<Reference, decltype(conversion)>);
+    int n = 42;
+    Reference reference = [&] -> int& { return n; };
+    CHECK(&reference() == &n);
+}

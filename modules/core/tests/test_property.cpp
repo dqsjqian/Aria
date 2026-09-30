@@ -147,3 +147,18 @@ TEST_CASE("Subscription outliving Property is safe") {
     sub.release();
     CHECK_FALSE(sub.active());
 }
+
+TEST_CASE("Property: throwing mutate invalidates partially changed state") {
+    Property<std::vector<int>> values{std::vector<int>{1}};
+    reactive::Computed<std::size_t> count{[&] { return values.get_ref().size(); }};
+    std::size_t observed = 0;
+    auto subscription = values.on_changed([&](const auto& current) { observed = current.size(); });
+
+    CHECK_THROWS_WITH(values.mutate([](auto& current) {
+        current.push_back(2);
+        throw std::runtime_error("mutation failed after editing");
+    }), "mutation failed after editing");
+    CHECK(values.get().size() == 2);
+    CHECK(count.get() == 2);
+    CHECK(observed == 2);
+}

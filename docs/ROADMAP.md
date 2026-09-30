@@ -1,12 +1,11 @@
 # Aria Roadmap
 
-> Development version: `2.0.0` (unreleased). This is a working priority list, not a release
-> schedule. Changes marked **Unreleased** are implemented on this branch and
-> are not part of the published release.
+> Current framework version: `3.0.0`. This is a working priority list, not a
+> release schedule. See the changelog for versioned changes.
 
 ## Direction
 
-Aria is an MVVM framework supporting C++23, with C++20 as the minimum:
+Aria is a C++23 MVVM framework:
 reactive state, bindings, commands,
 collections, validation, async primitives, adapter contracts, and diagnostics.
 Its purpose is to share ViewModel code across UI hosts.
@@ -36,10 +35,10 @@ These capabilities already exist and should not be scheduled again:
 Release history is in [CHANGELOG.md](../CHANGELOG.md). Earlier roadmap
 rationale remains available in this file's Git history.
 
-## Implemented on this branch — Unreleased
+## Established correctness contracts
 
-The correctness audit produced the following repairs and regression coverage.
-They remain unreleased until the release verification gate below is complete.
+Previous correctness audits produced the following repairs and regression
+coverage. These contracts remain regression gates for current development.
 
 - ABI 2 supplies one compiled graph, diagnostics registry, scheduler base and
   node-ID sequence across compatible dynamic libraries. Installed core-only
@@ -57,8 +56,8 @@ They remain unreleased until the release verification gate below is complete.
   and false EOF. Capacity zero supports sender/receiver rendezvous.
 - HTTP view replacement destroys the old view outside the registry lock and
   preserves the replacement's state and subscriptions.
-- HTTP honors a fixed worker pool and caps SSE admission to retain a worker
-  for ordinary requests. Initial SSE state includes values, visibility, and
+- HTTP honors a fixed worker pool for synchronous routes; SSE streams suspend
+  on the event loop and have an independent client cap. Initial SSE state includes values, visibility, and
   enabled state for all view kinds, with ordering against live updates.
 - HTTP validates input shape, view identity, field kinds, and numeric ranges;
   errors use JSON. Heartbeat waiting is interruptible, start/stop is
@@ -100,10 +99,12 @@ non-contiguous enum values. See the [Qt guide](guide/adapters/qt6.md).
 
 ## Language baseline
 
-Retain C++20 as the minimum and validate opt-in C++23 builds. The available
-Apple and Android standard libraries do not provide a common C++23 feature
-set that justifies raising the minimum. See the
-[C++23 evaluation](cpp23-evaluation.md) for compiler/link probes and limits.
+C++23 is the minimum since 3.0. Exported targets must propagate that
+requirement. Compiler, standard-library, and deployment-target support for
+individual facilities still needs explicit validation; the language flag alone
+does not establish it. See the [3.0 migration guide](migration-3.0.md).
+The [September 13 evaluation](cpp23-evaluation.md) records the earlier 2.0
+assessment and is historical evidence, not the current baseline policy.
 
 ## Triggered — require a concrete consumer or failure
 

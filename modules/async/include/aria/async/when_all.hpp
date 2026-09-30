@@ -117,7 +117,7 @@ Task<void> drive_one(Task<T> task,
 }  // namespace detail
 
 /// Awaitable that resolves when ALL input Tasks complete.
-/// Returns std::tuple<T1, T2, ...>.
+/// Returns std::tuple<T1, T2, ...>; void children occupy std::monostate slots.
 ///
 /// Race contract:
 ///   await_suspend publishes `parent_->store(caller)` (release) BEFORE
@@ -132,7 +132,7 @@ Task<void> drive_one(Task<T> task,
 template<typename... Ts>
 class WhenAllAwaiter {
 public:
-    using Result = std::tuple<Ts...>;
+    using Result = std::tuple<std::conditional_t<std::is_void_v<Ts>, std::monostate, Ts>...>;
 
     explicit WhenAllAwaiter(Task<Ts>... ts)
         : tasks_(std::make_tuple(std::move(ts)...)),
@@ -141,6 +141,16 @@ public:
     bool await_ready() const noexcept { return sizeof...(Ts) == 0; }
 
     void await_suspend(std::coroutine_handle<> caller) {
+        // Allocate every driver before launching any work. A frame allocation
+        // failure must unwind owned, unstarted Tasks instead of leaving a
+        // partially launched operation behind. These local owners also remain
+        // valid if the final child resumes and destroys this awaiter inline.
+        auto drivers = std::apply([this](auto&... task) {
+            return std::apply([this, &task...](auto&... slot) {
+                return std::make_tuple(detail::drive_one(
+                    std::move(task), slot, remaining_, parent_)...);
+            }, slots_);
+        }, tasks_);
         parent_->store(caller);
         detail::publish_race_trace(detail::race_source::kWhenAll,
                                    detail::race_op::kStart,
@@ -148,13 +158,9 @@ public:
         // Spawn drivers as fully-detached coroutines.  Each driver owns its
         // own coroutine frame via Task::start_detached — no need for the
         // awaiter to keep them alive, and no leaks.
-        std::apply([this](auto&... task) {
-            std::apply([this, &task...](auto&... slot) {
-                (detail::drive_one(
-                    std::move(task), slot, remaining_, parent_
-                 ).start_detached(), ...);
-            }, slots_);
-        }, tasks_);
+        std::apply([](auto&... driver) {
+            (std::move(driver).start_detached(), ...);
+        }, drivers);
     }
 
     Result await_resume() {
@@ -177,7 +183,13 @@ public:
 private:
     template<std::size_t... I>
     Result build_result_(std::index_sequence<I...>) {
-        return Result{std::move(*std::get<I>(slots_)->value)...};
+        return Result{slot_result(std::get<I>(slots_))...};
+    }
+
+    template<typename T>
+    static auto slot_result(const std::shared_ptr<detail::WhenAllSlot<T>>& slot) {
+        if constexpr (std::is_void_v<T>) { return std::monostate{}; }
+        else { return std::move(*slot->value); }
     }
 
     std::tuple<Task<Ts>...> tasks_;
@@ -340,7 +352,7 @@ public:
         return slot_->winner.load(std::memory_order_acquire) != 0;
     }
 
-    bool await_suspend(std::coroutine_handle<> caller) noexcept {
+    bool await_suspend(std::coroutine_handle<> caller) {
         detail::publish_race_trace(detail::race_source::kWhenAny,
                                    detail::race_op::kStart,
                                    tasks_.size());
@@ -418,7 +430,7 @@ public:
         return slot_->winner.load(std::memory_order_acquire) != 0;
     }
 
-    bool await_suspend(std::coroutine_handle<> caller) noexcept {
+    bool await_suspend(std::coroutine_handle<> caller) {
         detail::publish_race_trace(detail::race_source::kWhenAnyCancellable,
                                    detail::race_op::kStart,
                                    factories_.size());

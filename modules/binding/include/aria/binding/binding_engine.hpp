@@ -485,22 +485,29 @@ private:
         auto dispatcher = dispatcher_;
         const auto policy = policy_;
         auto projection = std::make_shared<Project>(std::move(project));
-        // Copy before invoking user code; a projection can destroy its source.
-        T initial = src.get();
-        auto rendered = (*projection)(initial);
-        if (!is_alive_(alive) || !source_alive_<Src>(source)) return;
-        (adapter.get()->*setter)(view, rendered);
-        if (!is_alive_(alive) || !source_alive_<Src>(source)) return;
+        auto revision = std::make_shared<std::size_t>(0);
+        // Subscribe before initial user code: projections and native setters
+        // may synchronously normalize the source. Keep this local until setup
+        // succeeds, so a throwing initial projection still disconnects it.
         auto sub = src.on_changed(
-            [adapter, dispatcher, policy, &view, projection, alive, setter]
+            [adapter, dispatcher, policy, &view, projection, alive, setter, revision]
             (const T& value) {
+                ++*revision;
                 dispatch_to_view_(adapter, dispatcher, policy, alive,
-                    [adapter, &view, projection, alive, setter, value] {
+                    [adapter, &view, projection, alive, setter, value, revision] {
+                        const auto before = *revision;
                         auto rendered_value = (*projection)(value);
-                        if (is_alive_(alive)) (adapter.get()->*setter)(view, rendered_value);
+                        if (is_alive_(alive) && before == *revision)
+                            (adapter.get()->*setter)(view, rendered_value);
                     });
             });
-        if (is_alive_(alive)) add_view_sub_(view, std::move(sub));
+        // Copy before invoking user code; a projection can destroy its source.
+        T initial = src.get();
+        const auto before = *revision;
+        auto rendered = (*projection)(initial);
+        if (!is_alive_(alive) || !source_alive_<Src>(source)) return;
+        if (before == *revision) (adapter.get()->*setter)(view, rendered);
+        if (is_alive_(alive) && source_alive_<Src>(source)) add_view_sub_(view, std::move(sub));
     }
 
     template<typename T, typename Src, typename Setter>
@@ -522,27 +529,30 @@ private:
         auto dispatcher = dispatcher_;
         const auto policy = policy_;
         auto converter = std::make_shared<Converter<T, U>>(std::move(conv));
+        auto revision = std::make_shared<std::size_t>(0);
+        auto property_sub = prop.on_changed(
+            [adapter, dispatcher, policy, &view, converter,
+             guard, alive, model, setter, revision](const T& value) {
+                ++*revision;
+                dispatch_to_view_(adapter, dispatcher, policy, alive,
+                    [adapter, &view, converter, guard, alive, model, setter, value, revision] {
+                        if (!model_alive_(model)) return;
+                        GuardFlag g{*guard};
+                        const auto before = *revision;
+                        auto converted = converter->to_view(value);
+                        if (!is_alive_(alive) || !model_alive_(model) || before != *revision) return;
+                        (adapter.get()->*setter)(view, converted);
+                    });
+            });
         T initial = prop.get();
+        const auto before = *revision;
         auto rendered = converter->to_view(initial);
         if (!is_alive_(alive) || !model_alive_(model)) return;
-        {
+        if (before == *revision) {
             GuardFlag g{*guard};
             (adapter.get()->*setter)(view, rendered);
         }
         if (!is_alive_(alive) || !model_alive_(model)) return;
-        auto property_sub = prop.on_changed(
-            [adapter, dispatcher, policy, &view, converter,
-             guard, alive, model, setter](const T& value) {
-                dispatch_to_view_(adapter, dispatcher, policy, alive,
-                    [adapter, &view, converter, guard, alive, model, setter, value] {
-                        if (!model_alive_(model)) return;
-                        GuardFlag g{*guard};
-                        auto converted = converter->to_view(value);
-                        if (!is_alive_(alive) || !model_alive_(model)) return;
-                        (adapter.get()->*setter)(view, converted);
-                    });
-            });
-        if (!is_alive_(alive)) return;
         add_view_sub_(view, std::move(property_sub));
         auto view_sub = (adapter.get()->*subscriber)(view,
             [&prop, converter, guard, alive, model,

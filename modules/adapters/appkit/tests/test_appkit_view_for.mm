@@ -87,6 +87,24 @@ TEST_CASE("appkit adapter: releasing a view during an action cancels later obser
     CHECK(later_calls == 0);
 }
 
+TEST_CASE("appkit adapter: teardown rejects reentrant view and bridge registration") {
+    ensure_nsapp();
+    NSButton* first = [[NSButton alloc] initWithFrame:NSZeroRect];
+    NSButton* second = [[NSButton alloc] initWithFrame:NSZeroRect];
+    AppKitView external(second);
+    auto adapter = std::make_unique<AppKitAdapter>();
+    auto* raw = adapter.get();
+    auto& view = adapter->view_for(first);
+    bool notified = false;
+    auto on_destroy = view.on_destroy([&] {
+        notified = true;
+        CHECK_THROWS_AS((void)raw->view_for(second), std::logic_error);
+        CHECK_FALSE(raw->on_click(external, [] {}).active());
+    });
+    adapter.reset();
+    CHECK(notified);
+}
+
 TEST_CASE("appkit adapter: text preserves embedded NUL bytes") {
     ensure_nsapp();
     NSTextField* field = [[NSTextField alloc] initWithFrame:NSZeroRect];

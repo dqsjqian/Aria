@@ -80,6 +80,7 @@
 #include "aria/subscription.hpp"
 #include "aria/detail/list_signal_mixin.hpp"
 #include "aria/detail/list_replay.hpp"
+#include "aria/detail/list_update_queue.hpp"
 #include "aria/detail/typed_signal.hpp"
 
 #include <algorithm>
@@ -113,7 +114,7 @@ public:
           signal_(std::make_shared<Signal>()),
           state_(std::make_shared<SharedState>())
     {
-        state_->predicate = std::move(predicate);
+        state_->predicate = std::make_shared<Predicate>(std::move(predicate));
 
         // Construct on the source writer thread or while its writer is
         // quiescent: snapshot + subscribe is not a cross-thread transaction.
@@ -124,7 +125,7 @@ public:
             state_->source_items = snap;
             state_->source_to_derived.assign(snap.size(), std::nullopt);
             for (std::size_t i = 0; i < snap.size(); ++i) {
-                if (state_->predicate(*snap[i])) {
+                if ((*state_->predicate)(*snap[i])) {
                     state_->source_to_derived[i] = state_->derived_to_source.size();
                     state_->derived_to_source.push_back(i);
                     state_->items.push_back(snap[i]);
@@ -144,7 +145,7 @@ public:
                 auto sig = weak_signal.lock();
                 auto src = weak_source.lock();
                 if (!st || !sig || !src) return;
-                dispatch_source_change_(*st, *sig, ch);
+                st->updates.submit([st, sig, ch] { dispatch_source_change_(*st, *sig, ch); });
             });
     }
 
@@ -186,87 +187,12 @@ public:
     // as if every in-item had changed", they should instead send a
     // proper source-side mutation or iterate ItemChanged manually.
     void set_predicate(Predicate new_predicate) {
+        auto state = state_;
         auto signal = signal_;
-        std::vector<ListChange<T>> emissions;
-
-        {
-            std::unique_lock lk(state_->m);
-            state_->predicate = std::move(new_predicate);
-
-            const auto& snap = state_->source_items;
-
-            // Build new mapping in a single pass; the OLD mapping is
-            // still in `state_->source_to_derived` at this point so we
-            // can detect membership transitions.
-            std::vector<std::optional<std::size_t>> new_s2d(snap.size(), std::nullopt);
-            std::vector<std::size_t>                new_d2s;
-            std::vector<std::shared_ptr<T>>         new_items;
-            new_d2s.reserve(snap.size());
-            new_items.reserve(snap.size());
-
-            // Emission indices must follow D-11 "as observed": each event's
-            // index reflects the derived list as the OBSERVER sees it at the
-            // moment of that emit, not the pre-change or post-change layout.
-            //
-            // We therefore walk the source in order and maintain
-            // `observed_pos` — the index, in the observer's incrementally
-            // rebuilt mirror, of the next element that survives. Items that
-            // stay in advance it; a Remove leaves it alone (the mirror just
-            // shrank at that spot); an Insert lands at it and advances it.
-            //
-            // Getting this wrong is not a cosmetic bug. The previous version
-            // emitted Remove with the OLD derived index and Insert with the
-            // NEW one, mixing two coordinate systems: for source [A,B,C] all
-            // passing, with a new predicate that keeps only C, it emitted
-            // Remove(0), Remove(1) — walking the observer's mirror
-            // [A,B,C] -> [B,C] -> [B], while the real state is [C]. The
-            // mirror was then permanently wrong with no event to repair it.
-            // The correct stream here is Remove(0), Remove(0).
-            std::size_t observed_pos = 0;
-
-            for (std::size_t i = 0; i < snap.size(); ++i) {
-                const bool was_in = (i < state_->source_to_derived.size())
-                                    && state_->source_to_derived[i].has_value();
-                const bool is_in  = state_->predicate(*snap[i]);
-
-                if (is_in) {
-                    new_s2d[i] = new_d2s.size();
-                    new_d2s.push_back(i);
-                    new_items.push_back(snap[i]);
-                }
-
-                if (was_in && !is_in) {
-                    // Dropped out: the observer removes at `observed_pos`,
-                    // and everything after it shifts down — so
-                    // `observed_pos` stays put for the next candidate.
-                    emissions.push_back({
-                        ListChangeKind::Remove,
-                        observed_pos,
-                        snap[i], 0});
-                } else if (!was_in && is_in) {
-                    // Newly admitted: lands at `observed_pos` in the mirror.
-                    emissions.push_back({
-                        ListChangeKind::Insert,
-                        observed_pos,
-                        snap[i], 0});
-                    ++observed_pos;
-                } else if (was_in && is_in) {
-                    // Unchanged member: no event, but it occupies a slot in
-                    // the observer's mirror.
-                    ++observed_pos;
-                }
-                // (!was_in && !is_in): absent before and after — no slot.
-            }
-
-            state_->source_to_derived = std::move(new_s2d);
-            state_->derived_to_source = std::move(new_d2s);
-            state_->items             = std::move(new_items);
-        }
-
-        // Emit outside the lock. Observers that call back into at() /
-        // snapshot() see the new state, matching ObservableList's own
-        // post-mutation emission contract.
-        signal->emit_batch(std::move(emissions));
+        auto predicate = std::make_shared<Predicate>(std::move(new_predicate));
+        state->updates.submit([state, signal, predicate = std::move(predicate)] {
+            replace_predicate(*state, *signal, predicate);
+        });
     }
 
 private:
@@ -275,7 +201,9 @@ private:
     // control block.
     struct SharedState {
         mutable std::shared_mutex                 m;
-        Predicate                                 predicate;
+        std::shared_ptr<Predicate>                predicate;
+        detail::ListUpdateQueue updates;
+        bool needs_rebuild = false;
         // length == source.size(); nullopt means "not in derived".
         std::vector<std::optional<std::size_t>>   source_to_derived;
         // length == derived.size(); value is the source index.
@@ -290,30 +218,88 @@ private:
     std::shared_ptr<SharedState>       state_;
     Subscription                       source_sub_;
 
+    template<class Value>
+    static void reserve_one(std::vector<Value>& values) {
+        if (values.size() != values.capacity()) { return; }
+        const auto next = values.size() < values.max_size() / 2
+            ? std::max<std::size_t>(1, values.size() * 2) : values.max_size();
+        values.reserve(next);
+    }
+
+    static void replace_predicate(SharedState& st, Signal& signal,
+                                    std::shared_ptr<Predicate> predicate) {
+        // Only the update queue writes these vectors. Prepare against the
+        // current source mirror without holding the public readers' lock.
+        const auto& snap = st.source_items;
+        std::vector<std::optional<std::size_t>> s2d(snap.size(), std::nullopt);
+        std::vector<std::size_t> d2s;
+        std::vector<std::shared_ptr<T>> items;
+        std::vector<ListChange<T>> events;
+        d2s.reserve(snap.size());
+        items.reserve(snap.size());
+        events.reserve(snap.size());
+        std::size_t observed_pos = 0;
+        for (std::size_t i = 0; i < snap.size(); ++i) {
+            const bool was_in = i < st.source_to_derived.size() && st.source_to_derived[i].has_value();
+            const bool is_in = (*predicate)(*snap[i]);
+            if (is_in) {
+                s2d[i] = items.size();
+                d2s.push_back(i);
+                items.push_back(snap[i]);
+            }
+            if (was_in && !is_in) {
+                events.push_back({ListChangeKind::Remove, observed_pos, snap[i], 0});
+            } else if (!was_in && is_in) {
+                events.push_back({ListChangeKind::Insert, observed_pos, snap[i], 0});
+            }
+            if (is_in) { ++observed_pos; }
+        }
+        if (st.needs_rebuild) { events = {ListChange<T>::reset(items)}; }
+        {
+            std::unique_lock lock(st.m);
+            st.predicate.swap(predicate);
+            st.source_to_derived.swap(s2d);
+            st.derived_to_source.swap(d2s);
+            st.items.swap(items);
+            st.needs_rebuild = false;
+        }
+        signal.emit_batch(std::move(events));
+        // Retired items and callable captures are destroyed without the lock.
+    }
+
     // ── Translation: one source event -> zero or one derived events ───
     static void dispatch_source_change_(SharedState& st,
                                         Signal& sig,
                                         const ListChange<T>& ch) {
-        {
-            std::unique_lock lock(st.m);
-            detail::replay_list_change(st.source_items, ch);
+        detail::replay_list_change(st.source_items, ch);
+        if (st.needs_rebuild) {
+            handle_reset_(st, sig, ListChange<T>::reset(st.source_items));
+            st.needs_rebuild = false;
+            return;
         }
+        st.needs_rebuild = true;
         switch (ch.kind) {
-        case ListChangeKind::Insert:      handle_insert_(st, sig, ch);           return;
-        case ListChangeKind::Remove:      handle_remove_(st, sig, ch);           return;
-        case ListChangeKind::Replace:     handle_replace_(st, sig, ch);          return;
-        case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, ch);     return;
-        case ListChangeKind::Move:        handle_move_(st, sig, ch);             return;
-        case ListChangeKind::Reset:       handle_reset_(st, sig, ch);                return;
+        case ListChangeKind::Insert:      handle_insert_(st, sig, ch);       break;
+        case ListChangeKind::Remove:      handle_remove_(st, sig, ch);       break;
+        case ListChangeKind::Replace:     handle_replace_(st, sig, ch);      break;
+        case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, ch); break;
+        case ListChangeKind::Move:        handle_move_(st, sig, ch);         break;
+        case ListChangeKind::Reset:       handle_reset_(st, sig, ch);        break;
         }
+        st.needs_rebuild = false;
     }
 
     static void handle_insert_(SharedState& st, Signal& sig,
                                const ListChange<T>& ch) {
+        const bool is_in = (*st.predicate)(*ch.item);
         std::unique_lock lk(st.m);
         const std::size_t src_idx = ch.index;
-
-        const bool is_in = st.predicate(*ch.item);
+        // Allocate before modifying any parallel index vector.
+        reserve_one(st.source_to_derived);
+        if (is_in) {
+            reserve_one(st.items);
+            reserve_one(st.derived_to_source);
+        }
         // Source indices are ordered, so this locates both the insertion
         // position and the only suffix whose source indices change. A tail
         // append leaves every existing mapping intact.
@@ -387,20 +373,24 @@ private:
                                               const ListChange<T>& ch,
                                               ListChangeKind kind_for_in_in,
                                               bool refresh_value) {
+        const bool is_in = (*st.predicate)(*ch.item);
+        std::shared_ptr<T> retired;
         std::unique_lock lk(st.m);
         const std::size_t src_idx = ch.index;
 
         if (src_idx >= st.source_to_derived.size()) return;
-
         const bool was_in = st.source_to_derived[src_idx].has_value();
-        const bool is_in  = st.predicate(*ch.item);
+        if (!was_in && is_in) {
+            reserve_one(st.items);
+            reserve_one(st.derived_to_source);
+        }
 
         if (!was_in && !is_in) return;
 
         if (was_in && is_in) {
             const std::size_t d_idx = *st.source_to_derived[src_idx];
             if (refresh_value) {
-                st.items[d_idx] = ch.item;
+                retired = std::exchange(st.items[d_idx], ch.item);
             }
             lk.unlock();
             sig.emit(ListChange<T>{kind_for_in_in, d_idx, ch.item, 0});
@@ -512,19 +502,24 @@ private:
 
     static void handle_reset_(SharedState& st, Signal& sig, const ListChange<T>& ch) {
         const auto& snapshot = *ch.snapshot;
-        std::unique_lock lk(st.m);
-        st.source_to_derived.clear();
-        st.derived_to_source.clear();
-        st.items.clear();
-        st.source_to_derived.resize(snapshot.size(), std::nullopt);
+        std::vector<std::optional<std::size_t>> s2d(snapshot.size(), std::nullopt);
+        std::vector<std::size_t> d2s;
+        std::vector<std::shared_ptr<T>> items;
+        d2s.reserve(snapshot.size());
+        items.reserve(snapshot.size());
         for (std::size_t i = 0; i < snapshot.size(); ++i) {
-            if (!st.predicate(*snapshot[i])) continue;
-            st.source_to_derived[i] = st.items.size();
-            st.derived_to_source.push_back(i);
-            st.items.push_back(snapshot[i]);
+            if (!(*st.predicate)(*snapshot[i])) continue;
+            s2d[i] = items.size();
+            d2s.push_back(i);
+            items.push_back(snapshot[i]);
         }
-        auto reset = ListChange<T>::reset(st.items);
-        lk.unlock();
+        auto reset = ListChange<T>::reset(items);
+        {
+            std::unique_lock lock(st.m);
+            st.source_to_derived.swap(s2d);
+            st.derived_to_source.swap(d2s);
+            st.items.swap(items);
+        }
         sig.emit(std::move(reset));
     }
 

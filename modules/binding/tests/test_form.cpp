@@ -6,6 +6,40 @@
 
 using namespace aria::binding;
 
+// doctest's template registration computes line * 1000 + index inside its macro.
+// NOLINTNEXTLINE(readability-math-missing-parentheses)
+TEST_CASE_TEMPLATE("Form aggregates can recompute after a tracked field has been destroyed",
+                   Aggregate, FormGroup, FormValidator) {
+    FormField<std::string> surviving{"surviving", "initial"};
+    auto retired = std::make_unique<FormField<std::string>>("retired", "initial");
+    retired->required("required");
+    retired->value = "";
+    Aggregate form;
+    form.track(*retired);
+    form.track(surviving);
+    CHECK_FALSE(form.is_valid.get());
+
+    retired.reset(nullptr);
+    surviving.value = "updated";
+    CHECK(form.is_valid.get());
+    CHECK(form.is_dirty.get());
+}
+
+TEST_CASE("FormValidator drops pending and error state from a destroyed field on recompute") {
+    FormField<std::string> surviving{"surviving", "initial"};
+    auto retired = std::make_unique<FormField<std::string>>("retired", "");
+    retired->required("required");
+    retired->validator.begin_pending();
+    FormValidator form;
+    form.track(*retired);
+    form.track(surviving);
+    CHECK(form.is_pending.get());
+    retired.reset(nullptr);
+    surviving.value = "updated";
+    CHECK_FALSE(form.is_pending.get());
+    CHECK(form.first_error.get().empty());
+}
+
 TEST_CASE("FormValidator: tracked validator pending is observable") {
     FormField<std::string> field{"name", "alice"};
     FormValidator form;

@@ -33,7 +33,7 @@ struct ARIA_HTTP_API HttpAdapterConfig {
 
     /// Worker thread count for the HTTP server.
     /// 0 = max(2, hardware_concurrency()); explicit counts must be >= 2.
-    /// The pool is fixed; one worker is reserved from SSE admission.
+    /// The pool is fixed; SSE streams run on the event loop, not these workers.
     int worker_threads{0};
 
     /// Heartbeat interval (seconds) for SSE keep-alive pings.
@@ -41,12 +41,13 @@ struct ARIA_HTTP_API HttpAdapterConfig {
     int heartbeat_sec{25};
 
     /// Maximum number of concurrent SSE clients. Excess connections
-    /// receive 503 until existing ones drop. The effective limit is also
-    /// capped at worker_threads - 1. 0 removes only this additional limit.
+    /// receive 503 until existing ones drop. 0 selects the default limit of 64.
+    /// This cap is independent of worker_threads.
     int max_sse_clients{64};
 
     /// Maximum queued SSE bytes per client (must be positive), excluding the
-    /// single frame currently being written to its socket. Overflow closes
+    /// batch currently being written to its socket (at most another limit's
+    /// worth of bytes). Overflow closes
     /// that slow client; EventSource reconnects and receives a fresh snapshot.
     /// The complete initial snapshot must fit, otherwise /stream returns 503.
     std::size_t max_pending_sse_bytes{4 * 1024 * 1024};

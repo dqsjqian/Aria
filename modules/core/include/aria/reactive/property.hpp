@@ -187,7 +187,22 @@ public:
     /// Properties where a full equality check would be expensive.
     template<std::invocable<T&> Fn>
     void mutate(Fn&& fn) {
-        std::forward<Fn>(fn)(value_);
+        graph().assert_on_graph_thread();
+        try {
+            std::forward<Fn>(fn)(value_);
+        } catch (...) {
+            // In-place edits cannot be rolled back: even a failing callback
+            // may have changed the value. Invalidate its readers while
+            // preserving the original mutation error for the caller.
+            const auto mutation_error = std::current_exception();
+            try {
+                notify_changed();
+            } catch (...) {
+                ::aria::report_callback_failure("reactive.property.mutate.notify",
+                                                 std::current_exception());
+            }
+            std::rethrow_exception(mutation_error);
+        }
         notify_changed();
     }
 

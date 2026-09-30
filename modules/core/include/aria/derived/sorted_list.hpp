@@ -73,6 +73,8 @@
 #include "aria/subscription.hpp"
 #include "aria/detail/list_signal_mixin.hpp"
 #include "aria/detail/typed_signal.hpp"
+#include "aria/detail/list_replay.hpp"
+#include "aria/detail/list_update_queue.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -105,7 +107,7 @@ public:
           signal_(std::make_shared<Signal>()),
           state_(std::make_shared<SharedState>())
     {
-        state_->comparator = std::move(comparator);
+        state_->comparator = std::make_shared<Comparator>(std::move(comparator));
 
         // Build the initial mapping from the source snapshot. See the
         // FilteredList constructor for why we snapshot before
@@ -114,7 +116,8 @@ public:
         // callbacks on top of the known-good baseline.
         {
             std::unique_lock lk(state_->m);
-            rebuild_from_snapshot_unlocked_(*state_, source_->snapshot());
+            state_->source_items = source_->snapshot();
+            rebuild_from_snapshot_unlocked_(*state_, state_->source_items);
         }
 
         // Subscribe on the source. The lambda holds only weak_ptrs.
@@ -127,7 +130,7 @@ public:
                 auto sig = weak_signal.lock();
                 auto src = weak_source.lock();
                 if (!st || !sig || !src) return;
-                dispatch_source_change_(*st, *sig, ch);
+                st->updates.submit([st, sig, ch] { dispatch_source_change_(*st, *sig, ch); });
             });
     }
 
@@ -168,26 +171,29 @@ public:
     // computed, but the cost would dominate the re-sort itself and the
     // wider Qt/AppKit adapter ecosystem handles Reset cleanly anyway.
     void set_comparator(Comparator new_comparator) {
+        auto state = state_;
         auto signal = signal_;
-        ListChange<T> reset;
-        {
-            std::unique_lock lk(state_->m);
-            state_->comparator = std::move(new_comparator);
-            std::vector<std::shared_ptr<T>> source_items(state_->items.size());
-            for (std::size_t i = 0; i < state_->items.size(); ++i) {
-                source_items[state_->derived_to_source[i]] = state_->items[i];
-            }
-            rebuild_from_snapshot_unlocked_(*state_, std::move(source_items));
-            reset = ListChange<T>::reset(state_->items);
-        }
-        signal->emit(std::move(reset));
+        auto comparator = std::make_shared<Comparator>(std::move(new_comparator));
+        state->updates.submit([state, signal, comparator = std::move(comparator)] {
+            SharedState work;
+            work.comparator = comparator;
+            rebuild_from_snapshot_unlocked_(work, state->source_items);
+            auto reset = ListChange<T>::reset(work.items);
+            commit(*state, work);
+            state->scratch.reset();
+            signal->emit(std::move(reset));
+        });
     }
 
 private:
     // Per-instance state shared with the source-listener lambda.
     struct SharedState {
         mutable std::shared_mutex       m;
-        Comparator                      comparator;
+        std::shared_ptr<Comparator>     comparator;
+        detail::ListUpdateQueue updates;
+        std::vector<std::shared_ptr<T>> source_items;
+        bool needs_rebuild = false;
+        std::unique_ptr<SharedState> scratch;
         // length == source.size(); value = derived index of that source slot.
         std::vector<std::size_t>        source_to_derived;
         // length == derived.size(); value = source index.
@@ -212,7 +218,7 @@ private:
         for (std::size_t i = 0; i < snap.size(); ++i) idx[i] = i;
         std::stable_sort(idx.begin(), idx.end(),
             [&](std::size_t a, std::size_t b) {
-                return st.comparator(*snap[a], *snap[b]);
+                return (*st.comparator)(*snap[a], *snap[b]);
             });
 
         st.source_to_derived.assign(snap.size(), 0);
@@ -228,18 +234,75 @@ private:
         renumber_s2d_(st);
     }
 
-    // ── Translation: one source event -> zero or more derived events ──
+    struct EmissionBuffer {
+        std::vector<ListChange<T>> events;
+        void emit(ListChange<T> event) { events.push_back(std::move(event)); }
+        void emit_batch(std::vector<ListChange<T>> batch) {
+            events.reserve(events.size() + batch.size());
+            for (auto& event : batch) { events.push_back(std::move(event)); }
+        }
+    };
+
+    static void commit(SharedState& st, SharedState& work) {
+        std::unique_lock lock(st.m);
+        st.comparator.swap(work.comparator);
+        st.source_to_derived.swap(work.source_to_derived);
+        st.derived_to_source.swap(work.derived_to_source);
+        st.items.swap(work.items);
+        st.needs_rebuild = false;
+    }
+
+    // Comparators run against a private working layout. Readers and callback
+    // reentry always see the previous committed layout; all events publish
+    // only after the complete update succeeds. The normal sorted update
+    // already scans O(n) rows, so staging preserves its asymptotic bound.
     static void dispatch_source_change_(SharedState& st,
                                         Signal& sig,
                                         const ListChange<T>& ch) {
-        switch (ch.kind) {
-        case ListChangeKind::Insert:      handle_insert_(st, sig, ch);           return;
-        case ListChangeKind::Remove:      handle_remove_(st, sig, ch);           return;
-        case ListChangeKind::Replace:     handle_replace_(st, sig, ch);          return;
-        case ListChangeKind::ItemChanged: handle_item_changed_(st, sig, ch);     return;
-        case ListChangeKind::Move:        handle_move_(st, sig, ch);             return;
-        case ListChangeKind::Reset:       handle_reset_(st, sig, ch);           return;
+        detail::replay_list_change(st.source_items, ch);
+        const bool rebuild = st.needs_rebuild;
+        st.needs_rebuild = true;
+        if (!st.scratch) {
+            auto scratch = std::make_unique<SharedState>();
+            scratch->comparator = st.comparator;
+            scratch->source_to_derived = st.source_to_derived;
+            scratch->derived_to_source = st.derived_to_source;
+            scratch->items = st.items;
+            st.scratch = std::move(scratch);
         }
+        auto& work = *st.scratch;
+        EmissionBuffer buffered;
+        if (rebuild) {
+            rebuild_from_snapshot_unlocked_(work, st.source_items);
+            buffered.emit(ListChange<T>::reset(work.items));
+        } else {
+            switch (ch.kind) {
+            case ListChangeKind::Insert:      handle_insert_(work, buffered, ch);       break;
+            case ListChangeKind::Remove:      handle_remove_(work, buffered, ch);       break;
+            case ListChangeKind::Replace:     handle_replace_(work, buffered, ch);      break;
+            case ListChangeKind::ItemChanged: handle_item_changed_(work, buffered, ch); break;
+            case ListChangeKind::Move:        handle_move_(work, buffered, ch);         break;
+            case ListChangeKind::Reset:       handle_reset_(work, buffered, ch);        break;
+            }
+        }
+        commit(st, work);
+        // After the swap, work contains the previous public layout. Replay
+        // the successful delta into it for the next transaction. This reuses
+        // capacity and avoids copying every shared_ptr on every source edit.
+        // A cache-allocation failure may discard the workspace; the committed
+        // update and its notification remain valid.
+        try {
+            for (const auto& event : buffered.events) {
+                detail::replay_list_change(work.items, event);
+            }
+            work.source_to_derived = st.source_to_derived;
+            work.derived_to_source = st.derived_to_source;
+            work.comparator = st.comparator;
+        } catch (...) {
+            st.scratch.reset();
+        }
+        sig.emit_batch(std::move(buffered.events));
+        // Retired rows and comparator captures run outside the public lock.
     }
 
     /// Find the derived insertion position for a source item using a
@@ -267,7 +330,7 @@ private:
         const SharedState& st, const T& needle, std::size_t needle_src_i,
         std::optional<std::size_t> skip_derived_idx = std::nullopt)
     {
-        const auto& cmp   = st.comparator;
+        const auto& cmp   = *st.comparator;
         const auto& items = st.items;
         const auto& d2s   = st.derived_to_source;
 
@@ -303,7 +366,7 @@ private:
         return lo;
     }
 
-    static void handle_insert_(SharedState& st, Signal& sig,
+    static void handle_insert_(SharedState& st, EmissionBuffer& sig,
                                const ListChange<T>& ch) {
         std::unique_lock lk(st.m);
         const std::size_t src_idx = ch.index;
@@ -348,7 +411,7 @@ private:
         }
     }
 
-    static void handle_remove_(SharedState& st, Signal& sig,
+    static void handle_remove_(SharedState& st, EmissionBuffer& sig,
                                const ListChange<T>& ch) {
         std::unique_lock lk(st.m);
         const std::size_t src_idx = ch.index;
@@ -380,7 +443,7 @@ private:
         }
     }
 
-    static void handle_replace_(SharedState& st, Signal& sig,
+    static void handle_replace_(SharedState& st, EmissionBuffer& sig,
                                 const ListChange<T>& ch) {
         handle_slot_changed_(st, sig, ch,
                              /*new_ptr_from_src=*/true,
@@ -388,7 +451,7 @@ private:
                              /*cross_slot_use_move=*/false);
     }
 
-    static void handle_item_changed_(SharedState& st, Signal& sig,
+    static void handle_item_changed_(SharedState& st, EmissionBuffer& sig,
                                      const ListChange<T>& ch) {
         handle_slot_changed_(st, sig, ch,
                              /*new_ptr_from_src=*/false,
@@ -411,8 +474,8 @@ private:
                 // otherwise it need only be no greater. One comparison is
                 // enough in either case for a strict weak ordering.
                 if (st.derived_to_source[d] < st.derived_to_source[p]) {
-                    if (!st.comparator(*st.items[p], *st.items[d])) return false;
-                } else if (st.comparator(*st.items[d], *st.items[p])) {
+                    if (!(*st.comparator)(*st.items[p], *st.items[d])) return false;
+                } else if ((*st.comparator)(*st.items[d], *st.items[p])) {
                     return false;
                 }
             }
@@ -450,8 +513,8 @@ private:
         auto before = [&](std::size_t a, std::size_t b) {
             const auto& lhs = *st.items[st.source_to_derived[a]];
             const auto& rhs = *st.items[st.source_to_derived[b]];
-            if (st.comparator(lhs, rhs)) return true;
-            if (st.comparator(rhs, lhs)) return false;
+            if ((*st.comparator)(lhs, rhs)) return true;
+            if ((*st.comparator)(rhs, lhs)) return false;
             return a < b;
         };
         std::vector<ListChange<T>> events;
@@ -489,7 +552,7 @@ private:
     ///   * When the item moves to a different derived slot:
     ///       Replace    → Move(d_old, d_new) + Replace(d_new, item)
     ///       ItemChanged→ Move(d_old, d_new, item) + ItemChanged(d_new)
-    static void handle_slot_changed_(SharedState& st, Signal& sig,
+    static void handle_slot_changed_(SharedState& st, EmissionBuffer& sig,
                                      const ListChange<T>& ch,
                                      bool new_ptr_from_src,
                                      ListChangeKind same_slot_kind,
@@ -550,7 +613,7 @@ private:
     /// Source Move changes the stability tie-breaker. Distinct keys retain
     /// their positions; equivalent keys follow the new source order. The
     /// same repair also handles keys changed before their notifications.
-    static void handle_move_(SharedState& st, Signal& sig,
+    static void handle_move_(SharedState& st, EmissionBuffer& sig,
                              const ListChange<T>& ch) {
         std::unique_lock lk(st.m);
         const std::size_t from = ch.from_index;
@@ -585,7 +648,7 @@ private:
         }
     }
 
-    static void handle_reset_(SharedState& st, Signal& sig,
+    static void handle_reset_(SharedState& st, EmissionBuffer& sig,
                               const ListChange<T>& ch) {
         ListChange<T> reset;
         {

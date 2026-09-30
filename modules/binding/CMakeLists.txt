@@ -16,7 +16,7 @@ target_include_directories(aria_binding PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-target_compile_features(aria_binding PUBLIC cxx_std_20)
+target_compile_features(aria_binding PUBLIC cxx_std_23)
 
 target_link_libraries(aria_binding
     PUBLIC aria::core aria::async aria::runtime

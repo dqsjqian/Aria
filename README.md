@@ -274,8 +274,8 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
 
 - **CMake** >= 3.20
 - **完整支持 C++23 的编译器**：
-  - GCC >= 13（Windows 下可走 MSYS2 UCRT64 工具链）
-  - Clang >= 18（macOS 上 AppleClang 21+ 即可）
+  - GCC >= 14（Windows 下可走 MSYS2 UCRT64 工具链）
+  - Clang >= 19（macOS 上 AppleClang 21+ 即可）
   - **MSVC v143 / Visual Studio 2022**（Windows，详见下文）
 - *(可选)* **Qt6** >= 6.4（用于 Qt6 适配器）
 

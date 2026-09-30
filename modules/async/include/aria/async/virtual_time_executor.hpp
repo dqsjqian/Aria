@@ -41,6 +41,7 @@
 #include <functional>
 #include <mutex>
 #include <queue>
+#include <stdexcept>
 #include <vector>
 
 namespace aria::async {
@@ -51,6 +52,20 @@ public:
     using duration = std::chrono::milliseconds;
 
     VirtualTimeExecutor() = default;
+    VirtualTimeExecutor(const VirtualTimeExecutor&) = delete;
+    VirtualTimeExecutor& operator=(const VirtualTimeExecutor&) = delete;
+    VirtualTimeExecutor(VirtualTimeExecutor&&) = delete;
+    VirtualTimeExecutor& operator=(VirtualTimeExecutor&&) = delete;
+
+    ~VirtualTimeExecutor() override {
+        decltype(queue_) retired;
+        {
+            std::scoped_lock lk(m_);
+            closed_ = true;
+            std::swap(queue_, retired);
+        }
+        // User captures can reenter post while the closed state is still live.
+    }
 
     /// Capabilities: Post (immediate), Delay (deadline-keyed), GraphSafe
     /// + WorkerSafe (single-threaded virtual clock — no thread races),
@@ -81,8 +96,10 @@ public:
     /// Schedule to run after `delay` of *virtual* time.
     /// (Also implements IDelayedScheduler.)
     void post_after(duration delay, std::function<void()> fn) override {
+        if (!fn) { return; }
         std::lock_guard lk(m_);
-        queue_.push(Entry{now_ + delay, ++seq_, std::move(fn)});
+        if (closed_) { return; }
+        queue_.push(Entry{add_delay(now_, delay), ++seq_, std::move(fn)});
     }
 
     /// Current virtual time (since construction).
@@ -100,24 +117,31 @@ public:
     /// Advance virtual time by `delta`, firing tasks in deadline order.
     /// Returns the number of tasks fired.
     std::size_t advance_by(duration delta) {
-        return advance_to(now() + delta);
+        if (delta < duration::zero()) {
+            throw std::invalid_argument("VirtualTimeExecutor cannot move time backwards");
+        }
+        return advance_to(add_delay(now(), delta));
     }
 
     /// Advance to an absolute virtual time `target` (must be >= now()).
     std::size_t advance_to(duration target) {
+        if (target < now()) {
+            throw std::invalid_argument("VirtualTimeExecutor cannot move time backwards");
+        }
         std::size_t fired = 0;
         while (true) {
             std::function<void()> fn;
             {
                 std::lock_guard lk(m_);
                 if (queue_.empty() || queue_.top().deadline > target) {
-                    now_ = target;  // catch up the clock
+                    // A callback may itself advance time beyond our target.
+                    if (target > now_) { now_ = target; }
                     break;
                 }
-                auto e = queue_.top();
+                const auto deadline = queue_.top().deadline;
+                fn = std::move(queue_.top().fn);
                 queue_.pop();
-                now_ = e.deadline;
-                fn = std::move(e.fn);
+                if (deadline > now_) { now_ = deadline; }
             }
             // Run outside lock — task may schedule new tasks.
             try {
@@ -142,10 +166,10 @@ public:
             {
                 std::lock_guard lk(m_);
                 if (queue_.empty()) break;
-                auto e = queue_.top();
+                const auto deadline = queue_.top().deadline;
+                fn = std::move(queue_.top().fn);
                 queue_.pop();
-                if (e.deadline > now_) now_ = e.deadline;
-                fn = std::move(e.fn);
+                if (deadline > now_) { now_ = deadline; }
             }
             try {
                 fn();
@@ -170,10 +194,15 @@ public:
     }
 
 private:
+    static duration add_delay(duration now, duration delay) noexcept {
+        if (delay <= duration::zero()) { return now; }
+        return now > duration::max() - delay ? duration::max() : now + delay;
+    }
+
     struct Entry {
         duration       deadline;
         std::uint64_t  seq;   // tie-breaker so insertion order is preserved
-        std::function<void()> fn;
+        mutable std::function<void()> fn;
     };
     struct Cmp {
         bool operator()(const Entry& a, const Entry& b) const noexcept {
@@ -186,6 +215,7 @@ private:
     duration           now_{0};
     std::uint64_t      seq_{0};
     std::priority_queue<Entry, std::vector<Entry>, Cmp> queue_;
+    bool closed_ = false;
 };
 
 /// Awaiter that resumes the coroutine after `delay` of virtual time.

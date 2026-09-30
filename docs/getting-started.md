@@ -2,7 +2,7 @@
 
 ## Build
 
-Aria supports C++23; C++20 remains the default and minimum. The default build:
+Aria 3.0 requires C++23 for every module and consumer. The default build:
 
 ```bash
 cmake -B build/flavors/release -DCMAKE_BUILD_TYPE=Release
@@ -18,9 +18,10 @@ cmake --build build/flavors/cxx23 -j
 ctest --test-dir build/flavors/cxx23 --no-tests=error --output-on-failure
 ```
 
-The repository includes doctest, so the normal test build uses the bundled
-header. If that vendored header is absent, CMake fetches the fallback test
-dependency through `cmake/CPM.cmake`.
+CMake downloads the SHA256-pinned doctest header and other dependencies
+through `cmake/ariaFetchPinned.cmake`. Downloads are cached across build
+flavors. For offline builds, populate the cache first or use the documented
+`ARIA_PIN_<NAME>_SOURCE_DIR` archive overrides.
 
 ## Use Aria in an application
 
@@ -37,7 +38,7 @@ create this `CMakeLists.txt`:
 ```cmake
 cmake_minimum_required(VERSION 3.20)
 project(greeting LANGUAGES CXX)
-find_package(aria 2.0 CONFIG REQUIRED COMPONENTS core)
+find_package(aria 3.0 CONFIG REQUIRED COMPONENTS core)
 add_executable(greeting main.cpp)
 target_link_libraries(greeting PRIVATE aria::core)
 ```
@@ -49,10 +50,12 @@ cmake -S . -B build -DCMAKE_PREFIX_PATH=/absolute/path/to/Aria/aria-install
 cmake --build build
 ```
 
-The imported target supplies the C++20 minimum. You can add
-`-DCMAKE_CXX_STANDARD=23` to the application's configure command to select
-C++23. The `aria/aria.hpp` umbrella contains the core API; async and platform
+The imported target supplies the C++23 minimum automatically. The `aria/aria.hpp` umbrella contains the core API; async and platform
 adapters have their own headers and CMake targets.
+
+Request the components you use: `COMPONENTS core` does not require the Qt or
+HTTP dependencies even when those adapters are present in the installed SDK.
+Add `qt6` or `http` to the component list before linking those adapter targets.
 
 ## Hello, Property
 

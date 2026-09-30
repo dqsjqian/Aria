@@ -230,6 +230,20 @@ Derived lists (FilteredList / SortedList / MappedList) still honour
 **D-1 ... D-13** on their own emit stream, but their events do NOT
 necessarily map 1:1 to upstream events.
 
+### D-29: user projection callbacks and recovery
+
+MappedList mappers, FilteredList predicates and SortedList comparators run
+outside the view's read/write lock, so they may read the view. Nested source
+edits and policy replacements follow the current update instead of interleaving
+with its partially constructed projection.
+
+When a projection callback throws during a source update, the ABI callback
+boundary reports the failure and keeps the previous projection valid. The
+view retains the source events it has consumed. A later successful event (or
+policy replacement for FilteredList/SortedList) rebuilds from that mirror and
+emits an owning Reset snapshot before incremental delivery resumes. Callback
+side effects on application objects cannot be rolled back.
+
 ### D-30: FilteredList
 
 - Upstream `Insert(idx, x)`: emits `Insert(filtered_idx, x)` if

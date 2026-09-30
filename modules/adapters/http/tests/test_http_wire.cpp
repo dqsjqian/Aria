@@ -128,6 +128,41 @@ TEST_CASE("HTTP replacement retires bindings, callbacks, commands and shadow sta
     CHECK(http->find_view("v") == nullptr);
 }
 
+TEST_CASE("HTTP mutations reject browser simple POST media types before invoking callbacks") {
+    HttpAdapter http(config());
+    auto& text = http.register_view("text", "text");
+    auto& button = http.register_view("button", "click");
+    int clicks = 0, commands = 0;
+    auto click = http.on_click(button, [&] { ++clicks; });
+    http.register_command("text", "run", [&](std::string_view) {
+        ++commands;
+        return "{}";
+    });
+    REQUIRE(http.start());
+    test_http::Client client(http.actual_port());
+    REQUIRE(client.connected());
+    for (const auto* type : {"", "text/plain", "application/x-www-form-urlencoded",
+                            "multipart/form-data; boundary=abc", "application/jsonx",
+                            "application/json, text/plain"}) {
+        CHECK(client.request("POST", "/aria/state",
+            R"({"view":"text","field":"text","value":"untrusted"})", type).status == 415);
+        CHECK(client.request("POST", "/aria/click", R"({"view":"button"})", type).status == 415);
+        CHECK(client.request("POST", "/aria/command",
+            R"({"view":"text","command":"run"})", type).status == 415);
+    }
+    CHECK(http.get_text(text).empty());
+    CHECK(clicks == 0);
+    CHECK(commands == 0);
+    CHECK(client.request("POST", "/aria/click").status == 415);
+    CHECK(client.request("POST", "/aria/click", R"({"view":"button"})",
+        "application/json\r\nContent-Type: text/plain").status == 415);
+    CHECK(clicks == 0);
+    CHECK(client.request("POST", "/aria/state",
+        R"({"view":"text","field":"text","value":"trusted"})",
+        "Application/JSON; charset=utf-8").status == 200);
+    CHECK(http.get_text(text) == "trusted");
+}
+
 TEST_CASE("SSE initial snapshot includes numeric precision, visibility and command enablement") {
     HttpAdapter http(config());
     auto& big = http.register_view("big", "int64");
@@ -258,9 +293,14 @@ TEST_CASE("Static mount serves files, defaults to index.html and refuses travers
                       ("aria-http-static-" +
                        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(root / "assets");
+    const auto outside = std::filesystem::path(root.string() + "-outside.txt");
     {
         std::ofstream(root / "index.html") << "<html>home</html>";
+        std::ofstream(root / "aria_client.js") << "export class AriaClient {}";
         std::ofstream(root / "assets" / "app.js") << "console.log(1)";
+        std::ofstream(root / "assets" / "a+b.txt") << "literal plus";
+        std::ofstream(root / "assets" / "a b.txt") << "literal space";
+        std::ofstream(outside) << "must remain outside the static root";
     }
     auto cfg = config();
     cfg.static_root = root.string();
@@ -271,9 +311,21 @@ TEST_CASE("Static mount serves files, defaults to index.html and refuses travers
     auto home = c.get("/index.html");
     CHECK(home.status == 200);
     CHECK(home.body == "<html>home</html>");
+    auto sdk = c.get("/aria_client.js");
+    CHECK(sdk.status == 200);
+    CHECK(sdk.body == "export class AriaClient {}");
     auto script = c.get("/assets/app.js");
     CHECK(script.status == 200);
     CHECK(script.body == "console.log(1)");
+    CHECK(c.get("/assets/a+b.txt").body == "literal plus");
+    CHECK(c.get("/assets/a%2Bb.txt").body == "literal plus");
+    CHECK(c.get("/assets/a%20b.txt").body == "literal space");
+    CHECK(c.get("/assets/app.js%00.txt").status == 404);
+    CHECK(c.get("/../" + outside.filename().string()).status == 404);
+    CHECK(c.get("/%2e%2e/" + outside.filename().string()).status == 404);
+    std::error_code symlink_error;
+    std::filesystem::create_symlink(outside, root / "assets" / "escape.txt", symlink_error);
+    if (!symlink_error) CHECK(c.get("/assets/escape.txt").status == 404);
     auto index_default = c.get("/");
     CHECK(index_default.status == 200);
     CHECK(index_default.body == "<html>home</html>");
@@ -284,6 +336,7 @@ TEST_CASE("Static mount serves files, defaults to index.html and refuses travers
     CHECK(health.status == 200);
     http.stop();
     std::filesystem::remove_all(root);
+    std::filesystem::remove(outside);
 }
 
 TEST_CASE("HTTP callback captures can reenter registry during subscription and command teardown") {

@@ -56,7 +56,7 @@ target_include_directories(aria_adapters_uikit PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
-target_compile_features(aria_adapters_uikit PUBLIC cxx_std_20)
+target_compile_features(aria_adapters_uikit PUBLIC cxx_std_23)
 target_link_libraries(aria_adapters_uikit
     PUBLIC  aria::core aria::binding
     PRIVATE aria::abi

@@ -118,7 +118,7 @@ public:
              class Decayed = std::decay_t<Fn>,
              class = std::enable_if_t<
                  !std::is_same_v<Decayed, inplace_function> &&
-                 std::is_invocable_r_v<R, Decayed&, Args...> &&
+                 detail::safely_invocable_r_v<R, Decayed&, Args...> &&
                  std::is_copy_constructible_v<Decayed> &&
                  std::is_move_constructible_v<Decayed>>>
     inplace_function(Fn&& fn) {
@@ -158,7 +158,7 @@ public:
              class Decayed = std::decay_t<Fn>,
              class = std::enable_if_t<
                  !std::is_same_v<Decayed, inplace_function> &&
-                 std::is_invocable_r_v<R, Decayed&, Args...> &&
+                 detail::safely_invocable_r_v<R, Decayed&, Args...> &&
                  std::is_copy_constructible_v<Decayed> &&
                  std::is_move_constructible_v<Decayed>>>
     inplace_function& operator=(Fn&& fn) {
@@ -288,7 +288,9 @@ private:
         return static_cast<const void*>(&buffer_);
     }
 
-    alignas(Alignment) std::byte buffer_[Capacity]{};
+    // operator() is const like std::function, but mutable targets still own
+    // mutable state. The physical storage must permit those writes as well.
+    alignas(Alignment) mutable std::byte buffer_[Capacity]{};
     Invoker   invoker_ = nullptr;
     ManagerFn manager_ = nullptr;
 };

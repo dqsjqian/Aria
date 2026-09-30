@@ -1,6 +1,11 @@
 # C++23 evaluation
 
-Assessment date: 2026-09-13.
+Assessment date: 2026-09-13 (historical, for Aria 2.0).
+
+> Superseded by Aria 3.0: C++23 is now the default and minimum for all
+> modules and consumers. The probes and decisions below describe the 2.0
+> assessment only; see the [3.0 migration guide](migration-3.0.md) for current
+> integration requirements.
 
 **C++23 mode is supported; C++20 remains the default and minimum.**
 Full C++23 framework tests have passed locally on macOS and in Ubuntu Clang

@@ -246,3 +246,18 @@ TEST_CASE("function_ref: exact signatures resolve overloaded free functions") {
     view = fr_free::overloaded;
     CHECK(view(4) == 5);
 }
+
+TEST_CASE("function_ref: reference return cannot bind to a temporary") {
+    using Reference = function_ref<const int&()>;
+    auto value = [] { return 42; };
+    auto conversion = [] -> const short& { static const short n = 42; return n; };
+    static_assert(!std::is_constructible_v<Reference, decltype(value)&>);
+    static_assert(!std::is_assignable_v<Reference&, decltype(value)&>);
+    static_assert(!std::is_constructible_v<Reference, decltype(conversion)&>);
+    static_assert(!std::is_constructible_v<Reference, int(*)()>);
+    static_assert(!std::is_assignable_v<Reference&, int(*)()>);
+    int n = 42;
+    auto target = [&] -> int& { return n; };
+    Reference reference = target;
+    CHECK(&reference() == &n);
+}

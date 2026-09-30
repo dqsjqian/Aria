@@ -14,10 +14,17 @@ Use the release benchmarks to measure a workload on its actual target.
 | ID | Contract |
 |---|---|
 | PERF-1 | State value, callback, allocation and propagation costs separately. |
-| PERF-2 | A derived list handles non-Reset source events with incremental events. Reset input and explicit whole-policy replacement may rebuild the view. Incremental delivery does not imply constant-time computation. |
+| PERF-2 | A derived list handles successful non-Reset source events with incremental events. Reset input, explicit whole-policy replacement and recovery after a failed user projection callback may rebuild the view. Incremental delivery does not imply constant-time computation. |
 | PERF-3 | Disabled tracing takes an atomic presence check; construct expensive diagnostic payloads only after checking `has_trace_sink()`. |
 | PERF-4 | Equal property writes stop after value comparison and do not propagate. |
 | PERF-5 | Benchmark thresholds sample specific operations; they do not establish bounds for every API or every host. Investigate failures before changing a threshold. |
+
+The nightly percentile gate measures distributions of **batch-average time per
+operation**, not individual-operation tail latency. For example, AsyncCommand
+uses 64 samples of 50 executions each; its nearest-rank P99 is the largest of
+those 64 sample averages. Run it on an otherwise idle host: competing builds
+affect scheduling measurements. `check-bench.sh --runs N` reports the lowest
+P99 across N runs, so retain individual runs when investigating variability.
 
 ## Reactive graph
 
@@ -90,6 +97,13 @@ search on that temporarily unordered sequence would be incorrect. A comparator
 must be a stable strict weak ordering during each operation. Mutating an item
 concurrently with comparison is outside the collection's synchronization
 contract.
+
+Sorted updates keep an O(N) reusable working layout and commit only successful
+comparison results. This preserves the old projection if a comparator throws;
+the layouts are synchronized incrementally after ordinary events. This adds
+memory and bookkeeping without changing the existing O(N) ordinary-update
+bound. Callback failure recovery may rebuild and emit Reset
+as specified by D-29 in the [list diff contract](list-diff-contract.md).
 
 ## Async, binding and diagnostics
 

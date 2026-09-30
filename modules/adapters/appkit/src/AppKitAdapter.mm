@@ -239,16 +239,19 @@ struct AppKitAdapter::Impl {
     };
 
     std::mutex                                                                mu;
+    bool active = true;
     std::unordered_map<Key, std::unique_ptr<Bridge>, KeyHash>                 bridges;
-    // Per-view destroy subscription so we can drop bridges when the
-    // C++ view wrapper goes away. Keyed on the same opaque void*.
-    std::unordered_map<const void*, std::vector<::aria::Subscription>>        destroy_subs;
+    // Each bridge owns one view-destroy listener, retired with that bridge.
+    // Releasing cached views must not accumulate dead listener records.
+    std::unordered_map<Key, ::aria::Subscription, KeyHash>                    destroy_subs;
     // Handle → IView cache backing `view_for`. One AppKitView per NSView, so
     // repeated `view_for(control)` calls share a single per-view
     // subscription bucket inside BindingEngine.
     std::unordered_map<const void*, std::unique_ptr<AppKitView>>              views;
 
-    ~Impl() {
+    ~Impl() { close(); }
+
+    void close() noexcept {
         // The cached AppKitViews are moved out and destroyed AFTER the lock
         // is released: ~AppKitView fires IView::on_destroy, whose handlers
         // include our own `bridges.erase` lambda (which relocks `mu`) plus
@@ -258,6 +261,8 @@ struct AppKitAdapter::Impl {
         decltype(views) doomed;
         {
             std::lock_guard lk{mu};
+            if (!active) return;
+            active = false;
             doomed.swap(views);
         }
         doomed.clear();
@@ -284,28 +289,30 @@ struct AppKitAdapter::Impl {
     }
 
     template<class WireFn>
-    Bridge& bridge_for(::aria::binding::IView& view, NSView* obj, char kind, WireFn&& wire) {
+    Bridge* bridge_for(::aria::binding::IView& view, NSView* obj, char kind, WireFn&& wire) {
         const void* key_ptr = (__bridge const void*)obj;
         std::lock_guard lk{mu};
+        if (!active) return nullptr;
         auto it = bridges.find(Key{key_ptr, kind});
-        if (it != bridges.end()) return *it->second;
+        if (it != bridges.end()) return it->second.get();
 
         auto br = std::make_unique<Bridge>();
         Bridge* raw = br.get();
         wire(*raw);
         bridges.emplace(Key{key_ptr, kind}, std::move(br));
 
-        auto& subs = destroy_subs[key_ptr];
-        subs.push_back(view.on_destroy([this, k = Key{key_ptr, kind}]() {
+        destroy_subs.emplace(Key{key_ptr, kind}, view.on_destroy([this, k = Key{key_ptr, kind}]() {
             decltype(bridges)::node_type retired;
+            decltype(destroy_subs)::node_type retired_listener;
             {
                 std::lock_guard lk2{mu};
                 retired = bridges.extract(k);
+                retired_listener = destroy_subs.extract(k);
             }
         }));
-        return *raw;
+        return raw;
     }
-    Bridge& action_bridge_for(::aria::binding::IView& view, NSControl* control) {
+    Bridge* action_bridge_for(::aria::binding::IView& view, NSControl* control) {
         return bridge_for(view, control, 'a', [control](Bridge& bridge) {
             NSControl* __weak weak_control = control;
             AriaClickTarget* target = [[AriaClickTarget alloc]
@@ -328,7 +335,7 @@ struct AppKitAdapter::Impl {
 };
 
 AppKitAdapter::AppKitAdapter() : p_(std::make_unique<Impl>()) {}
-AppKitAdapter::~AppKitAdapter() = default;
+AppKitAdapter::~AppKitAdapter() { p_->close(); }
 
 // ── view_for / release_view ────────────────────────────────────────────
 
@@ -338,6 +345,7 @@ AppKitView& AppKitAdapter::view_for(NSView* view) {
 
     const void* key = (__bridge const void*)view;
     std::lock_guard lk{p_->mu};
+    if (!p_->active) throw std::logic_error("AppKitAdapter::view_for: adapter is closing");
     auto it = p_->views.find(key);
     if (it != p_->views.end()) return *it->second;
 
@@ -397,7 +405,7 @@ std::string AppKitAdapter::get_text(::aria::binding::IView& v) {
     if (![o isKindOfClass:[NSTextField class]]) { warn_unsupported_("on_text_changed", o); return {}; }
     NSTextField* tf = (NSTextField*)o;
 
-    auto& br = p_->bridge_for(v, o, 't', [tf](Bridge& bridge) {
+    auto* br = p_->bridge_for(v, o, 't', [tf](Bridge& bridge) {
         AriaTextDelegate* d = [[AriaTextDelegate alloc]
             initWithCallback:[weak = std::weak_ptr{bridge.sig}](std::string_view sv) {
                 StringArgs a{sv};
@@ -406,10 +414,11 @@ std::string AppKitAdapter::get_text(::aria::binding::IView& v) {
         bridge.target = d;
         tf.delegate   = d;
     });
-    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
+    if (!br) return {};
+    auto id = br->sig->connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<StringArgs*>(args)->sv);
     }));
-    auto weak = br.sig->weak_handle();
+    auto weak = br->sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -441,11 +450,12 @@ bool AppKitAdapter::get_bool(::aria::binding::IView& v) {
     if (![o isKindOfClass:[NSButton class]]) { warn_unsupported_("on_bool_changed", o); return {}; }
     NSButton* btn = (NSButton*)o;
 
-    auto& br = p_->action_bridge_for(v, btn);
-    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
+    auto* br = p_->action_bridge_for(v, btn);
+    if (!br) return {};
+    auto id = br->sig->connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<ControlArgs*>(args)->flag);
     }));
-    auto weak = br.sig->weak_handle();
+    auto weak = br->sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -481,11 +491,12 @@ int AppKitAdapter::get_int(::aria::binding::IView& v) {
     if (![o isKindOfClass:[NSControl class]]) { warn_unsupported_("on_int_changed", o); return {}; }
     NSControl* ctl = (NSControl*)o;
 
-    auto& br = p_->action_bridge_for(v, ctl);
-    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
+    auto* br = p_->action_bridge_for(v, ctl);
+    if (!br) return {};
+    auto id = br->sig->connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<ControlArgs*>(args)->integer);
     }));
-    auto weak = br.sig->weak_handle();
+    auto weak = br->sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -558,11 +569,12 @@ double AppKitAdapter::get_double(::aria::binding::IView& v) {
     if (![o isKindOfClass:[NSControl class]]) { warn_unsupported_("on_double_changed", o); return {}; }
     NSControl* ctl = (NSControl*)o;
 
-    auto& br = p_->action_bridge_for(v, ctl);
-    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* args) {
+    auto* br = p_->action_bridge_for(v, ctl);
+    if (!br) return {};
+    auto id = br->sig->connect(make_slot([cb = std::move(cb)](void* args) {
         cb(static_cast<ControlArgs*>(args)->number);
     }));
-    auto weak = br.sig->weak_handle();
+    auto weak = br->sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};
@@ -592,11 +604,12 @@ void AppKitAdapter::set_enabled(::aria::binding::IView& v, bool enabled) {
     if (![o isKindOfClass:[NSButton class]]) { warn_unsupported_("on_click", o); return {}; }
     NSButton* btn = (NSButton*)o;
 
-    auto& br = p_->action_bridge_for(v, btn);
-    auto id = br.sig->connect(make_slot([cb = std::move(cb)](void* /*args*/) {
+    auto* br = p_->action_bridge_for(v, btn);
+    if (!br) return {};
+    auto id = br->sig->connect(make_slot([cb = std::move(cb)](void* /*args*/) {
         cb();
     }));
-    auto weak = br.sig->weak_handle();
+    auto weak = br->sig->weak_handle();
     return ::aria::Subscription{[weak, id]() noexcept {
         ::aria::abi::SignalErased::disconnect_via_weak(weak, id);
     }};

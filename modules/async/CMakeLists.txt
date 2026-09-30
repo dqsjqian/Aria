@@ -6,7 +6,7 @@ target_include_directories(aria_async INTERFACE
     $<INSTALL_INTERFACE:include>
 )
 
-target_compile_features(aria_async INTERFACE cxx_std_20)
+target_compile_features(aria_async INTERFACE cxx_std_23)
 target_link_libraries(aria_async INTERFACE aria::core)
 
 if(ARIA_BUILD_TESTS)

@@ -461,3 +461,59 @@ TEST_CASE("AsyncResource: destruction drops already queued UI write-back") {
     ui.drain();
     CHECK(writes == 0);
 }
+
+TEST_CASE("AsyncResource: loading observers may destroy the resource during publication") {
+    InlineExecutor ui;
+    InlineExecutor worker;
+    FetchCounter counter;
+    auto resource = std::make_unique<AsyncResource<std::string, int>>(ui, worker,
+        [&](int id) { return fetch_user_impl(id, counter); });
+    auto subscription = resource->is_loading.on_changed([&](bool loading) {
+        if (loading) { resource.reset(); }
+    });
+    CHECK_NOTHROW(resource->fetch(1));
+    CHECK_FALSE(resource);
+    CHECK(counter.hits == 0);
+}
+
+// Doctest macro internals introduce the flagged branches/type traits.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("AsyncResource: cancel and clear tolerate destruction from loading observers") {
+    MainThreadExecutor ui;
+    InlineExecutor worker;
+    FetchCounter counter;
+    auto resource = std::make_unique<AsyncResource<std::string, int>>(ui, worker,
+        [&](int id) { return fetch_user_impl(id, counter); });
+    resource->fetch(1);
+    auto subscription = resource->is_loading.on_changed([&](bool loading) {
+        if (!loading) { resource.reset(); }
+    });
+    SUBCASE("cancel") { CHECK_NOTHROW(resource->cancel()); }
+    SUBCASE("clear") { CHECK_NOTHROW(resource->clear()); }
+    CHECK_FALSE(resource);
+    CHECK_NOTHROW(ui.drain());
+    CHECK(counter.hits == 0);
+}
+
+// Doctest macro internals introduce the flagged branches/type traits.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("AsyncResource: a result observer can start a new fetch without losing loading") {
+    ManualExecutor ui;
+    InlineExecutor worker;
+    FetchCounter counter;
+    AsyncResource<std::string, int> resource{ui, worker,
+        [&](int id) { return fetch_user_impl(id, counter); }};
+    auto subscription = resource.data.on_changed([&](const std::optional<std::string>& data) {
+        if (data == std::optional<std::string>{"user#1"}) { resource.fetch(2); }
+    });
+    resource.fetch(1);
+    REQUIRE(ui.drain_one()); // Fetch 1 reaches worker and queues write-back.
+    REQUIRE(ui.drain_one()); // Its observer starts fetch 2.
+    CHECK(resource.is_loading.get());
+    CHECK(resource.loadable.get().in_flight());
+    resource.fetch(2); // The new operation must still be marked in-flight.
+    ui.drain_all();
+    CHECK(counter.hits == 2);
+    CHECK(resource.data.get() == std::optional<std::string>{"user#2"});
+    CHECK_FALSE(resource.is_loading.get());
+}

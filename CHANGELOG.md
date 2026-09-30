@@ -14,6 +14,26 @@ All notable changes to **aria** are documented here.
 
 ---
 
+## Unreleased
+
+- Harden derived-list reentrancy and projection failure recovery, invalidate
+  reactive dependents after a partially failing mutation, and reject callable
+  wrappers that would return dangling references. Sorted views retain an
+  additional O(n) working layout for safe comparison/commit.
+- Repair empty Task awaits, Channel exception paths, cancellation callbacks,
+  executor shutdown/thread ownership, virtual-clock overflow and AsyncResource
+  observer reentrancy. `when_all` now accepts void children using monostate slots.
+- Preserve updates made during initial binding, guard destroyed form fields,
+  reject ViewModel ownership cycles and lifecycle recursion, and close native
+  adapter registration before teardown callbacks run.
+- Fix HTTP SSE suspension/admission deadlocks and worker-result publication
+  races. Require JSON Content-Type on state/click/command POST requests and
+  permit static SDK assets such as `/aria_client.js` next to the API prefix.
+- Propagate C++23 to installed consumers, isolate optional adapter exports,
+  repair static HTTP/TLS SDK dependencies, and verify cached dependency bytes
+  under a shared configure lock. Add offline cache and relocated SDK tests,
+  plus a static TLS CI job; update stale integration instructions.
+
 ## 3.0.0 — 2026-09-25
 
 Aria 3.0 moves the framework to C++23 and rebuilds the HTTP adapter on

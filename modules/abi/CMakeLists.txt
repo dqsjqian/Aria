@@ -20,7 +20,7 @@ target_include_directories(aria_abi PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
-target_compile_features(aria_abi PUBLIC cxx_std_20)
+target_compile_features(aria_abi PUBLIC cxx_std_23)
 
 target_compile_definitions(aria_abi PRIVATE ARIA_ABI_BUILD)
 if(NOT ARIA_BUILD_SHARED)

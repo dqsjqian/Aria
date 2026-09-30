@@ -12,8 +12,8 @@ lower.
 
 | Toolchain | Minimum |
 |---|---|
-| GCC | 13 |
-| Clang / AppleClang | 18 / 21 |
+| GCC | 14 |
+| Clang / AppleClang | 19 / 21 |
 | MSVC | Visual Studio 2022 (v143) |
 
 Action: bump your project's `CMAKE_CXX_STANDARD` to 23 (or remove the
@@ -65,7 +65,7 @@ verified against SHA256 hashes pinned in the CMake files
 
 | Dependency | Version | Source |
 |---|---|---|
-| Mira | 0.1.0 | GitHub release asset |
+| Mira | 0.4.0 | GitHub release asset |
 | nlohmann/json | 3.12.0 | `json.tar.xz` release asset |
 | doctest | 2.5.3 | raw header at tag |
 | OpenSSL (TLS builds) | 4.0.2 | GitHub release asset |

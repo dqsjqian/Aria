@@ -11,7 +11,7 @@
 
 PROJECT_NAME           = "Aria"
 PROJECT_NUMBER         = "@PROJECT_VERSION@"
-PROJECT_BRIEF          = "C++23 MVVM framework (C++20 minimum) — reactive, coroutine-first, ABI-layered"
+PROJECT_BRIEF          = "C++23 MVVM framework — reactive, coroutine-first, ABI-layered"
 OUTPUT_DIRECTORY       = @ARIA_DOCS_OUTPUT_DIR@
 
 # ── Inputs ───────────────────────────────────────────────────────────────

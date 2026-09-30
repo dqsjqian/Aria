@@ -20,7 +20,9 @@ make arbitrary compiler or standard-library combinations compatible. Static
 builds remain available; independently linked static copies in plugins do
 not form a shared graph.
 
-C++23 is supported; C++20 remains the default and minimum. Select C++23
+For the 2.0 release, C++23 was supported and C++20 remained the default
+and minimum. Aria 3.0 requires C++23; see the [3.0 migration guide](migration-3.0.md).
+For a 2.0 checkout, select C++23
 with `-DCMAKE_CXX_STANDARD=23`; see the
 [evaluation](cpp23-evaluation.md). The unsupported WASM build option has
 been removed from the implemented platform surface.

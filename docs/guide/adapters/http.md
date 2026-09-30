@@ -96,6 +96,11 @@ decimal strings. The SDK accepts safe Number, bigint or decimal string for
 integers, bool-as-number, negative unsigned values and out-of-range numbers
 receive 400. Bad JSON/schema or a field that mismatches its view also receive
 400; unknown views/commands receive 404. Errors carry `{ "error": "…" }`.
+Mutation endpoints require a single `Content-Type: application/json` header
+(media-type casing and parameters such as `charset=utf-8` are accepted).
+Missing, ambiguous or other media types receive 415 before any state changes
+or callbacks. This blocks cross-origin simple form/text POSTs when CORS is off;
+it does not replace application authentication.
 
 ## Browser SDK
 
@@ -169,7 +174,7 @@ requests on the pool but never stalls the network loop.
 | `api_prefix` | `/aria` | REST/SSE path prefix |
 | `static_root` | empty | Optional static-file directory |
 | `worker_threads` | `0` | Fixed pool; 0 detects CPU count, minimum 2; explicit counts must be ≥2 |
-| `max_sse_clients` | `64` | Also capped at workers minus one; 0 removes only this extra cap |
+| `max_sse_clients` | `64` | Maximum concurrent streams, independent of workers; 0 selects the default of 64 |
 | `max_pending_sse_bytes` | `4194304` | Positive per-client queued-byte limit; an overflowing stream closes and can reconnect for a fresh snapshot |
 | `max_pending_notifications` | `1024` | Positive limit on queued state/click notification batches; excess updates receive 503 |
 | `heartbeat_sec` | `25` | Positive interval in seconds |
@@ -178,10 +183,10 @@ requests on the pool but never stalls the network loop.
 | `tls_ca_file` | empty | Optional client-certificate verification CA |
 | `tls_min_version` | `1.2` | `1.2` or `1.3` |
 
-Excess SSE connections receive 503 so a worker remains available for REST.
+Excess SSE connections receive 503 to bound concurrent streaming resources.
 An initial snapshot exceeding the per-client queue limit also receives 503.
 This is a connection limit, not event rate limiting. Long-running custom REST
-handlers can still consume the remaining workers. The default address is local;
+handlers can still consume the worker pool. The default address is local;
 external deployments must provide their own authentication/network boundary.
 
 See [binding](../binding.md), the [protocol header](../../../modules/adapters/http/include/aria/adapters/http/wire_protocol.hpp)

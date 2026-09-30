@@ -29,6 +29,7 @@
 #include "aria/adapters/http/wire_protocol.hpp"
 #include "aria/binding/view_adapter.hpp"
 #include "aria/callback_boundary.hpp"
+#include "sse_wait.hpp"
 
 #include <mira/core/event_loop.hpp>
 #include <mira/core/executor.hpp>
@@ -185,29 +186,6 @@ struct SseClient {
     }
 };
 
-/// Suspend the SSE coroutine until its outbox has something to send.
-struct SseWait {
-    SseClient* client;
-
-    bool await_ready() const noexcept {
-        std::lock_guard<std::mutex> lock(client->mu);
-        return client->ready_locked();
-    }
-
-    void await_suspend(std::coroutine_handle<> waiting) {
-        // Under the same lock that push/close use to hand the handle out,
-        // so a frame arriving between the check and the park still wakes us.
-        std::lock_guard<std::mutex> lock(client->mu);
-        if (client->ready_locked()) {
-            waiting.resume();  // already ready: continue inline
-            return;
-        }
-        client->waiter = waiting;
-    }
-
-    void await_resume() const noexcept {}
-};
-
 inline std::string sse_frame(const std::string& dump) {
     std::string out;
     out.reserve(dump.size() + 8);
@@ -274,8 +252,8 @@ int hex_value(char c) {
     return -1;
 }
 
-/// Percent-decode a path/query component; '+' decodes to space (form style).
-std::string url_decode(std::string_view text) {
+/// Only query values use form-style '+' decoding; it is literal in paths.
+std::string url_decode(std::string_view text, bool form_style = false) {
     std::string out;
     out.reserve(text.size());
     for (std::size_t i = 0; i < text.size(); ++i) {
@@ -288,7 +266,7 @@ std::string url_decode(std::string_view text) {
                 continue;
             }
         }
-        out.push_back(text[i] == '+' ? ' ' : text[i]);
+        out.push_back(form_style && text[i] == '+' ? ' ' : text[i]);
     }
     return out;
 }
@@ -306,7 +284,7 @@ std::string query_param(std::string_view query, std::string_view key) {
             eq == std::string_view::npos ? pair : pair.substr(0, eq);
         if (name == key) {
             return url_decode(eq == std::string_view::npos ? std::string_view{}
-                                                           : pair.substr(eq + 1));
+                                                           : pair.substr(eq + 1), true);
         }
         if (end == std::string_view::npos) break;
         start = end + 1;
@@ -932,7 +910,8 @@ HttpAdapter::Impl::RouteOutcome HttpAdapter::Impl::handle_static(
 
     // Decode, then refuse anything that escapes the configured root.
     std::string path = url_decode(split_target(request.target).path);
-    if (path.empty() || path.front() != '/') return error_outcome(404, "not found");
+    if (path.empty() || path.front() != '/' || path.find('\0') != std::string::npos)
+        return error_outcome(404, "not found");
     std::filesystem::path relative = path.substr(1);
     if (relative.empty()) relative = "index.html";
     if (relative.is_absolute()) return error_outcome(404, "not found");
@@ -982,7 +961,28 @@ HttpAdapter::Impl::RouteOutcome HttpAdapter::Impl::dispatch(
     }
 
     const std::string& prefix = config.api_prefix;
-    switch (classify(method_text, path, prefix)) {
+    const auto route = classify(method_text, path, prefix);
+    if (route == Route::state_post || route == Route::click || route == Route::command) {
+        // Browser CORS blocks reading a response, not sending a simple POST.
+        // Requiring JSON prevents text/plain/form submissions from mutating a
+        // localhost application without the browser's CORS preflight.
+        auto content_type = request.headers.get("Content-Type");
+        if (!content_type || request.headers.count("Content-Type") != 1)
+            return error_outcome(415, "Content-Type must be application/json");
+        auto media_type = content_type->substr(0, content_type->find(';'));
+        while (!media_type.empty() && (media_type.front() == ' ' || media_type.front() == '\t'))
+            media_type.remove_prefix(1);
+        while (!media_type.empty() && (media_type.back() == ' ' || media_type.back() == '\t'))
+            media_type.remove_suffix(1);
+        constexpr std::string_view expected = "application/json";
+        if (media_type.size() != expected.size() ||
+            !std::equal(media_type.begin(), media_type.end(), expected.begin(),
+                [](char a, char b) {
+                    return (a >= 'A' && a <= 'Z' ? a + ('a' - 'A') : a) == b;
+                }))
+            return error_outcome(415, "Content-Type must be application/json");
+    }
+    switch (route) {
     case Route::health:     return handle_health();
     case Route::views:      return handle_views();
     case Route::state_get:  return handle_get_state(query);
@@ -994,7 +994,11 @@ HttpAdapter::Impl::RouteOutcome HttpAdapter::Impl::dispatch(
     }
 
     // Outside the API prefix: static mount (GET/HEAD only), else 404.
-    if (get_like && path.compare(0, prefix.size(), prefix) != 0) {
+    // Match a path segment, not a byte prefix: the documented SDK URL
+    // /aria_client.js must remain reachable beside the default /aria API.
+    const bool api_path = path == prefix ||
+        (path.starts_with(prefix) && path.size() > prefix.size() && path[prefix.size()] == '/');
+    if (get_like && !api_path) {
         return handle_static(request);
     }
     return error_outcome(404, "not found");
@@ -1042,7 +1046,7 @@ Task<Mira::Result<void>> HttpAdapter::Impl::serve_request(
     struct PoolGate {
         std::exception_ptr error;
         std::optional<RouteOutcome> outcome;
-        bool ran = false;
+        std::atomic<bool> ran{false};
     };
     auto gate = std::make_shared<PoolGate>();
     auto hop_stop = std::make_shared<std::stop_source>();
@@ -1063,16 +1067,16 @@ Task<Mira::Result<void>> HttpAdapter::Impl::serve_request(
         } catch (...) {
             gate->error = std::current_exception();
         }
-        gate->ran = true;
+        gate->ran.store(true, std::memory_order_release);
         hop_stop->request_stop();
     });
     co_await loop->sleep_until(EventLoop::Clock::time_point::max(),
                                {.stop = hop_token});
-    // Back on the loop thread. request_stop is the job's last statement,
-    // so the segment has fully run before this line — unless teardown
-    // dropped the job and the global stop resolved the sleep instead.
+    // Teardown can cancel the sleep while the worker is still executing.
+    // Publish/acquire the result independently of the stop token, and never
+    // inspect non-atomic payload fields until the worker has finished them.
+    if (!gate->ran.load(std::memory_order_acquire)) co_return Mira::fail(Mira::Errc::cancelled);
     if (gate->error) std::rethrow_exception(gate->error);
-    if (!gate->ran) co_return Mira::fail(Mira::Errc::cancelled);
     RouteOutcome outcome = std::move(*gate->outcome);
 
     Mira::http::Response response;
@@ -1086,17 +1090,14 @@ template<class Stream>
 Task<Mira::Result<void>> HttpAdapter::Impl::run_sse(
     Mira::http::ResponseWriter<Stream>& writer) {
     auto client = std::make_shared<SseClient>(config.max_pending_sse_bytes);
-    {
+    // Admission is synchronous: a rejected client's network write must never
+    // suspend while holding either registry lock and block the entire server.
+    const char* rejection_reason = [&]() -> const char* {
         // Identical order to a state commit: no live event can precede its snapshot.
         std::lock_guard<std::mutex> registry_lock(registry_mu);
         std::lock_guard<std::mutex> clients_lock(sse_mu);
         if (!running || sse_clients.size() >= sse_capacity) {
-            Mira::http::Response rejection;
-            rejection.status = 503;
-            rejection.headers.append("Content-Type", "application/json");
-            apply_common_headers(rejection, config);
-            co_return co_await writer.send(
-                rejection, as_bytes(json{{"error", "sse capacity"}}.dump()));
+            return "sse capacity";
         }
         client->loop = &*loop;
         client->push(sse_frame(json{{"type", "hello"}, {"platform", "http"},
@@ -1114,16 +1115,18 @@ Task<Mira::Result<void>> HttpAdapter::Impl::run_sse(
                 {"value", !shadow_enabled.count(id) || shadow_enabled[id]}}.dump()));
         }
         if (client->closed) {
-            Mira::http::Response rejection;
-            rejection.status = 503;
-            rejection.headers.append("Content-Type", "application/json");
-            apply_common_headers(rejection, config);
-            co_return co_await writer.send(
-                rejection,
-                as_bytes(json{{"error",
-                               "initial snapshot exceeds SSE buffer limit"}}.dump()));
+            return "initial snapshot exceeds SSE buffer limit";
         }
         sse_clients.push_back(client);
+        return nullptr;
+    }();
+    if (rejection_reason) {
+        Mira::http::Response rejection;
+        rejection.status = 503;
+        rejection.headers.append("Content-Type", "application/json");
+        apply_common_headers(rejection, config);
+        co_return co_await writer.send(
+            rejection, as_bytes(json{{"error", rejection_reason}}.dump()));
     }
 
     Mira::http::Response head;
@@ -1140,7 +1143,7 @@ Task<Mira::Result<void>> HttpAdapter::Impl::run_sse(
     }
 
     for (;;) {
-        co_await SseWait{client.get()};
+        co_await detail::SseWait{client.get()};
         std::deque<std::string> pending;
         bool done = false;
         {
