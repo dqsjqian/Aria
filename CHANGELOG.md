@@ -14,6 +14,11 @@ All notable changes to **aria** are documented here.
 
 ---
 
+## 3.1.1 — 2026-09-30
+
+- Keep the independent HTTPS regression compatible with strict GCC warnings
+  while retaining certificate, hostname and shutdown coverage.
+
 ## 3.1.0 — 2026-09-30
 
 - Adapt the HTTP/TLS backend to Mira 1.0.0, including loop-bound TLS stream

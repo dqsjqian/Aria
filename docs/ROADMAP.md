@@ -1,6 +1,6 @@
 # Aria Roadmap
 
-> Current framework version: `3.1.0`. This is a working priority list, not a
+> Current framework version: `3.1.1`. This is a working priority list, not a
 > release schedule. See the changelog for versioned changes.
 
 ## Direction

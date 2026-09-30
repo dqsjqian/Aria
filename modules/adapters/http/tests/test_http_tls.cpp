@@ -140,8 +140,17 @@ TEST_CASE("HTTPS returns state with independent certificate and hostname verific
     REQUIRE(socket.connected());
     std::unique_ptr<SSL, decltype(&SSL_free)> connection(SSL_new(context.get()), SSL_free);
     REQUIRE(connection);
-    REQUIRE(SSL_set_fd(connection.get(), static_cast<int>(socket.native_handle())) == 1);
-    REQUIRE(SSL_set_tlsext_host_name(connection.get(), "localhost") == 1);
+#ifdef _WIN32
+    const auto descriptor = static_cast<int>(socket.native_handle());
+#else
+    const auto descriptor = socket.native_handle();
+#endif
+    REQUIRE(SSL_set_fd(connection.get(), descriptor) == 1);
+    // The convenience SNI macro contains a C-style cast. Use its equivalent
+    // control call so strict C++ warning builds retain the same TLS coverage.
+    char hostname[] = "localhost";
+    REQUIRE(SSL_ctrl(connection.get(), SSL_CTRL_SET_TLSEXT_HOSTNAME,
+                     TLSEXT_NAMETYPE_host_name, hostname) == 1);
 
     SUBCASE("trusted matching hostname completes HTTPS and stop cancels pending TLS reads") {
         REQUIRE(X509_VERIFY_PARAM_set1_host(SSL_get0_param(connection.get()), "localhost", 0) == 1);
