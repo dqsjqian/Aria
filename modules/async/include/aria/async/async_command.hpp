@@ -385,33 +385,30 @@ public:
     using State     = AsyncCommandState<R>;
     using Action    = std::function<Task<R>(CancellationToken, Args...)>;
     using ArgsTuple = std::shared_ptr<std::tuple<Args...>>;
+    using PreparedAction = std::function<Task<R>(const CancellationToken&, std::tuple<Args...>&)>;
 
-    AsyncCommandCore(std::shared_ptr<State> s, Action a, AsyncCommandPolicy p)
+    AsyncCommandCore(std::shared_ptr<State> s, PreparedAction a, AsyncCommandPolicy p)
         : state(std::move(s)), action(std::move(a)), policy(p) {}
 
     std::shared_ptr<State> state;
-    Action action;
+    PreparedAction action;
     AsyncCommandPolicy policy;
 
-    /// Adapt user's action (plain or cancellable) to the unified
-    /// internal `(CancellationToken, Args...)` signature. The void vs
-    /// non-void branches are both necessary: `co_return co_await` is
-    /// ill-formed for a void-returning coroutine.
+    /// Invoke directly from the frame-owned argument tuple. A coroutine
+    /// action may borrow its const-reference parameters until completion, so
+    /// never manufacture a temporary by-value forwarding argument here.
     template<typename Fn>
-    static Action make_action(Fn f) {
-        if constexpr (CancellableAction<Fn, Args...>) {
-            return Action(std::move(f));
-        } else if constexpr (std::is_void_v<R>) {
-            return [f = std::move(f)](CancellationToken,
-                                       Args... a) mutable -> Task<void> {
-                co_await f(std::move(a)...);
-            };
-        } else {
-            return [f = std::move(f)](CancellationToken,
-                                       Args... a) mutable -> Task<R> {
-                co_return co_await f(std::move(a)...);
-            };
-        }
+    static PreparedAction make_action(Fn f) {
+        return [f = std::move(f)](const CancellationToken& token,
+                                  std::tuple<Args...>& args) mutable -> Task<R> {
+            return std::apply([&](auto&... values) -> Task<R> {
+                if constexpr (CancellableAction<Fn, Args...>) {
+                    return f(token, std::move(values)...);
+                } else {
+                    return f(std::move(values)...);
+                }
+            }, args);
+        };
     }
 
     /// Decide whether a new invocation may start. LatestOnly cancels
@@ -627,10 +624,7 @@ private:
         try {
             co_await schedule_on(*state->worker);
             inv.throw_if_cancelled();
-            value.emplace(co_await std::apply(
-                [&](auto&&... a) -> Task<R> {
-                    return action(inv.inv_tok(), std::forward<decltype(a)>(a)...);
-                }, *args));
+            value.emplace(co_await action(inv.inv_tok(), *args));
         } catch (...) {
             ex = std::current_exception();
         }
@@ -773,10 +767,7 @@ private:
         try {
             co_await schedule_on(*state->worker);
             inv.throw_if_cancelled();
-            co_await std::apply(
-                [&](auto&&... a) -> Task<void> {
-                    return action(inv.inv_tok(), std::forward<decltype(a)>(a)...);
-                }, *args);
+            co_await action(inv.inv_tok(), *args);
         } catch (...) {
             ex = std::current_exception();
         }

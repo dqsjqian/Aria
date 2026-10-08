@@ -20,6 +20,9 @@ All notable changes to **aria** are documented here.
   keep erased comparator compatibility and one shared target instance. Ordered
   source-tail inserts preallocate before a non-throwing layout commit instead
   of mirroring the insertion into a second working copy.
+- Invoke async actions directly from the invocation-owned argument tuple,
+  removing a forwarding coroutine allocation for plain actions. Preserve
+  reference-parameter and cancellation-token lifetimes across suspension.
 - Use publication epochs with C++ atomic wait/notify for worker availability;
   preserve queue serialization and idle joining while avoiding the worker
   condition-variable wake/re-lock handshake. Add repeated wakeup, concurrent

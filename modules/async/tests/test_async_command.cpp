@@ -72,6 +72,43 @@ static_assert(
 
 }  // namespace executor_safety_compile_check
 
+TEST_CASE("AsyncCommand: borrowed action arguments remain owned across suspension") {
+    MainThreadExecutor ui;
+    MainThreadExecutor worker;
+    AsyncCommand<std::size_t, std::string> command{ui, worker,
+        // Intentionally borrow: the command must retain the closure and tuple.
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-reference-coroutine-parameters,cppcoreguidelines-avoid-capturing-lambda-coroutines)
+        [&worker](const std::string& text) -> Task<std::size_t> {
+            co_await schedule_on(worker);
+            co_return text == std::string(8192, 'x') ? text.size() : 0;
+        }};
+    command.execute(std::string(8192, 'x'));
+    ui.drain();
+    worker.drain();
+    ui.drain();
+    REQUIRE(command.last_result.get().has_value());
+    CHECK(command.last_result.get().value_or(0) == 8192);
+}
+
+TEST_CASE("AsyncCommand: cancellable borrowed arguments survive the task factory") {
+    MainThreadExecutor ui;
+    MainThreadExecutor worker;
+    AsyncCommand<std::size_t, std::string> command{ui, worker,
+        // Intentionally borrow both state objects to guard frame ownership.
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-reference-coroutine-parameters,cppcoreguidelines-avoid-capturing-lambda-coroutines)
+        [&worker](const CancellationToken& token, const std::string& text) -> Task<std::size_t> {
+            co_await schedule_on(worker);
+            token.throw_if_cancelled();
+            co_return text == std::string(8192, 'x') ? text.size() : 0;
+        }};
+    command.execute(std::string(8192, 'x'));
+    ui.drain();
+    worker.drain();
+    ui.drain();
+    REQUIRE(command.last_result.get().has_value());
+    CHECK(command.last_result.get().value_or(0) == 8192);
+}
+
 TEST_CASE("AsyncCommand<int, int>: success populates last_result") {
     InlineExecutor ui;
     InlineExecutor worker;
