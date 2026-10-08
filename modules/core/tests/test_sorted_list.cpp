@@ -60,6 +60,64 @@ std::vector<int> values_of(SortedList<Plain>& s) {
 
 }  // namespace
 
+TEST_CASE("SortedList: concrete and erased comparators share stable append semantics") {
+    auto source = std::make_shared<ObservableList<Plain>>();
+    SortedList<Plain> concrete{source, asc};
+    SortedList<Plain> erased{source, SortedList<Plain>::Comparator{asc}};
+    for (int value : {4, 1, 4, 2, 4, 0}) {
+        source->push_back(make_plain(value));
+        CHECK(concrete.snapshot() == erased.snapshot());
+    }
+    source->insert(2, make_plain(3));
+    source->push_back(make_plain(1));
+    source->replace_at(0, make_plain(-1));
+    CHECK(concrete.snapshot() == erased.snapshot());
+    concrete.set_comparator(desc);
+    erased.set_comparator(SortedList<Plain>::Comparator{desc});
+    source->push_back(make_plain(2));
+    CHECK(concrete.snapshot() == erased.snapshot());
+}
+
+TEST_CASE("SortedList: concrete scan and scalar search use the same mutable target") {
+    struct Comparator {
+        std::shared_ptr<const void*> instance;
+        bool operator()(const Plain& a, const Plain& b) {
+            if (*instance == nullptr) { *instance = this; }
+            CHECK(*instance == this);
+            return a.value < b.value;
+        }
+    };
+    auto source = std::make_shared<ObservableList<Plain>>();
+    auto identity = std::make_shared<const void*>(nullptr);
+    SortedList<Plain> sorted{source, Comparator{identity}};
+    for (int value : {4, 3, 2, 1, 0}) { source->push_back(make_plain(value)); }
+    CHECK(values_of(sorted) == std::vector<int>{0, 1, 2, 3, 4});
+}
+
+TEST_CASE("SortedList: append comparator reentry sees the previous committed layout") {
+    auto source = std::make_shared<ObservableList<Plain>>();
+    source->push_back(make_plain(1));
+    source->push_back(make_plain(2));
+    SortedList<Plain>* view = nullptr;
+    bool inspect = false;
+    bool reenter = false;
+    SortedList<Plain> sorted{source, [&](const Plain& a, const Plain& b) {
+        if (inspect) { CHECK(view->size() == 2); }
+        if (reenter) {
+            reenter = false;
+            source->push_back(make_plain(4));
+        }
+        return a.value < b.value;
+    }};
+    view = &sorted;
+    inspect = true;
+    source->push_back(make_plain(3));
+    inspect = false;
+    reenter = true;
+    source->push_back(make_plain(0));
+    CHECK(values_of(sorted) == std::vector<int>{0, 1, 2, 3, 4});
+}
+
 TEST_CASE("SortedList: construction from initial snapshot orders items") {
     auto src = std::make_shared<ObservableList<Plain>>();
     src->push_back(make_plain(5));

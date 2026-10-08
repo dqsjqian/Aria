@@ -98,6 +98,21 @@ int main() {
         row_pct("AsyncCommand<int,int>::execute round-trip", stats);
     }
 
+    // Diagnostic control: the same two executors and pump, without commands,
+    // properties or coroutine frames. This is not a replacement gate workload.
+    {
+        auto stats = measure_percentiles(64, 50, [&](int) {
+            bool done = false;
+            worker.post([&] { ui.post([&] { done = true; }); });
+            if (!ui.pump_until([&] { return done; }, std::chrono::milliseconds{500})) {
+                throw std::runtime_error("Executor control benchmark timed out");
+            }
+        });
+        std::cout << "D bare executor round-trip mean=" << stats.mean_ns
+                  << "ns p50=" << stats.p50_ns << "ns p95=" << stats.p95_ns
+                  << "ns p99=" << stats.p99_ns << "ns (64x50)\n";
+    }
+
     std::cout << "\n=== done ===\n";
     return 0;
 }

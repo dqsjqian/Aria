@@ -21,6 +21,9 @@ set_tests_properties(license_packaging PROPERTIES TIMEOUT 60)
 
 find_package(Python3 3.10 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME portable_build_entry
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/python/test_build_entry.py")
+    set_tests_properties(portable_build_entry PROPERTIES TIMEOUT 60)
     add_test(NAME dependency_resolver
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/python/test_dependencies.py")
     set_tests_properties(dependency_resolver PROPERTIES TIMEOUT 60)

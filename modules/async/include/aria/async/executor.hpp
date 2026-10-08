@@ -283,7 +283,11 @@ public:
             if (closed_) { return; }
             queue_.push_back(std::move(fn));
         }
-        cv_.notify_one();
+        // An already-bound owner cannot simultaneously be asleep in its own
+        // pump. Foreign producers and an unbound executor must still wake it.
+        if (owner_.load(std::memory_order_acquire) != std::this_thread::get_id()) {
+            cv_.notify_one();
+        }
     }
 
     /// Main-thread executor: safe in both reactive roles, plus
@@ -311,23 +315,31 @@ public:
         bind_owner_();
         std::size_t total = 0;
         while (true) {
+            std::function<void()> single;
             std::vector<std::function<void()>> local;
             {
                 std::lock_guard lk(m_);
-                if (queue_.empty()) break;
-                local.reserve(queue_.size());
-                std::move(queue_.begin(), queue_.end(), std::back_inserter(local));
-                queue_.clear();
-            }
-            for (auto& fn : local) {
-                try {
-                    fn();
-                } catch (...) {
-                    aria::report_callback_failure(
-                        std::string_view{"executor.main_thread.drain"},
-                        std::current_exception());
+                if (queue_.empty()) { break; }
+                if (queue_.size() == 1) {
+                    single = std::move(queue_.front());
+                    queue_.pop_front();
+                } else {
+                    local.reserve(queue_.size());
+                    std::move(queue_.begin(), queue_.end(), std::back_inserter(local));
+                    queue_.clear();
                 }
+            }
+            // The common coroutine handoff carries one callable. Keep it on
+            // the stack rather than allocating a vector for every resume.
+            // Multi-callable batches still detach together before callbacks.
+            if (single) {
+                invoke_drained(single);
                 ++total;
+            } else {
+                for (auto& fn : local) {
+                    invoke_drained(fn);
+                    ++total;
+                }
             }
         }
         return total;
@@ -404,9 +416,20 @@ public:
     }
 
 private:
+    static void invoke_drained(std::function<void()>& fn) {
+        try {
+            fn();
+        } catch (...) {
+            aria::report_callback_failure(
+                std::string_view{"executor.main_thread.drain"},
+                std::current_exception());
+        }
+    }
+
     void bind_owner_() {
-        std::thread::id expected{};
         const auto self = std::this_thread::get_id();
+        if (owner_.load(std::memory_order_acquire) == self) { return; }
+        std::thread::id expected{};
         if (owner_.compare_exchange_strong(expected, self,
                                            std::memory_order_acq_rel)) {
             return;  // we just claimed ownership

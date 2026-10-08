@@ -196,6 +196,22 @@ or reactive subscription installation. The benchmark workload and ceilings are
 unchanged. These are developer-host measurements with normal background load,
 not a claim that hosted-runner performance gates pass or all workloads improve.
 
+## Further cost isolation
+
+A bare worker-to-UI round-trip control now prints a diagnostic `D` row after
+the existing AsyncCommand gate. It uses the same executors, pump and sample
+shape without command properties or coroutine frames; it does not replace the
+original gated workload or change any ceiling. Compare it with the command row
+before attributing host scheduling latency to command bookkeeping.
+
+Concrete SortedList callables now retain their type inside one shared target:
+one erased call enters the complete scan, whose individual comparisons can be
+inlined. The public erased Comparator overload remains supported. An ordered
+source-tail insertion completes its comparisons and all required allocations
+before committing a non-throwing index/handle update under the layout lock.
+Other updates retain the existing transactional scratch path. Full live-key
+order validation and stable equal-key ordering remain mandatory.
+
 ## Reproducible measurements
 
 Build with `CMAKE_BUILD_TYPE=Release` and `ARIA_BUILD_BENCHMARK=ON`, then run

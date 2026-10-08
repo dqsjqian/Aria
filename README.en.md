@@ -316,6 +316,17 @@ ctest --test-dir build/flavors/release --output-on-failure
 > Normal builds use the bundled doctest header. CMake fetches the fallback
 > test dependency only if that vendored header is absent.
 
+### Portable build entry
+
+`python scripts/build.py --test` configures, builds and runs host CTest. Select
+`--platform qt|web|ios|android`; `--dry-run` prints the complete plan without
+writing files. Default trees isolate platform, toolchain, configuration and
+architecture. Use `--build-dir` for an existing cache and `--offline` for cached
+dependencies. Android requires `--ndk`; iOS requires macOS/Xcode. Mobile tests
+still use the existing device runners. Windows defaults to MSVC; MinGW is an
+explicit separate cache. Ninja/MSVC requires a developer environment. Existing
+SDK packaging and deployment scripts remain available.
+
 ### One-liner build scripts
 
 ```bash

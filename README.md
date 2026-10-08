@@ -295,6 +295,12 @@ ctest --test-dir build/flavors/release --output-on-failure
 
 > `build/` 是构建树的**容器**，不要直接配置进它。统一布局见 [`scripts/build.sh`](scripts/build.sh) 顶部。
 
+### 跨平台统一入口
+
+`python scripts/build.py --test` 统一配置、编译和本机 CTest；`--platform qt|web|ios|android` 选择适配器，`--dry-run` 输出完整计划且不写磁盘。默认按平台、工具链、配置和架构隔离目录；`--build-dir` 可显式复用现有缓存，`--offline` 复用已验证依赖。
+
+Android 需 `--ndk`；iOS 需 macOS/Xcode。移动端执行测试仍使用现有模拟器/设备脚本，统一入口不会把交叉编译冒充运行通过。Windows 默认 MSVC，显式 `--toolchain mingw` 使用独立缓存；使用 Ninja/MSVC 时先打开 Developer PowerShell。原有打包脚本仍负责 SDK 安装与归档。
+
 ### 🔧 一键构建脚本
 
 ```bash

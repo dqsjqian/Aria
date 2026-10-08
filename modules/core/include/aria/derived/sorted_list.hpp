@@ -78,10 +78,13 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
+#include <type_traits>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -98,16 +101,101 @@ public:
     /// Strict weak ordering on items. Must be stable across calls for
     /// the lifetime of the SortedList (or until `set_comparator`).
     /// Owning, heap-free comparator handle (capacity 32 bytes).
+    /// Concrete callable overloads retain its target type for whole-scan inlining;
+    /// the view still owns one comparator instance in one shared allocation.
     using Comparator = aria::inplace_function<bool(const T&, const T&), 32>;
     using Signal     = detail::ListSignal<T>;
 
-    SortedList(std::shared_ptr<Source> source,
-               Comparator comparator)
+private:
+    // Erase the whole order scan rather than every adjacent comparison.
+    // The scalar adapter and scan refer to the same owned callable instance.
+    struct ComparatorTag {};
+    struct ComparatorState {
+        using Scan = bool (*)(ComparatorState&, const std::vector<std::shared_ptr<T>>&,
+                              const std::vector<std::size_t>&, std::optional<std::size_t>);
+        Comparator scalar;
+        void* target = nullptr;
+        Scan scan = nullptr;
+        bool operator()(const T& a, const T& b) const { return scalar(a, b); }
+    };
+
+    template<typename Fn>
+    static bool scan_order(Fn& comparator, const std::vector<std::shared_ptr<T>>& items,
+                            const std::vector<std::size_t>& sources,
+                            std::optional<std::size_t> skip) {
+        const auto size = items.size();
+        const auto skipped = skip.value_or(size);
+        const std::size_t first = skipped == 0 ? 1 : 0;
+        if (first >= size) { return true; }
+        const T* previous = items[first].get();
+        auto previous_source = sources[first];
+        for (auto d = first + 1; d < size; ++d) {
+            if (d == skipped) { continue; }
+            const T* current = items[d].get();
+            const auto current_source = sources[d];
+            const bool reversed = current_source < previous_source;
+            const T* lhs = reversed ? previous : current;
+            const T* rhs = reversed ? current : previous;
+            if (static_cast<bool>(std::invoke(comparator, *lhs, *rhs)) != reversed) { return false; }
+            previous = current;
+            previous_source = current_source;
+        }
+        return true;
+    }
+
+    static std::shared_ptr<ComparatorState> make_comparator(Comparator comparator) {
+        auto result = std::make_shared<ComparatorState>();
+        result->scalar = std::move(comparator);
+        result->scan = [](ComparatorState& self, const auto& items, const auto& sources, auto skip) {
+            return scan_order(self.scalar, items, sources, skip);
+        };
+        return result;
+    }
+
+    template<typename Fn>
+    static std::shared_ptr<ComparatorState> make_comparator(Fn&& comparator) {
+        using Stored = std::decay_t<Fn>;
+        // Retain the public small-callable size/alignment contract.
+        static_assert(sizeof(Stored) <= 32);
+        static_assert(alignof(Stored) <= alignof(std::max_align_t));
+        struct OwnedComparator {
+            ComparatorState state;
+            Stored callable;
+            // Fn is the enclosing forwarding-reference type, possibly an lvalue.
+            // NOLINTNEXTLINE(cppcoreguidelines-rvalue-reference-param-not-moved)
+            explicit OwnedComparator(Fn&& fn) : callable(std::forward<Fn>(fn)) {}
+        };
+        auto owned = std::make_shared<OwnedComparator>(std::forward<Fn>(comparator));
+        auto& result = owned->state;
+        result.target = &owned->callable;
+        result.scalar = [target = &owned->callable](const T& a, const T& b) {
+            return static_cast<bool>(std::invoke(*target, a, b));
+        };
+        result.scan = [](ComparatorState& self, const auto& items, const auto& sources, auto skip) {
+            return scan_order(*static_cast<Stored*>(self.target), items, sources, skip);
+        };
+        return std::shared_ptr<ComparatorState>{owned, &owned->state};
+    }
+
+public:
+    SortedList(std::shared_ptr<Source> source, Comparator comparator)
+        : SortedList(std::move(source), make_comparator(std::move(comparator)), ComparatorTag{}) {}
+
+    template<typename Fn>
+        requires (!std::is_same_v<std::decay_t<Fn>, Comparator> &&
+                  !std::is_pointer_v<std::decay_t<Fn>> &&
+                  std::is_copy_constructible_v<std::decay_t<Fn>> &&
+                  std::is_invocable_r_v<bool, std::decay_t<Fn>&, const T&, const T&>)
+    SortedList(std::shared_ptr<Source> source, Fn&& comparator)
+        : SortedList(std::move(source), make_comparator(std::forward<Fn>(comparator)), ComparatorTag{}) {}
+
+private:
+    SortedList(std::shared_ptr<Source> source, std::shared_ptr<ComparatorState> comparator, ComparatorTag)
         : source_(std::move(source)),
           signal_(std::make_shared<Signal>()),
           state_(std::make_shared<SharedState>())
     {
-        state_->comparator = std::make_shared<Comparator>(std::move(comparator));
+        state_->comparator = std::move(comparator);
 
         // Build the initial mapping from the source snapshot. See the
         // FilteredList constructor for why we snapshot before
@@ -134,6 +222,7 @@ public:
             });
     }
 
+public:
     ~SortedList() = default;
 
     SortedList(const SortedList&)            = delete;
@@ -171,9 +260,22 @@ public:
     // computed, but the cost would dominate the re-sort itself and the
     // wider Qt/AppKit adapter ecosystem handles Reset cleanly anyway.
     void set_comparator(Comparator new_comparator) {
+        replace_comparator(make_comparator(std::move(new_comparator)));
+    }
+
+    template<typename Fn>
+        requires (!std::is_same_v<std::decay_t<Fn>, Comparator> &&
+                  !std::is_pointer_v<std::decay_t<Fn>> &&
+                  std::is_copy_constructible_v<std::decay_t<Fn>> &&
+                  std::is_invocable_r_v<bool, std::decay_t<Fn>&, const T&, const T&>)
+    void set_comparator(Fn&& comparator) {
+        replace_comparator(make_comparator(std::forward<Fn>(comparator)));
+    }
+
+private:
+    void replace_comparator(std::shared_ptr<ComparatorState> comparator) {
         auto state = state_;
         auto signal = signal_;
-        auto comparator = std::make_shared<Comparator>(std::move(new_comparator));
         state->updates.submit([state, signal, comparator = std::move(comparator)] {
             SharedState work;
             work.comparator = comparator;
@@ -185,11 +287,10 @@ public:
         });
     }
 
-private:
     // Per-instance state shared with the source-listener lambda.
     struct SharedState {
         mutable std::shared_mutex       m;
-        std::shared_ptr<Comparator>     comparator;
+        std::shared_ptr<ComparatorState> comparator;
         detail::ListUpdateQueue updates;
         std::vector<std::shared_ptr<T>> source_items;
         bool needs_rebuild = false;
@@ -256,12 +357,50 @@ private:
     // reentry always see the previous committed layout; all events publish
     // only after the complete update succeeds. The normal sorted update
     // already scans O(n) rows, so staging preserves its asymptotic bound.
+    template<typename Value>
+    static void reserve_append(std::vector<Value>& values) {
+        if (values.size() != values.capacity()) { return; }
+        const auto capacity = values.capacity();
+        const auto maximum = values.max_size();
+        if (capacity == maximum) { throw std::length_error("SortedList capacity exceeded"); }
+        auto next = maximum;
+        if (capacity == 0) { next = 1; }
+        else if (capacity <= maximum / 2) { next = capacity * 2; }
+        values.reserve(next);
+    }
+
     static void dispatch_source_change_(SharedState& st,
                                         Signal& sig,
                                         const ListChange<T>& ch) {
         detail::replay_list_change(st.source_items, ch);
         const bool rebuild = st.needs_rebuild;
         st.needs_rebuild = true;
+        if (!rebuild && ch.kind == ListChangeKind::Insert && ch.index == st.items.size() &&
+            ordered_unlocked_(st)) {
+            const auto position = binary_search_insert_(st, *ch.item, ch.index);
+            std::vector<ListChange<T>> events;
+            events.push_back({ListChangeKind::Insert, position, ch.item, 0});
+            {
+                std::unique_lock lock(st.m);
+                // Complete every potentially throwing allocation before the
+                // first logical change. Shared-handle and index moves below
+                // are non-throwing; readers see either complete layout.
+                reserve_append(st.items);
+                reserve_append(st.source_to_derived);
+                reserve_append(st.derived_to_source);
+                st.items.insert(st.items.begin() + static_cast<std::ptrdiff_t>(position), ch.item);
+                st.derived_to_source.insert(
+                    st.derived_to_source.begin() + static_cast<std::ptrdiff_t>(position), ch.index);
+                st.source_to_derived.push_back(position);
+                renumber_s2d_(st, position);
+                st.needs_rebuild = false;
+            }
+            // A later non-append update can recreate its transactional cache.
+            // Do not retain a stale copy after a directly committed append.
+            st.scratch.reset();
+            sig.emit_batch(std::move(events));
+            return;
+        }
         if (!st.scratch) {
             auto scratch = std::make_unique<SharedState>();
             scratch->comparator = st.comparator;
@@ -464,30 +603,7 @@ private:
     // remaining rows have been checked against their current values.
     static bool ordered_unlocked_(const SharedState& st,
                                   std::optional<std::size_t> skip = std::nullopt) {
-        const auto size = st.items.size();
-        const auto skipped = skip.value_or(size);
-        const std::size_t first = skipped == 0 ? 1 : 0;
-        if (first >= size) {
-            return true;
-        }
-        const auto& comparator = *st.comparator;
-        const T* previous = st.items[first].get();
-        auto previous_source = st.derived_to_source[first];
-        for (auto d = first + 1; d < size; ++d) {
-            if (d == skipped) continue;
-            const T* current = st.items[d].get();
-            const auto current_source = st.derived_to_source[d];
-            // Reversed source indices require a strictly smaller predecessor;
-            // otherwise the current key must not precede it. Select the
-            // comparison direction while validating every live adjacent pair.
-            const bool reversed = current_source < previous_source;
-            const T* lhs = reversed ? previous : current;
-            const T* rhs = reversed ? current : previous;
-            if (comparator(*lhs, *rhs) != reversed) return false;
-            previous = current;
-            previous_source = current_source;
-        }
-        return true;
+        return st.comparator->scan(*st.comparator, st.items, st.derived_to_source, skip);
     }
 
     // Move one row by shifting its interval once. Unlike a general rotate,

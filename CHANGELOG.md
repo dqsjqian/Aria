@@ -16,6 +16,16 @@ All notable changes to **aria** are documented here.
 
 ## Unreleased
 
+- Inline concrete SortedList comparators across the complete live-order scan;
+  keep erased comparator compatibility and one shared target instance. Ordered
+  source-tail inserts preallocate before a non-throwing layout commit instead
+  of mirroring the insertion into a second working copy.
+- Avoid per-call vector allocation for a single main-thread dispatch, repeated
+  owner-thread compare-exchange operations and owner-to-self wakeups. Retain
+  batch ordering, exception routing, foreign-thread wakeups and blocking waits.
+- Add a portable Python configure/build/test entry with read-only command plans,
+  explicit cross targets and isolated platform/toolchain/configuration caches.
+
 - Preserve raw output from each benchmark run and diagnostics before failures
   so nightly artifacts can explain mean/P50/P95/P99 differences. Add offline
   regression tests for output retention, threshold failures and binary exit
