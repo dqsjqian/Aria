@@ -282,7 +282,12 @@ python3 scripts/run-bench-validation.py --baseline <release-bin-dir> \
 ```
 
 The runner freezes and hashes its analysis, qualification code and policy before
-measurement and rechecks those files and all binary hashes after every phase.
+measurement and rechecks those files, executables and adjacent project shared
+libraries after every phase. Library aliases are hashed through their targets;
+adding, removing or replacing a library invalidates the measurement. Nonempty
+`DYLD_*`, `LD_LIBRARY_PATH`, `LD_PRELOAD` or `LD_AUDIT` overrides are rejected
+because they can bypass the recorded project library identities. System
+libraries remain part of the recorded host/compiler environment.
 It rejects any nonempty evidence directory without modifying the previous
 attempt, including one interrupted before its first measurement. The three
 independent phases are release versus itself (A-A), release versus the delay

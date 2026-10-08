@@ -1,6 +1,5 @@
 """Qualify complete controls before measuring a candidate; retain failed attempts."""
 import contextlib
-import copy
 import importlib.util
 import io
 import json
@@ -93,11 +92,13 @@ class ValidationRunnerTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(prefix="aria-validation-test-")
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
-        self.directories = {side: self.root / side for side in ("baseline", "candidate", "slow")}
+        self.directories = {side: self.root / side / "bin" for side in ("baseline", "candidate", "slow")}
         for directory in self.directories.values():
-            directory.mkdir()
+            directory.mkdir(parents=True)
             for bench in validation.BENCHES:
                 (directory / bench).write_bytes(b"fixture identity; never executed")
+        self.runtime = self.directories["baseline"] / "libaria_runtime.3.dylib"
+        self.runtime.write_bytes(b"fixture original runtime")
         self.output = self.root / "evidence"
         self.calls = []
 
@@ -110,12 +111,22 @@ class ValidationRunnerTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 2)
             status = aa_status if name == "aa-control" else "regression" if name == "slow20-control" else "pass"
             value = report(status, 20 if name == "slow20-control" else 0)
-            directory.mkdir()
+            directory.mkdir(parents=True)
             (directory / "comparison.json").write_text(json.dumps(value))
             if corruption == "policy":
                 (self.output / "paired-policy.json").write_text("changed frozen policy")
             if corruption == "binary":
                 (self.directories["baseline"] / validation.BENCHES[0]).write_bytes(b"changed binary")
+            if corruption == "library-content":
+                self.runtime.write_bytes(b"changed runtime library")
+            if corruption == "library-deleted":
+                self.runtime.unlink()
+            if corruption == "library-added":
+                self.runtime.with_name("added.dll").write_bytes(b"unexpected library")
+            if corruption in ("alias-retarget", "alias-dangling"):
+                self.runtime.unlink()
+                target = "alternate_runtime.dylib" if corruption == "alias-retarget" else "absent_runtime.dylib"
+                self.runtime.symlink_to(target)
             return subprocess.CompletedProcess(command, {"pass": 0, "regression": 1, "inconclusive": 3}[status])
         args = [str(SCRIPT), "--baseline", str(self.directories["baseline"]),
                 "--candidate", str(self.directories["candidate"]), "--slow-control", str(self.directories["slow"]),
@@ -153,6 +164,60 @@ class ValidationRunnerTests(unittest.TestCase):
                 self.assertEqual(self.run_runner(corruption=corruption), 2)
                 self.assertEqual(self.calls, ["aa-control"])
                 self.assertIn("changed", json.loads((self.output / "validation-error.json").read_text())["error"])
+
+    def test_library_addition_removal_or_replacement_invalidates_measurement(self):
+        for corruption in ("library-content", "library-deleted", "library-added"):
+            self.output = self.root / corruption
+            self.runtime.write_bytes(b"fixture original runtime")
+            self.calls.clear()
+            with self.subTest(corruption=corruption):
+                self.assertEqual(self.run_runner(corruption=corruption), 2)
+                self.assertEqual(self.calls, ["aa-control"])
+                self.assertIn("shared libraries changed", json.loads(
+                    (self.output / "validation-error.json").read_text())["error"])
+
+    def test_library_suffixes_and_adjacent_lib_are_covered_with_portable_keys(self):
+        binary_dir = self.directories["baseline"]
+        lib = binary_dir.parent / "lib"
+        lib.mkdir()
+        for name in ("libsample.so", "libsample.so.3.2", "sample.DLL", "libsample.dylib"):
+            (lib / name).write_bytes(name.encode())
+        identities = validation.binary_hashes(self.directories)["baseline"]["project_shared_libraries"]
+        self.assertEqual(set(identities), {"bin/libaria_runtime.3.dylib", "lib/libsample.so",
+                                          "lib/libsample.so.3.2", "lib/sample.DLL", "lib/libsample.dylib"})
+
+    def test_library_alias_retarget_or_dangling_target_is_invalid(self):
+        original = self.runtime.with_name("original_runtime.dylib")
+        alternate = self.runtime.with_name("alternate_runtime.dylib")
+        original.write_bytes(b"original runtime")
+        alternate.write_bytes(b"alternate runtime")
+        for corruption in ("alias-retarget", "alias-dangling"):
+            self.runtime.unlink(missing_ok=True)
+            try:
+                self.runtime.symlink_to(original.name)
+            except (OSError, NotImplementedError) as error:
+                self.skipTest(f"This host does not permit symbolic links: {error}")
+            initial = validation.binary_hashes(self.directories)["baseline"]["project_shared_libraries"]
+            self.assertEqual(initial["bin/libaria_runtime.3.dylib"], initial["bin/original_runtime.dylib"])
+            self.output = self.root / corruption
+            self.calls.clear()
+            with self.subTest(corruption=corruption):
+                self.assertEqual(self.run_runner(corruption=corruption), 2)
+                self.assertEqual(self.calls, ["aa-control"])
+                self.assertEqual(json.loads((self.output / "validation-error.json").read_text())["status"], "invalid")
+
+    def test_external_loader_override_is_rejected_before_subprocess(self):
+        self.assertEqual(validation.loader_overrides({"DYLD_LIBRARY_PATH": "", "LD_PRELOAD": ""}), [])
+        for name in ("DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT"):
+            self.assertEqual(validation.loader_overrides({name: "external"}), [name])
+        args = [str(SCRIPT), "--baseline", str(self.directories["baseline"]),
+                "--candidate", str(self.directories["candidate"]), "--slow-control", str(self.directories["slow"]),
+                "--output", str(self.output)]
+        with mock.patch.object(sys, "argv", args), mock.patch.object(validation.subprocess, "run") as runner, \
+             mock.patch.dict(validation.os.environ, {"DYLD_LIBRARY_PATH": "external"}, clear=True), \
+             contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(validation.main(), 2)
+            runner.assert_not_called()
 
     def test_partial_existing_evidence_is_never_modified(self):
         self.output.mkdir()

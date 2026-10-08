@@ -104,9 +104,34 @@ def protocol_hashes(paths: dict) -> dict:
     return {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in paths.items()}
 
 
+def loader_overrides(environment: dict) -> list:
+    # An external loader path/preload can bypass the adjacent project library
+    # identities below. The supported Nightly environment has no such override.
+    return sorted(name for name, value in environment.items() if value and
+                  (name.startswith("DYLD_") or name in ("LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT")))
+
+
 def binary_hashes(directories: dict) -> dict:
-    return {side: {bench: hashlib.sha256((directory / bench).read_bytes()).hexdigest() for bench in BENCHES}
-            for side, directory in directories.items()}
+    result = {}
+    for side, directory in directories.items():
+        libraries = {}
+        # CMake currently places shared libraries in bin; lib also covers an
+        # adjacent install-style layout. Keep every alias name and hash through
+        # symlinks so retargeting an alias to different bytes changes identity.
+        for folder in (directory, directory.parent / "lib"):
+            if not folder.is_dir():
+                continue
+            for path in sorted(folder.iterdir()):
+                lower = path.name.lower()
+                if lower.endswith((".dylib", ".dll", ".so")) or ".so." in lower:
+                    key = path.relative_to(directory.parent).as_posix()
+                    libraries[key] = hashlib.sha256(path.read_bytes()).hexdigest()
+        result[side] = {
+            "executables": {bench: hashlib.sha256((directory / bench).read_bytes()).hexdigest()
+                            for bench in BENCHES},
+            "project_shared_libraries": libraries,
+        }
+    return result
 
 
 def main() -> int:
@@ -131,6 +156,14 @@ def main() -> int:
         print("Evidence directory is not empty; use a fresh directory without overwriting an attempt", file=sys.stderr)
         return 2
     try:
+        overrides = loader_overrides(dict(os.environ))
+        if overrides:
+            raise ValueError("external loader overrides are unsupported for measurement: " + ", ".join(overrides))
+        (output / "loader-environment.json").write_text(json.dumps({
+            "nonempty_overrides": overrides,
+            "checked": "DYLD_*; LD_LIBRARY_PATH; LD_PRELOAD; LD_AUDIT",
+            "scope": "project shared libraries in each executable directory and sibling lib; system libraries remain host provenance"
+        }, indent=2) + "\n", encoding="utf-8")
         directories = {name: path.resolve() for name, path in
                        (("baseline", args.baseline), ("candidate", args.candidate), ("slow-control", args.slow_control))}
         initial_hashes = binary_hashes(directories)
@@ -160,7 +193,7 @@ def main() -> int:
             phases.append({"phase": name, "exit_code": result.returncode})
             (output / "phase-results.json").write_text(json.dumps(phases, indent=2) + "\n", encoding="utf-8")
             if binary_hashes(directories) != initial_hashes:
-                raise ValueError("benchmark binaries changed during measurement")
+                raise ValueError("benchmark executables or project shared libraries changed during measurement")
             if protocol_hashes(frozen_paths) != initial_protocol_hashes:
                 raise ValueError("frozen analysis, qualification code or policy changed during measurement")
             if result.returncode not in (0, 1, 3):
