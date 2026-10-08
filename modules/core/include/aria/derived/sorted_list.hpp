@@ -190,7 +190,7 @@ public:
         : SortedList(std::move(source), make_comparator(std::forward<Fn>(comparator)), ComparatorTag{}) {}
 
 private:
-    SortedList(std::shared_ptr<Source> source, std::shared_ptr<ComparatorState> comparator, ComparatorTag)
+    SortedList(std::shared_ptr<Source> source, std::shared_ptr<ComparatorState> comparator, ComparatorTag /*tag*/)
         : source_(std::move(source)),
           signal_(std::make_shared<Signal>()),
           state_(std::make_shared<SharedState>())
