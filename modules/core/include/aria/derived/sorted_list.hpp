@@ -803,7 +803,7 @@ template<typename Source,
 sorted(std::shared_ptr<Source> source, Comparator comparator) {
     return std::make_shared<SortedList<T, Source>>(
         std::move(source),
-        typename SortedList<T, Source>::Comparator{std::move(comparator)});
+        std::move(comparator));
 }
 
 }  // namespace aria

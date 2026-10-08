@@ -31,6 +31,42 @@ TEST_CASE("ThreadPoolExecutor: runs tasks across threads") {
     CHECK(counter.load() == 100);
 }
 
+TEST_CASE("ThreadPoolExecutor: repeated empty-to-ready transitions do not lose wakeups") {
+    ThreadPoolExecutor executor{3};
+    for (int iteration = 0; iteration < 1000; ++iteration) {
+        std::promise<int> complete;
+        auto future = complete.get_future();
+        executor.post([&complete, iteration] { complete.set_value(iteration); });
+        REQUIRE(future.wait_for(std::chrono::seconds{2}) == std::future_status::ready);
+        CHECK(future.get() == iteration);
+        executor.wait_idle();
+    }
+}
+
+TEST_CASE("ThreadPoolExecutor: concurrent producers drain every published task") {
+    ThreadPoolExecutor executor{4};
+    std::atomic<unsigned> done{0};
+    std::vector<std::thread> producers;
+    producers.reserve(4);
+    for (int producer = 0; producer < 4; ++producer) {
+        producers.emplace_back([&] {
+            for (int task = 0; task < 500; ++task) {
+                executor.post([&] { done.fetch_add(1, std::memory_order_relaxed); });
+            }
+        });
+    }
+    for (auto& producer : producers) { producer.join(); }
+    executor.wait_idle();
+    CHECK(done.load() == 2000);
+}
+
+TEST_CASE("ThreadPoolExecutor: idle destruction wakes and joins all workers") {
+    for (int iteration = 0; iteration < 32; ++iteration) {
+        ThreadPoolExecutor executor{4};
+        executor.wait_idle();
+    }
+}
+
 namespace {
 struct ExecutorClearCapture {
     MainThreadExecutor* executor;

@@ -92,6 +92,10 @@ TEST_CASE("SortedList: concrete scan and scalar search use the same mutable targ
     SortedList<Plain> sorted{source, Comparator{identity}};
     for (int value : {4, 3, 2, 1, 0}) { source->push_back(make_plain(value)); }
     CHECK(values_of(sorted) == std::vector<int>{0, 1, 2, 3, 4});
+    auto factory_identity = std::make_shared<const void*>(nullptr);
+    auto from_factory = aria::sorted(source, Comparator{factory_identity});
+    source->push_back(make_plain(5));
+    CHECK(from_factory->snapshot() == sorted.snapshot());
 }
 
 TEST_CASE("SortedList: append comparator reentry sees the previous committed layout") {

@@ -6,6 +6,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <coroutine>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <future>
@@ -84,7 +85,8 @@ public:
                 std::scoped_lock lk(mutex_);
                 stop_ = true;
             }
-            cv_.notify_all();
+            wake_sequence_.fetch_add(1, std::memory_order_release);
+            wake_sequence_.notify_all();
             for (auto& worker : workers_) {
                 if (worker.joinable()) { worker.join(); }
             }
@@ -110,7 +112,8 @@ public:
             std::lock_guard lk(mutex_);
             stop_ = true;
         }
-        cv_.notify_all();
+        wake_sequence_.fetch_add(1, std::memory_order_release);
+        wake_sequence_.notify_all();
         for (auto& t : workers_) if (t.joinable()) t.join();
     }
 
@@ -120,7 +123,8 @@ public:
             queue_.push(std::move(fn));
             inflight_.fetch_add(1, std::memory_order_relaxed);
         }
-        cv_.notify_one();
+        wake_sequence_.fetch_add(1, std::memory_order_release);
+        wake_sequence_.notify_one();
     }
 
     /// Worker pool: NOT safe as the graph executor. Property writes
@@ -151,7 +155,12 @@ private:
             std::function<void()> fn;
             {
                 std::unique_lock lk(mutex_);
-                cv_.wait(lk, [this] { return stop_ || !queue_.empty(); });
+                while (!stop_ && queue_.empty()) {
+                    const auto sequence = wake_sequence_.load(std::memory_order_acquire);
+                    lk.unlock();
+                    wake_sequence_.wait(sequence, std::memory_order_acquire);
+                    lk.lock();
+                }
                 if (stop_ && queue_.empty()) return;
                 fn = std::move(queue_.front());
                 queue_.pop();
@@ -175,7 +184,10 @@ private:
     std::vector<std::thread> workers_;
     std::queue<std::function<void()>> queue_;
     std::mutex mutex_;
-    std::condition_variable cv_;       // wakes workers
+    // Publication epochs avoid the condition-variable re-lock handshake.
+    // A worker samples the epoch while holding the queue lock, then waits
+    // outside it: a post between unlock and wait changes the sampled value.
+    std::atomic<std::uint64_t> wake_sequence_{0};
     std::condition_variable idle_cv_;  // wakes wait_idle()
     std::atomic<int> inflight_{0};
     bool stop_;

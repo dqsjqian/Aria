@@ -20,6 +20,10 @@ All notable changes to **aria** are documented here.
   keep erased comparator compatibility and one shared target instance. Ordered
   source-tail inserts preallocate before a non-throwing layout commit instead
   of mirroring the insertion into a second working copy.
+- Use publication epochs with C++ atomic wait/notify for worker availability;
+  preserve queue serialization and idle joining while avoiding the worker
+  condition-variable wake/re-lock handshake. Add repeated wakeup, concurrent
+  producer and idle shutdown regressions.
 - Avoid per-call vector allocation for a single main-thread dispatch, repeated
   owner-thread compare-exchange operations and owner-to-self wakeups. Retain
   batch ordering, exception routing, foreign-thread wakeups and blocking waits.
