@@ -14,7 +14,11 @@ All notable changes to **aria** are documented here.
 
 ---
 
-## 3.2.0 — 2026-10-08
+## 3.2.0 — 2026-10-09
+
+- Select the published Mira 1.1.1 HTTP dependency and retain ABI version 2.
+- Treat equivalent dependency-prefix paths consistently while preserving
+  CMake package search order and rejecting a genuinely different cache identity.
 
 - Separate calibrated historical absolute budgets from same-runner release
   regression results. Keep every original numeric ceiling and growth workload;
