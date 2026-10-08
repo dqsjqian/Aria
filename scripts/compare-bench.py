@@ -11,7 +11,7 @@ import statistics
 import subprocess
 from pathlib import Path
 
-BENCHES = ("aria_bench_list", "aria_bench_derived_list")
+BENCHES = ("aria_bench_list", "aria_bench_derived_list", "aria_bench_async_command")
 ROW = re.compile(
     r"^P\s+(?P<name>.+?)\s+mean=\s*(?P<mean>\S+)ns\s+"
     r"p50=\s*(?P<p50>\S+)ns\s+p95=\s*(?P<p95>\S+)ns\s+"

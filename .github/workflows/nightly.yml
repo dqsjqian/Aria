@@ -69,7 +69,7 @@ jobs:
             -DARIA_ENABLE_ASAN=OFF \
             -DARIA_ENABLE_UBSAN=OFF
           cmake --build baseline-source/build/flavors/bench -j \
-            --target aria_bench_list aria_bench_derived_list
+            --target aria_bench_list aria_bench_derived_list aria_bench_async_command
 
       - name: Compare collections on the same runner
         if: github.event_name == 'workflow_dispatch' && inputs.baseline_ref != ''

@@ -209,7 +209,8 @@ a summary table. Binary failures and threshold violations still return nonzero
 exit codes rather than being hidden by `tee`.
 
 A manual Nightly run accepts an optional `baseline_ref`. It builds the baseline
-and candidate on the same runner with the same Release flags, then calls
+and candidate on the same runner with the same Release flags, comparing the
+collection and AsyncCommand dispatch workloads, then calls
 `scripts/compare-bench.py --baseline <old-bin-dir> --candidate <new-bin-dir>
 --output <evidence-dir> --rounds 3`. Both sides receive one warmup, followed by
 alternating AB/BA runs. Raw logs, revisions, compiler information and a JSON

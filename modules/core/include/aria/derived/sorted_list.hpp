@@ -467,7 +467,9 @@ private:
         const auto size = st.items.size();
         const auto skipped = skip.value_or(size);
         const std::size_t first = skipped == 0 ? 1 : 0;
-        if (first >= size) return true;
+        if (first >= size) {
+            return true;
+        }
         const auto& comparator = *st.comparator;
         const T* previous = st.items[first].get();
         auto previous_source = st.derived_to_source[first];

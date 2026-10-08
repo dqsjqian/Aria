@@ -417,6 +417,14 @@ TEST_CASE("ObservableList: bind-style on_changed does not deadlock push_back") {
     CHECK(hits >= 1);
 }
 
+static void check_installation_event(const ListChange<BindReactive>& event,
+                                     ListChangeKind kind, std::size_t index,
+                                     const std::shared_ptr<BindReactive>& item) {
+    CHECK(event.kind == kind);
+    CHECK(event.index == index);
+    CHECK(event.item == item);
+}
+
 TEST_CASE("ObservableList: reactive installation publishes structural events before synchronous changes") {
     ObservableList<BindReactive> list;
     list.push_back(std::make_shared<BindReactive>());
@@ -437,18 +445,12 @@ TEST_CASE("ObservableList: reactive installation publishes structural events bef
         list.insert_range(index, incoming.begin(), incoming.end());
     }
     REQUIRE(events.size() == 2);
-    CHECK(events[0].kind == structural);
-    CHECK(events[0].index == index);
-    CHECK(events[0].item == item);
-    CHECK(events[1].kind == ListChangeKind::ItemChanged);
-    CHECK(events[1].index == index);
-    CHECK(events[1].item == item);
+    check_installation_event(events.at(0), structural, index, item);
+    check_installation_event(events.at(1), ListChangeKind::ItemChanged, index, item);
     events.clear();
     item->v = 10;
     REQUIRE(events.size() == 1);
-    CHECK(events[0].kind == ListChangeKind::ItemChanged);
-    CHECK(events[0].index == index);
-    CHECK(events[0].item == item);
+    check_installation_event(events.at(0), ListChangeKind::ItemChanged, index, item);
 }
 
 TEST_CASE("ObservableList: bind-style on_changed survives insert/replace too") {
