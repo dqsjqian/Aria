@@ -371,6 +371,35 @@ physical host must also pass the unchanged absolute gate. An absolute result
 marked unavailable is never described as passing. A red relative gate cannot
 be waived by the historical reference report or by a better mean alone.
 
+The Nightly **bench job** uses the `ubuntu-24.04` runner image and explicitly
+selects `/usr/bin/gcc-14` / `/usr/bin/g++-14` for all three Release builds.
+TSan and fuzz jobs remain on `macos-26`. The image label and compiler major
+version do not fix the physical CPU or package patch versions, so artifacts
+also record compiler/package versions, CPU topology, inherited affinity,
+load, CPU pressure and available cgroup quota information. These observations
+do not change affinity, sample counts, acceptance limits or retry behavior.
+Linux/GCC cannot satisfy the historical physical M3 Pro/AppleClang profile;
+its absolute-budget result remains explicitly **unavailable**.
+
+This environment change follows incomplete measurement qualification on the
+macOS hosted VM: run `37821972879` had two inconclusive A-A batch-mean P99
+statistics and two inconclusive delay-control statistics, so it did not
+measure the candidate. The Linux environment must qualify with its own fresh,
+complete A-A and delay controls before measuring its exact candidate revision.
+All 24 statistics, fixed R64/P512 counts and the 1.10 limit remain unchanged;
+moving the job is not evidence that the new environment will qualify.
+The workflow concurrency group preserves an active campaign when another
+scheduled or manual run arrives; it does not cancel an unfinished fixed sample.
+This protects measurement completeness and does not add a retry.
+
+The separate physical M3 Pro campaign measured commit
+`77098cf3b023a5cbe063e2e3af4e50198c6b8691` against published `v3.1.1`: all
+24 A-A statistics passed, all 24 delay-control statistics detected the delay,
+all 24 candidate statistics passed, and the 12 historical budgets passed in
+one attempt. That result belongs to that measured commit and host. Later
+workflow/documentation revisions are different source identities; they do not
+inherit the physical measurement or establish Linux performance.
+
 Run benchmarks after builds and tests finish. Keep every attempted measurement;
 report ownership/memory costs with throughput. The bare-executor diagnostic `D`
 row includes framework queueing and pumping, so it is neither a pure OS floor

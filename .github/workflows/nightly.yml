@@ -18,17 +18,46 @@ permissions:
 
 concurrency:
   group: nightly-bench
-  cancel-in-progress: true
+  # Preserve the active fixed-sample campaign when a schedule or dispatch arrives.
+  cancel-in-progress: false
 
 jobs:
   bench:
-    name: Paired regression + historical budget report
-    runs-on: macos-26
+    name: Paired regression (Ubuntu 24.04, GCC 14) + historical report
+    runs-on: ubuntu-24.04
+    env:
+      CC: /usr/bin/gcc-14
+      CXX: /usr/bin/g++-14
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install ninja
-        run: brew install ninja
+      - name: Install GCC 14 and ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build g++-14
+
+      - name: Record Linux environment before builds and measurement
+        run: |
+          mkdir -p bench-comparison
+          {
+            date --utc --iso-8601=seconds
+            uname -srvmo
+            cat /etc/os-release
+            lscpu
+            taskset -pc $$
+            cat /proc/loadavg
+            for path in /proc/pressure/cpu /sys/fs/cgroup/cpu.max /sys/fs/cgroup/cpu.stat /sys/fs/cgroup/cpuset.cpus.effective; do
+              echo "--- $path ---"
+              if [[ -r "$path" ]]; then cat "$path"; else echo unavailable; fi
+            done
+          } > bench-comparison/host-before.txt
+          {
+            "$CC" --version
+            "$CXX" --version
+            cmake --version
+            ninja --version
+            dpkg-query -W -f='${Package} ${Version}\n' gcc-14 g++-14 ninja-build
+          } > bench-comparison/toolchain.txt
 
       - name: Configure (Release, no sanitizers)
         run: |
@@ -37,7 +66,10 @@ jobs:
             -DARIA_BUILD_TESTS=OFF \
             -DARIA_BUILD_BENCHMARK=ON \
             -DARIA_ENABLE_ASAN=OFF \
-            -DARIA_ENABLE_UBSAN=OFF
+            -DARIA_ENABLE_UBSAN=OFF \
+            -DARIA_ENABLE_TSAN=OFF \
+            -DARIA_ENABLE_MSAN=OFF \
+            -DARIA_BENCH_CONTROL_STRETCH_PERCENT=0
 
       - name: Build all bench binaries
         id: build-candidate
@@ -73,19 +105,20 @@ jobs:
         id: build-baseline
         run: |
           cp benchmark/*.cpp benchmark/bench_common.hpp benchmark/CMakeLists.txt baseline-source/benchmark/
-          shasum -a 256 benchmark/*.cpp benchmark/bench_common.hpp benchmark/CMakeLists.txt > bench-comparison/harness-sha256.txt
+          sha256sum benchmark/*.cpp benchmark/bench_common.hpp benchmark/CMakeLists.txt > bench-comparison/harness-sha256.txt
           cmake -S baseline-source -B baseline-source/build/flavors/bench -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_TESTS=OFF \
             -DARIA_BUILD_BENCHMARK=ON \
             -DARIA_ENABLE_ASAN=OFF \
-            -DARIA_ENABLE_UBSAN=OFF
+            -DARIA_ENABLE_UBSAN=OFF \
+            -DARIA_ENABLE_TSAN=OFF \
+            -DARIA_ENABLE_MSAN=OFF \
+            -DARIA_BENCH_CONTROL_STRETCH_PERCENT=0
           cmake --build baseline-source/build/flavors/bench -j --target aria_bench_regression aria_bench_iproperty aria_bench_command aria_bench_trace_sink
           git rev-parse HEAD > bench-comparison/candidate-revision.txt
           git -C baseline-source rev-parse HEAD > bench-comparison/baseline-revision.txt
-          c++ --version > bench-comparison/compiler.txt
-          uname -a > bench-comparison/host.txt
-          sysctl -n machdep.cpu.brand_string hw.model hw.logicalcpu >> bench-comparison/host.txt
+          "$CXX" --version > bench-comparison/compiler.txt
 
       - name: Build independent real-delay measurement control
         id: build-control
@@ -96,15 +129,29 @@ jobs:
             -DARIA_BUILD_BENCHMARK=ON \
             -DARIA_ENABLE_ASAN=OFF \
             -DARIA_ENABLE_UBSAN=OFF \
+            -DARIA_ENABLE_TSAN=OFF \
+            -DARIA_ENABLE_MSAN=OFF \
             -DARIA_BENCH_CONTROL_STRETCH_PERCENT=20
           cmake --build baseline-source/build/flavors/control -j \
             --target aria_bench_regression aria_bench_iproperty aria_bench_command aria_bench_trace_sink
 
+      - name: Retain build configuration and commands
+        run: |
+          for role in candidate baseline control; do
+            case "$role" in
+              candidate) directory=build/flavors/bench ;;
+              baseline) directory=baseline-source/build/flavors/bench ;;
+              control) directory=baseline-source/build/flavors/control ;;
+            esac
+            cp "$directory/CMakeCache.txt" "bench-comparison/$role-CMakeCache.txt"
+            cp "$directory/compile_commands.json" "bench-comparison/$role-compile_commands.json"
+          done
+
       - name: Historical absolute budget (profile-qualified)
         if: always() && steps.build-candidate.outcome == 'success'
         shell: bash
-        # A VM has no historical physical-host calibration. Exit 3 is explicitly
-        # recorded as unavailable, never reported as an absolute-budget pass.
+        # Linux/GCC has no historical M3 Pro/AppleClang calibration. Exit 3 is
+        # explicitly unavailable, never an absolute-budget pass.
         # The independent paired gate below still must pass on this runner.
         run: |
           set -o pipefail
@@ -125,6 +172,23 @@ jobs:
             --candidate build/flavors/bench/bin \
             --slow-control baseline-source/build/flavors/control/bin \
             --output bench-comparison/validation
+
+      - name: Record Linux environment after measurement
+        if: always()
+        # Observation only: do not change affinity, scheduling, load limits,
+        # sample counts or acceptance policy in response to these values.
+        run: |
+          mkdir -p bench-comparison
+          {
+            date --utc --iso-8601=seconds
+            lscpu
+            taskset -pc $$
+            cat /proc/loadavg
+            for path in /proc/pressure/cpu /sys/fs/cgroup/cpu.max /sys/fs/cgroup/cpu.stat /sys/fs/cgroup/cpuset.cpus.effective; do
+              echo "--- $path ---"
+              if [[ -r "$path" ]]; then cat "$path"; else echo unavailable; fi
+            done
+          } > bench-comparison/host-after.txt
 
       - name: Upload bench output
         # Always upload, even on failure — that way the regressed

@@ -31,6 +31,15 @@ All notable changes to **aria** are documented here.
   twelve scenarios using joint median-ratio intervals. Keep inconclusive results
   nonzero and retain raw samples, worst-case diagnostics and provenance;
   describe P99 as a percentile of batch means, not individual operations.
+- Run the Nightly benchmark job on Ubuntu 24.04 with GCC 14 for candidate,
+  release baseline and real-delay control; retain macOS TSan/fuzz jobs. Record
+  Linux CPU, affinity, load, pressure and toolchain metadata without changing
+  the 24-statistic R64/P512 protocol or its 10% limit. The historical M3 Pro
+  budget remains unavailable on Linux, and unqualified controls still fail the
+  gate before candidate measurement. Existing physical measurements belong to
+  commit `77098cf`, not subsequent workflow/documentation revisions.
+- Preserve an active Nightly campaign when scheduled or manual runs overlap,
+  so concurrency cancellation cannot truncate its fixed sample.
 
 - Inline concrete SortedList comparators across the complete live-order scan;
   keep erased comparator compatibility and one shared target instance. Ordered
