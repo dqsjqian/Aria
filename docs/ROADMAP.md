@@ -1,6 +1,6 @@
 # Aria Roadmap
 
-> Current framework version: `3.1.1`. This is a working priority list, not a
+> Current framework version: `3.2.0`. This is a working priority list, not a
 > release schedule. See the changelog for versioned changes.
 
 ## Direction
@@ -34,6 +34,17 @@ These capabilities already exist and should not be scheduled again:
 
 Release history is in [CHANGELOG.md](../CHANGELOG.md). Earlier roadmap
 rationale remains available in this file's Git history.
+
+## Performance regression acceptance
+
+Historical physical-host budgets and same-host comparisons against a pinned
+published release now have separate results. Fixed-window measurements retain
+1,024 batch means per run, balanced release/candidate repeats, validity checks
+and explicit nonzero inconclusive outcomes. See the
+[measurement protocol](reference/performance.md#reproducible-measurements-and-acceptance).
+A hosted VM does not inherit the physical Apple M3 Pro calibration from its
+OS/architecture label. Keep platform calibration work separate from algorithm
+optimization; never promote a noisy result to a performance pass.
 
 ## Established correctness contracts
 

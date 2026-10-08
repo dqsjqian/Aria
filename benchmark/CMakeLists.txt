@@ -9,7 +9,15 @@
 # scripts that invoke `aria_bench` keep working without paying to
 # compile bench_command.cpp twice.
 
+# The positive-control build uses the same operations but injects a real 20%
+# delay into measured batches. It is never used for library performance claims.
+set(ARIA_BENCH_CONTROL_STRETCH_PERCENT "0" CACHE STRING "Benchmark measurement control (0 or 20)")
+if(NOT ARIA_BENCH_CONTROL_STRETCH_PERCENT MATCHES "^(0|20)$")
+    message(FATAL_ERROR "ARIA_BENCH_CONTROL_STRETCH_PERCENT must be 0 or 20")
+endif()
+
 set(_bench_targets
+    aria_bench_regression    # Versioned fixed-window paired workload
     aria_bench_command       # Property / Computed / EventBus / Container
     aria_bench_list          # ObservableList mutations
     aria_bench_derived_list  # FilteredList / SortedList / MappedList
@@ -18,6 +26,7 @@ set(_bench_targets
     aria_bench_trace_sink    # TraceSink D-24 zero-overhead contract
 )
 
+add_executable(aria_bench_regression    bench_regression.cpp)
 add_executable(aria_bench_command       bench_command.cpp)
 add_executable(aria_bench_list          bench_list.cpp)
 add_executable(aria_bench_derived_list  bench_derived_list.cpp)
@@ -34,7 +43,8 @@ foreach(_t IN LISTS _bench_targets)
     else()
         target_compile_options(${_t} PRIVATE $<$<CONFIG:Release>:-O3>)
     endif()
-    target_compile_definitions(${_t} PRIVATE $<$<CONFIG:Release>:NDEBUG>)
+    target_compile_definitions(${_t} PRIVATE $<$<CONFIG:Release>:NDEBUG>
+        ARIA_BENCH_CONTROL_STRETCH_PERCENT=${ARIA_BENCH_CONTROL_STRETCH_PERCENT})
     target_include_directories(${_t} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endforeach()
 

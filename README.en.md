@@ -327,6 +327,12 @@ still use the existing device runners. Windows defaults to MSVC; MinGW is an
 explicit separate cache. Ninja/MSVC requires a developer environment. Existing
 SDK packaging and deployment scripts remain available.
 
+On macOS, `--arch x86_64` / `--arch arm64` selects the actual target architecture.
+Visual Studio accepts `--generator-platform x64` (or `ARM64`). Extra definitions
+use `--cmake-arg=-DNAME[:TYPE]=VALUE` and cannot override the selected configuration
+or toolchain. Compiler, toolchain and architecture cache conflicts are checked
+before fetching dependencies; existing build directories are preserved.
+
 ### One-liner build scripts
 
 ```bash

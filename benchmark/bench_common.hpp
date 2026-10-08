@@ -18,6 +18,32 @@ namespace aria_bench {
 
 using clk = std::chrono::steady_clock;
 
+#ifndef ARIA_BENCH_CONTROL_STRETCH_PERCENT
+#define ARIA_BENCH_CONTROL_STRETCH_PERCENT 0
+#endif
+inline constexpr int control_stretch_percent = ARIA_BENCH_CONTROL_STRETCH_PERCENT;
+
+inline void control_banner() {
+    std::cout << "C ARIA_BENCH_CONTROL stretch_percent=" << control_stretch_percent << '\n';
+}
+
+// A separate measurement-control binary can add a known real wall-clock delay
+// after each unchanged operation batch. This validates the detector, not a
+// specific algorithm regression. Normal binaries compile this branch away.
+inline auto sample_duration(clk::time_point start, clk::time_point end) {
+    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+    if constexpr (control_stretch_percent > 0) {
+        const auto target = ns + (ns * control_stretch_percent + 99) / 100;
+        const auto deadline = start + std::chrono::nanoseconds{target};
+        while (clk::now() < deadline) {
+            std::atomic_signal_fence(std::memory_order_seq_cst);
+        }
+        ns = std::chrono::duration_cast<std::chrono::nanoseconds>(clk::now() - start).count();
+    }
+    return ns;
+}
+
+
 /// Accumulator that keeps a benchmarked expression from being optimised
 /// away, without `volatile`.
 ///
@@ -64,6 +90,7 @@ inline void row(const std::string& name, double ns, int iters) {
 inline void banner(const std::string& title) {
     std::cout << "\n=== " << title << " ===\n";
     std::cout << "  (-O3 -DNDEBUG)\n\n";
+    control_banner();
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -83,7 +110,7 @@ inline void banner(const std::string& title) {
 //  We sample in BATCHES rather than per-op because individual op
 //  latencies on x86/arm are often dominated by clock-source overhead
 //  (~20–30 ns per now() call). Batching keeps the overhead amortized
-//  while still giving enough samples for stable P95/P99.
+//  but does not guarantee stable tail estimates (64 samples makes P99 the maximum).
 // ─────────────────────────────────────────────────────────────────────
 
 struct PercentileStats {
@@ -93,10 +120,12 @@ struct PercentileStats {
     double p99_ns  = 0.0;
     int    samples = 0;
     int    ops_per_sample = 0;
+    std::vector<double> sample_means_ns;
 };
 
 template<typename Fn>
-inline PercentileStats measure_percentiles(int samples, int ops_per_sample, Fn&& fn) {
+inline PercentileStats measure_percentiles_prepared(int samples, int ops_per_sample,
+                                                   auto&& prepare, Fn&& fn) {
     std::vector<double> ns_per_op;
     ns_per_op.reserve(static_cast<std::size_t>(samples));
 
@@ -104,12 +133,13 @@ inline PercentileStats measure_percentiles(int samples, int ops_per_sample, Fn&&
     int op_index = 0;
 
     for (int s = 0; s < samples; ++s) {
+        prepare(s); // Fixture construction/reset is deliberately outside timing.
         auto t0 = clk::now();
         for (int j = 0; j < ops_per_sample; ++j) {
             fn(op_index++);
         }
         auto t1 = clk::now();
-        auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+        auto ns = sample_duration(t0, t1);
         total_ns += ns;
         ns_per_op.push_back(double(ns) / double(ops_per_sample));
     }
@@ -120,6 +150,7 @@ inline PercentileStats measure_percentiles(int samples, int ops_per_sample, Fn&&
     out.mean_ns        = double(total_ns) / (double(samples) * double(ops_per_sample));
 
     if (!ns_per_op.empty()) {
+        out.sample_means_ns = ns_per_op;
         std::sort(ns_per_op.begin(), ns_per_op.end());
         auto pick = [&](double q) {
             // Nearest rank: ceil(q * N), converted to a zero-based index.
@@ -136,17 +167,33 @@ inline PercentileStats measure_percentiles(int samples, int ops_per_sample, Fn&&
     return out;
 }
 
+template<typename Fn>
+inline PercentileStats measure_percentiles(int samples, int ops_per_sample, Fn&& fn) {
+    return measure_percentiles_prepared(samples, ops_per_sample, [](int) {}, fn);
+}
+
 // Print a percentile-rich row alongside the existing mean-only `row()`
 // output. The leading "P  " marker makes the line trivially greppable
 // from CI scripts (check-bench.sh keys off it).
-inline void row_pct(const std::string& name, const PercentileStats& s) {
-    std::cout << "P " << std::left << std::setw(52) << name
-              << std::right << std::fixed << std::setprecision(1)
+inline void row_pct(const std::string& name, const PercentileStats& s,
+                    const char* marker = "P ") {
+    std::cout << marker << std::left << std::setw(52) << name
+              << std::right << std::fixed << std::setprecision(6)
               << "mean=" << std::setw(8) << s.mean_ns << "ns  "
               << "p50="  << std::setw(8) << s.p50_ns  << "ns  "
               << "p95="  << std::setw(8) << s.p95_ns  << "ns  "
               << "p99="  << std::setw(8) << s.p99_ns  << "ns"
               << "  (" << s.samples << "x" << s.ops_per_sample << ")\n";
+    { // Raw ordered batch means are retained for every acceptance metric.
+        std::cout << "S {\"metric\":" << std::quoted(name) << ",\"batch_means_ns\":[";
+        bool first = true;
+        for (double value : s.sample_means_ns) {
+            if (!first) { std::cout << ','; }
+            std::cout << std::setprecision(6) << value;
+            first = false;
+        }
+        std::cout << "]}\n";
+    }
 }
 
 }  // namespace aria_bench

@@ -19,12 +19,12 @@ Use the release benchmarks to measure a workload on its actual target.
 | PERF-4 | Equal property writes stop after value comparison and do not propagate. |
 | PERF-5 | Benchmark thresholds sample specific operations; they do not establish bounds for every API or every host. Investigate failures before changing a threshold. |
 
-The nightly percentile gate measures distributions of **batch-average time per
-operation**, not individual-operation tail latency. For example, AsyncCommand
-uses 64 samples of 50 executions each; its nearest-rank P99 is the largest of
-those 64 sample averages. Run it on an otherwise idle host: competing builds
-affect scheduling measurements. `check-bench.sh --runs N` reports the lowest
-P99 across N runs, so retain individual runs when investigating variability.
+The nightly percentile gates measure distributions of **batch-average time per
+operation**, not individual-operation tail latency. For example, the historical AsyncCommand `P` workload uses 64 batches of 50
+executions, so P99 is the largest batch average. The separate fixed-window
+`R` workload uses 1,024 batches to better resolve the upper tail. Run it on an otherwise idle host: competing builds
+affect scheduling measurements. `check-bench.sh --runs N` reports the worst
+P99 across N runs and retains every run; retries cannot erase a violation.
 
 ## Reactive graph
 
@@ -212,44 +212,136 @@ before committing a non-throwing index/handle update under the layout lock.
 Other updates retain the existing transactional scratch path. Full live-key
 order validation and stable equal-key ordering remain mandatory.
 
-## Reproducible measurements
+## Reproducible measurements and acceptance
 
-Build with `CMAKE_BUILD_TYPE=Release` and `ARIA_BUILD_BENCHMARK=ON`, then run
-`scripts/check-bench.sh build/flavors/release`. The six benchmark executables
-also report their full scenario tables when run directly.
+Performance acceptance has two independent results. Neither is an industry
+standard or a promise about individual-operation latency.
 
-The gate streams each run's raw stdout alongside its final summary, with stderr
-passed through separately. Nightly's `bench-output.txt` retains mean/P50/P95/P99,
-sample counts and output emitted before a failure; `GITHUB_STEP_SUMMARY` remains
-a summary table. Binary failures and threshold violations still return nonzero
-exit codes rather than being hidden by `tee`.
+1. **Historical absolute budgets** in
+   [thresholds.json](../../benchmark/thresholds.json) retain every original
+   numeric ceiling and every original `P` workload. They describe batch-mean
+   percentiles on a physical Apple M3 Pro with AppleClang 21, Release and no
+   sanitizers. `scripts/check-bench.sh <build-dir>` records the machine,
+   compiler, canonical CMake Release flags and 1/5/15-minute load before and after
+   measurement. Custom flags, launchers or toolchains cannot claim calibration.
+   The operational idle-profile check requires every load average to be at most
+   half the logical CPU count; this validity check is not a new calibration.
+   An incompatible or busy host returns **3, unavailable**, with all raw values
+   and reference comparisons intact. A compatible host returns 1 on a budget
+   violation, 0 only if every metric meets its ceiling. The OS/architecture
+   label alone cannot qualify a hosted VM. `--runs N` now checks **all** runs
+   and reports the worst batch-mean P99; it cannot select a passing retry.
+2. **Same-host regression** uses a separate, versioned fixed-window workload
+   and the full production trees of the candidate and published `v3.1.1`.
+   Nightly copies the exact candidate benchmark source/header/CMake harness
+   into the release checkout, then builds both with the same compiler and
+   Release options. It records source revisions, harness and binary hashes,
+   host details, warmups and every raw measurement. All `P` and `R` rows
+   retain every batch mean in sample order at six decimal places; the parser
+   independently reconstructs the mean and nearest-rank quantiles before
+   accepting them. Rounding uncertainty can only widen the ratio interval. The baseline is deliberately
+   pinned; publishing a new release does not silently move the comparison goal.
 
-A manual Nightly run accepts an optional `baseline_ref`. It builds the baseline
-and candidate on the same runner with the same Release flags, comparing the
-collection and AsyncCommand dispatch workloads, then calls
-`scripts/compare-bench.py --baseline <old-bin-dir> --candidate <new-bin-dir>
---output <evidence-dir> --rounds 3`. Both sides receive one warmup, followed by
-alternating AB/BA runs. Raw logs, revisions, compiler information and a JSON
-summary retain every measurement. Median comparisons are diagnostic only and
-do not replace or relax the ordinary single-run ceiling gate.
+The six historical executables still expose their original `P` scenarios.
+Their collection workloads grow through the timed run: ObservableList starts
+at 1,024 rows and ends at 52,224; Filtered/Sorted start at 10,000 and end at
+35,600. The historical `n=10k` label describes the initial size. Those results
+must not be presented as fixed-size collection measurements.
 
-Percentile rows use a steady clock and nearest-rank P50/P95/P99 over repeated
-samples. Each sample averages several operations; these percentiles describe
-sample averages, not the latency distribution of individual operations.
-`--runs N` reports the lowest P99 per metric across N complete runs. This can
-reduce local scheduling noise, but must be disclosed when comparing results.
-Use single-run results or retain every run when studying latency variability.
+`aria_bench_regression` adds `R` rows identified by `fixed-window-v2`:
 
-[thresholds.json](../../benchmark/thresholds.json) contains the measured metric
-names and host-specific ceilings. The check rejects malformed, non-finite,
-duplicate and missing measurements, including a missing metric in only one
-of several runs. A new percentile metric must be registered in that file;
-a new executable must also be registered in the benchmark CMake and scripts.
+| Scenario | Each timed batch | Batches per executable run |
+|---|---|---:|
+| ObservableList append | 1,024 through 1,223 pre-insert rows, 200 allocations/appends | 1,024 |
+| FilteredList append | 10,000 through 10,199 pre-insert rows, 200 allocations/appends | 1,024 |
+| SortedList random-key append | Same 10,000-row seed and random keys, 200 allocations/appends | 1,024 |
+| AsyncCommand round trip | Two workers, 50 sequential execute/pump round trips | 1,024 |
 
-Compare the same workload, compiler, optimization flags and host at both
-revisions. Run benchmarks after builds/tests finish, and report ownership or
-memory costs alongside speedups. A threshold failure is evidence to investigate,
-not a reason to silently loosen the gate.
+Each collection fixture is recreated outside its timed batch, including the
+same initial capacity-growth opportunity on both production trees. The workload
+is a **fixed growth window**, not a claim that every operation has the same N.
+Async includes allocation, dispatch, OS scheduling and return to the UI thread.
+Every percentile uses `steady_clock`, batch elapsed time divided by operation
+count, and nearest rank. At 1,024 batches, P99 is the 1,014th ordered batch
+average. It is not the P99 of 51,200 individual commands. The earlier v1 pilot
+retained the historical 64/128/256 batch counts and produced inconclusive tail
+results; v2 increases precision without changing the 10% acceptance policy or
+historical `P` measurements.
+
+Build an additional baseline control tree with
+`-DARIA_BENCH_CONTROL_STRETCH_PERCENT=20`. This adds a real, measured wall-clock
+wait after each unchanged percentile batch, targeting 20% of its original
+duration. The normal build compiles out this branch. The separate control
+binary identifies itself in its output; mismatched identities fail validation.
+Run the complete qualified gate with:
+
+```sh
+python3 scripts/run-bench-validation.py --baseline <release-bin-dir> \
+  --candidate <candidate-bin-dir> --slow-control <delay-control-bin-dir> \
+  --output <fresh-evidence-dir>
+```
+
+The runner freezes the analysis code and policy before measurement, verifies
+binary hashes throughout, and runs three independent phases: release versus
+itself (A-A), release versus the delay control, then release versus candidate.
+Every phase uses exactly **64 blocks**, preceded by one retained, excluded
+warmup on each side. A predeclared seed (20261008) shuffles 32 ABBA and 32 BAAB
+orientations, with A the release and B the other binary. Sampling never stops
+early, extends after inspecting results, or discards outliers. Both **mean and
+batch-mean P99** are evaluated for all four fixed-window scenarios and all eight
+remaining historical metrics (Property/IProperty, observer, Computed and four
+trace paths). The latter keep their original `P` sample shapes and identical
+source in both production trees, retaining all twelve areas of coverage.
+
+For each statistic, a block contributes the geometric ratio
+`sqrt(B1 * B2 / (A1 * A2))`. The estimand is the **population median of these
+repeated-run ratios**, not the worst run, a ratio of pooled operations, or
+individual-operation P99. The exact binomial order-statistic method described
+by [NIST](https://www.itl.nist.gov/div898/software/dataplot/refman1/auxillar/mediancl.htm)
+selects the 20th and 45th ordered ratios from 64 blocks. With Bonferroni control
+across 24 statistics, its joint coverage is at least 96.2493%, **conditional on
+independent, identically distributed block ratios**. Randomizing order and
+passing controls do not prove this assumption; scheduling drift may violate
+it. All block ratios, raw samples, repeat variation and the full worst-case
+cross-pair envelope remain available as diagnostics.
+
+[paired-policy.json](../../benchmark/paired-policy.json) retains the **1.10**
+relative regression limit established before the earlier pilots. This 10%
+bound is a project policy choice, not a historical budget or a physical or
+statistical constant. An upper interval endpoint at most 1.10 passes; a lower
+endpoint above 1.10 is a regression (exit 1); a crossing interval is
+**inconclusive (exit 3)**. The fixed 64-block design is mandatory.
+
+All 24 A-A statistics must pass, and all 24 actual-delay statistics must detect
+regression, before the candidate is measured. If either control is inconclusive
+or contradicts its expected outcome, the result is **measurement-unavailable
+(exit 3)** and candidate status is **not-measured**. This distinguishes an
+unqualified measurement from candidate performance. The positive control tests
+sensitivity to an artificial 20% wall-clock delay; it does not establish
+sensitivity to every 10% algorithm regression or cross-platform performance.
+
+Earlier four-scenario pilots used a 10% maximum baseline-repeat veto; review
+found that veto unnecessary for bounded paired improvement and insufficient to
+establish independence. A subsequent ten-block full cross-pair-envelope pilot
+preserved variability but left 17 of 24 A-A statistics inconclusive even before
+rounding audit. Those attempts remain intact and inconclusive. The fixed
+`paired-median-v1` protocol changes the explicitly stated estimand and sampling
+design, retains the original 10% budget, and requires new independent controls
+and candidate data; it never relabels the pilots as passes.
+
+Malformed/missing/duplicate/nonfinite/changed-workload data or failed binaries
+return 2; partial bytes and completed measurements survive the failure.
+
+Nightly requires the relative gate to pass. It separately records the absolute
+budget result: hosted VMs remain explicitly uncalibrated, while a compatible
+physical host must also pass the unchanged absolute gate. An absolute result
+marked unavailable is never described as passing. A red relative gate cannot
+be waived by the historical reference report or by a better mean alone.
+
+Run benchmarks after builds and tests finish. Keep every attempted measurement;
+report ownership/memory costs with throughput. The bare-executor diagnostic `D`
+row includes framework queueing and pumping, so it is neither a pure OS floor
+nor something whose P99 can be subtracted from the command P99.
 
 See [lifecycle](lifecycle.md), [list events](list-diff-contract.md),
 [diagnostics](diagnostics.md) and [error behavior](error-model.md).

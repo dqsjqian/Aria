@@ -1,5 +1,5 @@
 {
-  "_comment": "Nightly benchmark P99 ceilings (nanoseconds). Keys under .metrics MUST match the metric label passed to row_pct() in benchmark/bench_*.cpp. CI's scripts/check-bench.sh parses bench stdout, picks the host-specific block under .hosts (or falls back to .metrics if the running host is not pinned), and fails the build when measured P99 exceeds the ceiling.",
+  "_comment": "Historical benchmark batch-mean P99 ceilings (nanoseconds). Keys under .metrics MUST match the metric label passed to row_pct() in benchmark/bench_*.cpp. CI's scripts/check-bench.sh parses bench stdout, picks the host-specific block under .hosts (or falls back to .metrics if the running host is not pinned), and fails a compatible calibrated host when measured P99 exceeds the ceiling; incompatible profiles retain reference comparisons and return 3 (unavailable).",
   "_unit": "nanoseconds",
   "_jitter_policy": "Multiplier applied to the measured P99 baseline depends on absolute scale. Sub-100ns hot paths (Property::set, set_any) get x3.0 because a single scheduler hiccup or icache miss is a meaningful fraction of the budget. Mid-range 100ns-1us paths get x2.0. Heavy ops above 1us get x1.5 since absolute jitter is a smaller share. The goal is a noise-tolerant ceiling that still catches a real 30-50% regression.",
   "_host_keys": "Host detection (lowercased OS-arch): 'macos-arm64', 'macos-x86_64', 'linux-x86_64', 'linux-aarch64', 'windows-x86_64', 'windows-aarch64'. Add a new key under .hosts when a CI runner with a materially different baseline comes online; until then the .metrics block is used as a generic fallback.",
@@ -20,7 +20,7 @@
   "hosts": {
     "macos-arm64": {
       "_baseline_machine": "Apple M-series, macOS 14+, AppleClang 17+, Release",
-      "_baseline_note": "Ceilings = quiet-host P99 × ._jitter_policy multiplier. Captured 2026-06-09 on an idle M-series host (no other heavy processes). On a busy developer machine these numbers will trip — that is intentional: a noisy machine should not anchor the regression budget. Use `scripts/check-bench.sh --runs 5` to take best-of-N and cancel local jitter, or run on a CI-grade quiet host.",
+      "_baseline_note": "Ceilings = quiet-host P99 \u00d7 ._jitter_policy multiplier. Captured 2026-06-09 on an idle M-series host (no other heavy processes). On a busy developer machine these numbers will trip \u2014 that is intentional: a noisy machine should not anchor the regression budget. Repeated runs retain the worst P99; retries must never select away failures. These historical budgets are calibrated for an idle physical Apple M3 Pro / AppleClang 21 host, not for hosted virtual machines.",
       "_trace_sink_note": "TraceSink rows captured 2026-08-31, same policy (sub-100ns => x3.0). Measured P99: gate 8.1, fast path 8.5, ungated 23.9, slow path 63.3. The ordering matters more than the absolute values: fast path must stay within noise of the bare gate (D-24), and the ungated row must stay visibly above it or the AD2 gating convention has stopped buying anything.",
       "metrics": {
         "Property<int>::set(i)": 80,
@@ -38,5 +38,7 @@
       },
       "_collection_2_0_note": "ABI 2 collection audit, Apple M3 Pro / AppleClang 21 / C++20 Release, five alternating paired runs after one warmup. Generic SortedList now validates live key order before binary search to handle pending batched writes: median sample-average P99 85,589ns (old complete tree 37,930ns); 130,000ns ceiling retains the >1us x1.5 policy, rounded up. FilteredList tail append no longer scans all mappings: single-run P99 623ns, ceiling tightened to 1,500ns. These are intentional contract/algorithm changes; all other ceilings are unchanged."
     }
-  }
+  },
+  "_absolute_profile": "physical-apple-m3-pro-appleclang21-release-idle-v1",
+  "_profile_note": "Only a verified compatible profile can pass/fail the historical absolute budget. Other hosts retain all raw values and ceiling comparisons but return 3 (unavailable). Idle validity requires pre/post 1/5/15-minute load <= half logical CPUs; this conservative operational limit is not a new calibration."
 }

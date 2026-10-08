@@ -14,7 +14,18 @@ All notable changes to **aria** are documented here.
 
 ---
 
-## Unreleased
+## 3.2.0 — 2026-10-08
+
+- Separate calibrated historical absolute budgets from same-runner release
+  regression results. Keep every original numeric ceiling and growth workload;
+  incompatible profiles are explicitly unavailable, and repeated runs can no
+  longer hide failures with best-of-N selection.
+- Add a versioned fixed-window collection/async benchmark with 1,024 batches,
+  identical release/candidate harnesses and 64 balanced paired blocks. Qualify
+  measurements with independent A-A and actual 20% delay controls, then gate all
+  twelve scenarios using joint median-ratio intervals. Keep inconclusive results
+  nonzero and retain raw samples, worst-case diagnostics and provenance;
+  describe P99 as a percentile of batch means, not individual operations.
 
 - Inline concrete SortedList comparators across the complete live-order scan;
   keep erased comparator compatibility and one shared target instance. Ordered

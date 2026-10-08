@@ -1,0 +1,10 @@
+{
+  "protocol": "paired-median-v1",
+  "workload": "fixed-window-v2",
+  "candidate_ratio_limit": 1.10,
+  "fixed_blocks": 64,
+  "family_alpha": 0.05,
+  "family_comparisons": 24,
+  "order_seed": 20261008,
+  "_policy": "Estimate the population median of balanced ABBA geometric ratios for each of twelve batch-mean and batch-mean-P99 metrics. Use the exact binomial median interval with Bonferroni control over 24 statistics; under iid block ratios, 64 blocks select ranks 20 and 45 and give at least 96.2493% joint coverage. Fixed sample size and orientation seed are declared before new controls/candidate runs, with no optional stopping or outlier deletion. Keep all raw runs, maximum cross-pair envelopes and repeated-baseline variation as diagnostics. The 10% regression limit and all historical absolute ceilings are unchanged. Previous short/envelope pilots remain inconclusive; they are not relabeled. Independent A-A and actual +20% wall-clock-delay binary controls must qualify the measurement before candidate acceptance. Controls do not prove iid or sensitivity to a 10% algorithm regression."
+}

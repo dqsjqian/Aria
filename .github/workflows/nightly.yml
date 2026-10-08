@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
     inputs:
       baseline_ref:
-        description: "Optional baseline commit for same-runner paired collection measurements"
+        description: "Published release baseline for same-runner fixed-window regression"
         required: false
-        default: ""
+        default: "v3.1.1"
         type: string
 
 permissions:
@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   bench:
-    name: Bench + P99 ceiling check
+    name: Paired regression + historical budget report
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
@@ -40,11 +40,13 @@ jobs:
             -DARIA_ENABLE_UBSAN=OFF
 
       - name: Build all bench binaries
+        id: build-candidate
         # Keep this list in sync with `benches=(...)` in
         # scripts/check-bench.sh and benchmark/CMakeLists.txt.
         run: |
           cmake --build build/flavors/bench -j \
             --target \
+              aria_bench_regression \
               aria_bench_iproperty \
               aria_bench_command \
               aria_bench_async_command \
@@ -52,52 +54,77 @@ jobs:
               aria_bench_derived_list \
               aria_bench_trace_sink
 
-      - name: Checkout optional baseline
-        if: github.event_name == 'workflow_dispatch' && inputs.baseline_ref != ''
+      - name: Verify published baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_REF: ${{ inputs.baseline_ref || 'v3.1.1' }}
+        run: |
+          mkdir -p bench-comparison
+          gh release view "$BASELINE_REF" --json tagName,isDraft,isPrerelease > bench-comparison/release-baseline.json
+          python3 scripts/verify-bench-release.py bench-comparison/release-baseline.json "$BASELINE_REF"
+
+      - name: Checkout release baseline
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.baseline_ref }}
+          ref: ${{ inputs.baseline_ref || 'v3.1.1' }}
           path: baseline-source
 
-      - name: Build optional baseline collection benchmarks
-        if: github.event_name == 'workflow_dispatch' && inputs.baseline_ref != ''
+      - name: Build release with the exact candidate harness
+        id: build-baseline
         run: |
+          cp benchmark/*.cpp benchmark/bench_common.hpp benchmark/CMakeLists.txt baseline-source/benchmark/
+          shasum -a 256 benchmark/*.cpp benchmark/bench_common.hpp benchmark/CMakeLists.txt > bench-comparison/harness-sha256.txt
           cmake -S baseline-source -B baseline-source/build/flavors/bench -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_TESTS=OFF \
             -DARIA_BUILD_BENCHMARK=ON \
             -DARIA_ENABLE_ASAN=OFF \
             -DARIA_ENABLE_UBSAN=OFF
-          cmake --build baseline-source/build/flavors/bench -j \
-            --target aria_bench_list aria_bench_derived_list aria_bench_async_command
-
-      - name: Compare collections on the same runner
-        if: github.event_name == 'workflow_dispatch' && inputs.baseline_ref != ''
-        run: |
-          mkdir -p bench-comparison
+          cmake --build baseline-source/build/flavors/bench -j --target aria_bench_regression aria_bench_iproperty aria_bench_command aria_bench_trace_sink
           git rev-parse HEAD > bench-comparison/candidate-revision.txt
           git -C baseline-source rev-parse HEAD > bench-comparison/baseline-revision.txt
           c++ --version > bench-comparison/compiler.txt
           uname -a > bench-comparison/host.txt
-          python3 scripts/compare-bench.py \
-            --baseline baseline-source/build/flavors/bench/bin \
-            --candidate build/flavors/bench/bin \
-            --output bench-comparison --rounds 3
+          sysctl -n machdep.cpu.brand_string hw.model hw.logicalcpu >> bench-comparison/host.txt
 
-      - name: Run benches and check P99 ceilings
+      - name: Build independent real-delay measurement control
+        id: build-control
+        run: |
+          cmake -S baseline-source -B baseline-source/build/flavors/control -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARIA_BUILD_TESTS=OFF \
+            -DARIA_BUILD_BENCHMARK=ON \
+            -DARIA_ENABLE_ASAN=OFF \
+            -DARIA_ENABLE_UBSAN=OFF \
+            -DARIA_BENCH_CONTROL_STRETCH_PERCENT=20
+          cmake --build baseline-source/build/flavors/control -j \
+            --target aria_bench_regression aria_bench_iproperty aria_bench_command aria_bench_trace_sink
+
+      - name: Historical absolute budget (profile-qualified)
+        if: always() && steps.build-candidate.outcome == 'success'
         shell: bash
-        # check-bench.sh does the whole job:
-        #   1. runs every aria_bench_* binary,
-        #   2. parses each "P …" row_pct line,
-        #   3. compares the P99 against benchmark/thresholds.json,
-        #   4. appends a Markdown summary table to
-        #      $GITHUB_STEP_SUMMARY (visible on the run page),
-        #   5. exits 1 if anything regressed past its ceiling.
-        # The script's own stdout is also tee'd to a log so the raw
-        # numbers ride along as a build/flavors/bench artifact.
+        # A VM has no historical physical-host calibration. Exit 3 is explicitly
+        # recorded as unavailable, never reported as an absolute-budget pass.
+        # The independent paired gate below still must pass on this runner.
         run: |
           set -o pipefail
-          ./scripts/check-bench.sh build/flavors/bench 2>&1 | tee bench-output.txt
+          status=0
+          ./scripts/check-bench.sh build/flavors/bench 2>&1 | tee bench-output.txt || status=$?
+          echo "Historical absolute-budget exit status: $status" | tee -a bench-output.txt
+          if [[ $status -eq 3 ]]; then
+            echo "Historical absolute budget unavailable on this profile; see measurements." >> "$GITHUB_STEP_SUMMARY"
+          else
+            exit "$status"
+          fi
+
+      - name: Gate fixed-window mean and batch-mean P99 against the release
+        if: always() && steps.build-control.outcome == 'success'
+        run: |
+          python3 scripts/run-bench-validation.py \
+            --baseline baseline-source/build/flavors/bench/bin \
+            --candidate build/flavors/bench/bin \
+            --slow-control baseline-source/build/flavors/control/bin \
+            --output bench-comparison/validation
 
       - name: Upload bench output
         # Always upload, even on failure — that way the regressed

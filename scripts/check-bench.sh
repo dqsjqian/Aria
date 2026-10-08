@@ -31,6 +31,7 @@
 # Exit codes:
 #   0  every measured P99 was within budget
 #   1  one or more metrics regressed past their ceiling
+#   3  historical calibration profile unavailable (measurements still retained)
 #   2  setup error (missing binary, malformed thresholds, etc.)
 #
 # Output format contract (must stay in sync with benchmark/bench_common.hpp):
@@ -74,12 +75,11 @@ discover_build_dir() {
 # Accepted forms (any order):
 #   scripts/check-bench.sh                       # auto build dir, 1 run
 #   scripts/check-bench.sh /path/to/build        # explicit build dir
-#   scripts/check-bench.sh --runs 5              # auto build dir, best-of-5
+#   scripts/check-bench.sh --runs 5              # auto build dir, all 5 checked
 #   scripts/check-bench.sh /path/to/build --runs 3
 #
-# `--runs N` runs the full suite N times and keeps the best (lowest) P99
-# per metric — useful on a developer machine that has other workloads
-# contending for CPU/cache. Default 1.
+# `--runs N` runs the full suite N times and requires every run to meet its ceiling. It reports the worst P99
+# per metric, so an unlucky run cannot be hidden by retries. Default 1.
 build_dir=""
 runs=1
 while [[ $# -gt 0 ]]; do
@@ -202,6 +202,17 @@ benches=(
 tmp_log="$(mktemp -t aria-bench.XXXXXX)"
 trap 'rm -f "${tmp_log}"' EXIT
 
+# Profiles are recorded before and after measurement. An unavailable profile is
+# explicit data (exit 3), never a successful absolute-budget check.
+record_profile() {
+    local status=0
+    python3 "${repo_root}/scripts/bench-profile.py" --build-dir "${build_dir}" | tee -a "${tmp_log}" || status=$?
+    if [[ ${status} -ne 0 && ${status} -ne 3 ]]; then
+        exit "${status}"
+    fi
+}
+record_profile
+
 echo "==> running benchmark suite (host=${host_key}, runs=${runs})"
 for ((run=1; run<=runs; run++)); do
     printf "ARIA_BENCH_RUN %s\n" "${run}" >>"${tmp_log}"
@@ -219,6 +230,8 @@ for ((run=1; run<=runs; run++)); do
     done
 done
 
+record_profile
+
 # ── Compare measurements against thresholds ─────────────────────────────
 # Use python3 to read the JSON ceilings and the bench log together.
 # Stay strict: any "P " line whose label is unknown to thresholds.json
@@ -229,7 +242,7 @@ import json, math, re, sys
 thresholds_path, log_path, host_key, runs_str = sys.argv[1:5]
 runs = int(runs_str)
 
-with open(thresholds_path) as f:
+with open(thresholds_path, encoding="utf-8") as f:
     cfg = json.load(f)
 
 # Resolve ceilings: prefer hosts.<host_key>.metrics, fall back to top-
@@ -258,16 +271,21 @@ for name, ceiling in ceilings.items():
 line_re = re.compile(
     r"^P\s+(?P<name>.+?)\s+mean=\s*(?P<mean>\S+)ns\s+"
     r"p50=\s*(?P<p50>\S+)ns\s+p95=\s*(?P<p95>\S+)ns\s+"
-    r"p99=\s*(?P<p99>\S+)ns(?:\s.*)?$"
+    r"p99=\s*(?P<p99>\S+)ns\s+\((?P<samples>\d+)x(?P<ops>\d+)\)$"
 )
-best_p99 = {}
+worst_p99 = {}
 order = []
 run_metrics = []
+profiles = []
+shapes = {}
 
 try:
-    with open(log_path) as f:
+    with open(log_path, encoding="utf-8") as f:
         for raw in f:
             line = raw.rstrip("\n")
+            if line.startswith("ARIA_BENCH_PROFILE "):
+                profiles.append(json.loads(line.removeprefix("ARIA_BENCH_PROFILE ")))
+                continue
             if line.startswith("ARIA_BENCH_RUN "):
                 if int(line.split()[1]) != len(run_metrics) + 1:
                     raise ValueError("unexpected run marker")
@@ -287,12 +305,16 @@ try:
             if name in run_metrics[-1]:
                 raise ValueError(f"duplicate metric in run {len(run_metrics)}: {name}")
             run_metrics[-1].add(name)
+            shape = (int(match["samples"]), int(match["ops"]))
+            if min(shape) <= 0 or (name in shapes and shapes[name] != shape):
+                raise ValueError(f"invalid or changed sample shape for {name}: {shape}")
+            shapes[name] = shape
             p99 = values["p99"]
-            if name not in best_p99:
-                best_p99[name] = p99
+            if name not in worst_p99:
+                worst_p99[name] = p99
                 order.append(name)
             else:
-                best_p99[name] = min(best_p99[name], p99)
+                worst_p99[name] = max(worst_p99[name], p99)
     if len(run_metrics) != runs:
         raise ValueError(f"expected {runs} runs, found {len(run_metrics)}")
     for index, names in enumerate(run_metrics, 1):
@@ -303,7 +325,11 @@ except (OSError, ValueError) as error:
     print(f"error: {error}", file=sys.stderr)
     sys.exit(2)
 
-results = [(name, best_p99[name], ceilings.get(name)) for name in order]
+profile_required = bool(cfg.get("_absolute_profile"))
+profile_compatible = (not profile_required or (host_key == "macos-arm64" and len(profiles) == 2 and
+                       all(profile.get("compatible") is True for profile in profiles)))
+
+results = [(name, worst_p99[name], ceilings.get(name)) for name in order]
 seen_names = set(order)
 
 missing_in_log = [k for k in ceilings if k not in seen_names]
@@ -313,18 +339,27 @@ missing_in_log = [k for k in ceilings if k not in seen_names]
 out_targets = [sys.stdout]
 gha = __import__("os").environ.get("GITHUB_STEP_SUMMARY")
 if gha:
-    out_targets.append(open(gha, "a"))
+    out_targets.append(open(gha, "a", encoding="utf-8"))
 
 def emit(s):
     for t in out_targets:
         t.write(s + "\n")
 
 emit("")
-emit("### Aria nightly bench — P99 ceiling check")
+emit("### Aria nightly bench — batch-mean P99 ceiling check")
 emit("")
-emit(f"Host: `{host_key}` · ceilings from `{ceiling_source}` · runs: {runs} (best P99 reported)")
+emit(f"Host: `{host_key}` · ceilings from `{ceiling_source}` · runs: {runs} (worst batch-mean P99 reported)")
 emit("")
-emit("| metric | p99 (ns) | ceiling (ns) | status |")
+if not profile_compatible:
+    emit("**Absolute budget: UNAVAILABLE (exit 3); host/profile is not calibrated.**")
+    if host_key != "macos-arm64":
+        emit("- Selected ceiling block is not the calibrated macOS ARM64 profile.")
+    for profile in profiles:
+        for reason in profile.get("reasons", []):
+            emit(f"- {reason}")
+    emit("Ceiling comparisons below are reference observations, not regression verdicts.")
+    emit("")
+emit("| metric | batch-mean p99 (ns) | ceiling (ns) | status |")
 emit("|---|---:|---:|:---:|")
 
 failures = 0
@@ -335,7 +370,7 @@ for name, p99, ceiling in results:
         unknown += 1
         continue
     ok = p99 <= ceiling
-    mark = "✅" if ok else "❌"
+    mark = ("✅" if ok else "❌") if profile_compatible else ("within reference" if ok else "above reference")
     emit(f"| {name} | {p99:.1f} | {ceiling} | {mark} |")
     if not ok:
         failures += 1
@@ -349,8 +384,9 @@ if missing_in_log:
 emit("")
 if failures or unknown or missing_in_log:
     emit(f"**failures: {failures}, unpinned: {unknown}, missing: {len(missing_in_log)}**")
-else:
-    emit("**all metrics within budget**")
+elif profile_compatible:
+    emit("**all metrics within budget on a compatible profile**")
 
-sys.exit(1 if (failures or unknown or missing_in_log) else 0)
+sys.exit(1 if (unknown or missing_in_log) else
+         3 if not profile_compatible else 1 if failures else 0)
 PY
