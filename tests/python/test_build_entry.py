@@ -256,6 +256,27 @@ class BuildEntryTests(unittest.TestCase):
                     build.validate_cache(command + [f"-D{key}:STRING={new}"], env={})
                 self.assertEqual(cache.read_text(encoding="utf-8"), content)
 
+    def test_prefix_cache_accepts_equivalent_paths_but_preserves_search_order(self):
+        directory = self.root / "cache"
+        directory.mkdir()
+        first, second = self.root / "Qt", self.root / "SDK"
+        first.mkdir()
+        second.mkdir()
+        (directory / "CMakeCache.txt").write_text(
+            f"CMAKE_PREFIX_PATH:STRING={first};{second}\n", encoding="utf-8")
+        command = ["cmake", "-S", str(self.root), "-B", str(directory)]
+        build.validate_cache(command + [f"-DCMAKE_PREFIX_PATH={first}/../Qt;{second}"], env={})
+        with self.assertRaisesRegex(ValueError, "CMAKE_PREFIX_PATH"):
+            build.validate_cache(command + [f"-DCMAKE_PREFIX_PATH={second};{first}"], env={})
+        with self.assertRaisesRegex(ValueError, "CMAKE_PREFIX_PATH"):
+            build.validate_cache(command + [f"-DCMAKE_PREFIX_PATH={first};;{second}"], env={})
+        link = self.root / "Qt-link"
+        try:
+            link.symlink_to(first, target_is_directory=True)
+        except OSError:
+            return  # The canonical-path and order checks above apply on every host.
+        build.validate_cache(command + [f"-DCMAKE_PREFIX_PATH={link};{second}"], env={})
+
     def test_cached_toolchain_does_not_leak_into_unrequested_native_build(self):
         directory = self.root / "cache"
         directory.mkdir()

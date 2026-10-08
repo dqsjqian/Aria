@@ -296,6 +296,13 @@ def validate_cache(command, env=None):
             if actual and value and key in {"CMAKE_HOME_DIRECTORY", "CMAKE_TOOLCHAIN_FILE", "ARIA_DIR", "ARIA_ROOT", "ARIA_SDK_PREFIX"}:
                 if Path(actual).resolve() == Path(value).resolve():
                     continue
+            if actual and value and key == "CMAKE_PREFIX_PATH":
+                # Prefix search order is significant; spelling via a symlink is not.
+                # Preserve empty elements rather than silently dropping arguments.
+                canonical = lambda paths: [str(Path(item).resolve()) if item else ""
+                                           for item in paths.split(";")]
+                if canonical(actual) == canonical(value):
+                    continue
             if actual and value and key in {"CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER"}:
                 resolved = shutil.which(value, path=env.get("PATH")) or value
                 if Path(actual).resolve() == Path(resolved).resolve():
