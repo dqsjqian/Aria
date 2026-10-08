@@ -458,6 +458,9 @@ private:
     static Subscription subscribe_(const std::shared_ptr<SharedState>&, ...) { return {}; }
 
     static void install_(const std::shared_ptr<SharedState>& state, const std::shared_ptr<T>& item) {
+        if constexpr (!requires(T& value) { value.on_changed(std::declval<std::function<void(const T&)>>()); }) {
+            return;
+        }
         if (!item) return;
         {
             std::unique_lock lock(state->mutex);

@@ -6,6 +6,15 @@ on:
     # ordinary CI rush hour.
     - cron: '0 2 * * *'
   workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: "Optional baseline commit for same-runner paired collection measurements"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
 
 concurrency:
   group: nightly-bench
@@ -43,6 +52,38 @@ jobs:
               aria_bench_derived_list \
               aria_bench_trace_sink
 
+      - name: Checkout optional baseline
+        if: github.event_name == 'workflow_dispatch' && inputs.baseline_ref != ''
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.baseline_ref }}
+          path: baseline-source
+
+      - name: Build optional baseline collection benchmarks
+        if: github.event_name == 'workflow_dispatch' && inputs.baseline_ref != ''
+        run: |
+          cmake -S baseline-source -B baseline-source/build/flavors/bench -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DARIA_BUILD_TESTS=OFF \
+            -DARIA_BUILD_BENCHMARK=ON \
+            -DARIA_ENABLE_ASAN=OFF \
+            -DARIA_ENABLE_UBSAN=OFF
+          cmake --build baseline-source/build/flavors/bench -j \
+            --target aria_bench_list aria_bench_derived_list
+
+      - name: Compare collections on the same runner
+        if: github.event_name == 'workflow_dispatch' && inputs.baseline_ref != ''
+        run: |
+          mkdir -p bench-comparison
+          git rev-parse HEAD > bench-comparison/candidate-revision.txt
+          git -C baseline-source rev-parse HEAD > bench-comparison/baseline-revision.txt
+          c++ --version > bench-comparison/compiler.txt
+          uname -a > bench-comparison/host.txt
+          python3 scripts/compare-bench.py \
+            --baseline baseline-source/build/flavors/bench/bin \
+            --candidate build/flavors/bench/bin \
+            --output bench-comparison --rounds 3
+
       - name: Run benches and check P99 ceilings
         shell: bash
         # check-bench.sh does the whole job:
@@ -65,7 +106,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: bench-output-${{ github.run_id }}
-          path: bench-output.txt
+          path: |
+            bench-output.txt
+            bench-comparison/
           retention-days: 30
 
   # ────────────────────────────────────────────────────────────────────

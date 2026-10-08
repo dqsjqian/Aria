@@ -900,6 +900,87 @@ TEST_CASE("SortedList: independent sort-key writes in one graph batch preserve o
     CHECK(view.at(0) == other);
 }
 
+TEST_CASE("SortedList: live order validation preserves skipped boundaries and stable ties") {
+    for (std::size_t changed = 0; changed < 4; ++changed) {
+        for (std::size_t replaced = 0; replaced < 4; ++replaced) {
+            for (int value : {-1, 0, 1, 2, 3, 4}) {
+                auto source = std::make_shared<ObservableList<Plain>>();
+                for (int key : {3, 1, 2, 0}) source->push_back(make_plain(key));
+                SortedList<Plain> view{source, asc};
+                EventLog<Plain> log{view};
+                auto mirror = view.snapshot();
+                source->at(changed)->value = value;
+                source->replace_at(replaced, make_plain(2));
+
+                auto expected = source->snapshot();
+                std::stable_sort(expected.begin(), expected.end(), [](const auto& a, const auto& b) {
+                    return a->value < b->value;
+                });
+                CHECK(view.snapshot() == expected);
+                for (std::size_t i = 0; i < expected.size(); ++i) {
+                    const auto index = view.source_index_of(i);
+                    REQUIRE(index.has_value());
+                    CHECK(view.at(i) == source->at(*index));
+                }
+                for (const auto& ch : log.events) {
+                    const auto position = static_cast<std::ptrdiff_t>(ch.index);
+                    REQUIRE(ch.kind != ListChangeKind::Reset);
+                    if (ch.kind == ListChangeKind::Remove) {
+                        REQUIRE(ch.index < mirror.size());
+                        CHECK(mirror[ch.index] == ch.item);
+                        mirror.erase(mirror.begin() + position);
+                    } else if (ch.kind == ListChangeKind::Insert) {
+                        REQUIRE(ch.index <= mirror.size());
+                        mirror.insert(mirror.begin() + position, ch.item);
+                    } else if (ch.kind == ListChangeKind::Replace) {
+                        REQUIRE(ch.index < mirror.size());
+                        mirror[ch.index] = ch.item;
+                    } else {
+                        REQUIRE(ch.kind == ListChangeKind::Move);
+                        REQUIRE(ch.from_index < mirror.size());
+                        REQUIRE(ch.index < mirror.size());
+                        CHECK(mirror[ch.from_index] == ch.item);
+                        mirror.erase(mirror.begin() + static_cast<std::ptrdiff_t>(ch.from_index));
+                        mirror.insert(mirror.begin() + position, ch.item);
+                    }
+                }
+                CHECK(mirror == expected);
+            }
+        }
+    }
+
+    auto source = std::make_shared<ObservableList<Plain>>();
+    SortedList<Plain> view{source, asc};
+    source->push_back(make_plain(1));
+    source->replace_at(0, make_plain(0));
+    CHECK(values_of(view) == std::vector<int>{0});
+    source->remove_at(0);
+    CHECK(view.empty());
+}
+
+TEST_CASE("SortedList: a throwing live-order check preserves the committed layout and recovers") {
+    auto source = std::make_shared<ObservableList<Plain>>();
+    for (int key : {1, 2, 3}) source->push_back(make_plain(key));
+    bool fail = false;
+    SortedList<Plain> view{source, [&](const Plain& a, const Plain& b) {
+        if (fail) throw std::runtime_error("order check failed");
+        return a.value < b.value;
+    }};
+    EventLog<Plain> log{view};
+    const auto before = view.snapshot();
+    fail = true;
+    source->push_back(make_plain(0));
+    CHECK(view.snapshot() == before);
+    CHECK(log.events.empty());
+    fail = false;
+    source->push_back(make_plain(4));
+    CHECK(values_of(view) == std::vector<int>{0, 1, 2, 3, 4});
+    REQUIRE(log.events.size() == 1);
+    CHECK(log.events[0].kind == ListChangeKind::Reset);
+    REQUIRE(log.events[0].snapshot);
+    CHECK(*log.events[0].snapshot == view.snapshot());
+}
+
 TEST_CASE("SortedList: structural edits validate rows with pending sort-key notifications") {
     auto source = std::make_shared<ObservableList<Reactive>>();
     std::vector<std::shared_ptr<Reactive>> changed;

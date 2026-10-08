@@ -14,6 +14,18 @@ All notable changes to **aria** are documented here.
 
 ---
 
+## Unreleased
+
+- Preserve raw output from each benchmark run and diagnostics before failures
+  so nightly artifacts can explain mean/P50/P95/P99 differences. Add offline
+  regression tests for output retention, threshold failures and binary exit
+  codes without changing performance thresholds or framework semantics.
+- Skip subscription-installation bookkeeping for non-reactive list element
+  types and streamline SortedList's live adjacent-order validation without
+  dropping its stability, pending-write or exception-safety checks.
+- Add an optional Nightly baseline revision for alternating same-runner
+  collection measurements. Keep every raw run and leave the ceiling gate intact.
+
 ## 3.1.1 — 2026-09-30
 
 - Keep the independent HTTPS regression compatible with strict GCC warnings

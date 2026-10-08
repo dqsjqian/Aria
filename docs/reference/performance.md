@@ -177,11 +177,44 @@ between paired measurement sessions. Small deltas and this host's exact ratios
 must not be extrapolated to Windows, Linux or mobile devices. Measure the
 application's value types, comparator and update pattern on the target device.
 
+## Collection hot-path maintenance (2026-10-08)
+
+Against commit `5f95755`, the same Apple M-series host and AppleClang 21 Release
+build measured five paired runs in alternating AB/BA order after warmup. The
+median of each run's mean and sample-average P99 changed as follows:
+
+| Scenario | Mean before / after (ns) | P99 before / after (ns) |
+|---|---:|---:|
+| ObservableList push_back, no observers | 139.5 / 110.1 | 526.7 / 494.0 |
+| FilteredList source push_back | 216.4 / 189.4 | 603.3 / 575.4 |
+| SortedList source push_back, random key | 48,483.5 / 41,083.7 | 84,262.1 / 70,409.0 |
+
+The changes remove unused subscription bookkeeping for non-reactive element
+types and reduce repeated indexing/branching in SortedList's full live-order
+scan. They do not remove comparisons, transaction staging, stable tie-breaking
+or reactive subscription installation. The benchmark workload and ceilings are
+unchanged. These are developer-host measurements with normal background load,
+not a claim that hosted-runner performance gates pass or all workloads improve.
+
 ## Reproducible measurements
 
 Build with `CMAKE_BUILD_TYPE=Release` and `ARIA_BUILD_BENCHMARK=ON`, then run
 `scripts/check-bench.sh build/flavors/release`. The six benchmark executables
 also report their full scenario tables when run directly.
+
+The gate streams each run's raw stdout alongside its final summary, with stderr
+passed through separately. Nightly's `bench-output.txt` retains mean/P50/P95/P99,
+sample counts and output emitted before a failure; `GITHUB_STEP_SUMMARY` remains
+a summary table. Binary failures and threshold violations still return nonzero
+exit codes rather than being hidden by `tee`.
+
+A manual Nightly run accepts an optional `baseline_ref`. It builds the baseline
+and candidate on the same runner with the same Release flags, then calls
+`scripts/compare-bench.py --baseline <old-bin-dir> --candidate <new-bin-dir>
+--output <evidence-dir> --rounds 3`. Both sides receive one warmup, followed by
+alternating AB/BA runs. Raw logs, revisions, compiler information and a JSON
+summary retain every measurement. Median comparisons are diagnostic only and
+do not replace or relax the ordinary single-run ceiling gate.
 
 Percentile rows use a steady clock and nearest-rank P50/P95/P99 over repeated
 samples. Each sample averages several operations; these percentiles describe

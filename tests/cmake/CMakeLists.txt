@@ -24,6 +24,14 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME dependency_resolver
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/python/test_dependencies.py")
     set_tests_properties(dependency_resolver PROPERTIES TIMEOUT 60)
+    if(UNIX)
+        find_program(ARIA_BASH_EXECUTABLE bash)
+        if(ARIA_BASH_EXECUTABLE)
+            add_test(NAME benchmark_gate
+                COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/python/test_check_bench.py")
+            set_tests_properties(benchmark_gate PROPERTIES TIMEOUT 60)
+        endif()
+    endif()
 endif()
 
 _aria_deps_cache_dir(_aria_test_cache)

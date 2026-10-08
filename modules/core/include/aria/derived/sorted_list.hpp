@@ -464,22 +464,26 @@ private:
     // remaining rows have been checked against their current values.
     static bool ordered_unlocked_(const SharedState& st,
                                   std::optional<std::size_t> skip = std::nullopt) {
-        std::optional<std::size_t> previous;
-        for (std::size_t d = 0; d < st.items.size(); ++d) {
-            if (skip == d) continue;
-            if (previous) {
-                const auto p = *previous;
-                // Source order resolves equal keys. When source indices are
-                // inverted, the preceding key must be strictly smaller;
-                // otherwise it need only be no greater. One comparison is
-                // enough in either case for a strict weak ordering.
-                if (st.derived_to_source[d] < st.derived_to_source[p]) {
-                    if (!(*st.comparator)(*st.items[p], *st.items[d])) return false;
-                } else if ((*st.comparator)(*st.items[d], *st.items[p])) {
-                    return false;
-                }
-            }
-            previous = d;
+        const auto size = st.items.size();
+        const auto skipped = skip.value_or(size);
+        const std::size_t first = skipped == 0 ? 1 : 0;
+        if (first >= size) return true;
+        const auto& comparator = *st.comparator;
+        const T* previous = st.items[first].get();
+        auto previous_source = st.derived_to_source[first];
+        for (auto d = first + 1; d < size; ++d) {
+            if (d == skipped) continue;
+            const T* current = st.items[d].get();
+            const auto current_source = st.derived_to_source[d];
+            // Reversed source indices require a strictly smaller predecessor;
+            // otherwise the current key must not precede it. Select the
+            // comparison direction while validating every live adjacent pair.
+            const bool reversed = current_source < previous_source;
+            const T* lhs = reversed ? previous : current;
+            const T* rhs = reversed ? current : previous;
+            if (comparator(*lhs, *rhs) != reversed) return false;
+            previous = current;
+            previous_source = current_source;
         }
         return true;
     }

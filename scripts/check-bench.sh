@@ -197,8 +197,8 @@ benches=(
     aria_bench_trace_sink
 )
 
-# Capture combined bench output to a temp file so awk and the summary
-# step can both consume it.
+# Capture stdout for the gate and stream the raw measurements for CI artifacts.
+# Keep stderr separate so diagnostics cannot be parsed as measurement rows.
 tmp_log="$(mktemp -t aria-bench.XXXXXX)"
 trap 'rm -f "${tmp_log}"' EXIT
 
@@ -215,7 +215,7 @@ for ((run=1; run<=runs; run++)); do
             exit 2
         fi
         echo "    - ${b}"
-        "${bin}" >>"${tmp_log}"
+        "${bin}" | tee -a "${tmp_log}"
     done
 done
 

@@ -417,6 +417,40 @@ TEST_CASE("ObservableList: bind-style on_changed does not deadlock push_back") {
     CHECK(hits >= 1);
 }
 
+TEST_CASE("ObservableList: reactive installation publishes structural events before synchronous changes") {
+    ObservableList<BindReactive> list;
+    list.push_back(std::make_shared<BindReactive>());
+    auto item = std::make_shared<BindReactive>();
+    std::vector<ListChange<BindReactive>> events;
+    auto sub = list.observe([&](const auto& change) { events.push_back(change); });
+    ListChangeKind structural = ListChangeKind::Insert;
+    std::size_t index = 1;
+    SUBCASE("push_back") { list.push_back(item); }
+    SUBCASE("insert") { index = 0; list.insert(index, item); }
+    SUBCASE("replace") {
+        structural = ListChangeKind::Replace;
+        index = 0;
+        list.replace_at(index, item);
+    }
+    SUBCASE("insert_range") {
+        const std::vector<std::shared_ptr<BindReactive>> incoming{item};
+        list.insert_range(index, incoming.begin(), incoming.end());
+    }
+    REQUIRE(events.size() == 2);
+    CHECK(events[0].kind == structural);
+    CHECK(events[0].index == index);
+    CHECK(events[0].item == item);
+    CHECK(events[1].kind == ListChangeKind::ItemChanged);
+    CHECK(events[1].index == index);
+    CHECK(events[1].item == item);
+    events.clear();
+    item->v = 10;
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].kind == ListChangeKind::ItemChanged);
+    CHECK(events[0].index == index);
+    CHECK(events[0].item == item);
+}
+
 TEST_CASE("ObservableList: bind-style on_changed survives insert/replace too") {
     ObservableList<BindReactive> list;
     auto a = std::make_shared<BindReactive>();   a->v.set(1);
