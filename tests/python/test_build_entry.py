@@ -105,6 +105,40 @@ class BuildEntryTests(unittest.TestCase):
         self.plan("--dry-run")
         self.assertFalse((self.root / "build").exists())
 
+    def test_tools_test_builds_all_six_module_projects(self):
+        self.layout("tools")
+        commands = self.plan("--platform", "web", "--test", "--offline")
+        tests = [row for row in commands if row[0] == "ctest"]
+        self.assertEqual(len(tests), 6)
+        self.assertEqual([Path(row[2]).name for row in tests],
+                         ["calendar", "cart", "dashboard", "frameworklab", "notes", "tools"])
+        for row in tests:
+            self.assertIn("--no-tests=error", row)
+        module_configs = [row for row in commands if "-DWORKBENCH_TARGET_IOS=OFF" in row
+                          and "-S" in row and "module-tests" in row[row.index("-B") + 1]]
+        self.assertEqual(len(module_configs), 6)
+        for row in module_configs:
+            self.assertIn("-DWORKBENCH_TARGET_QT=OFF", row)
+            self.assertIn("-DARIA_DEPENDENCIES_OFFLINE=ON", row)
+
+    def test_cache_conflict_does_not_delete_existing_build(self):
+        directory = self.root / "existing"
+        directory.mkdir()
+        cache = directory / "CMakeCache.txt"
+        cache.write_text("CMAKE_GENERATOR:INTERNAL=Ninja\nCMAKE_BUILD_TYPE:STRING=Release\n", encoding="utf-8")
+        command = ["cmake", "-S", str(self.root), "-B", str(directory), "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Debug"]
+        with self.assertRaisesRegex(ValueError, "another --build-dir"):
+            build.validate_cache(command)
+        self.assertTrue(cache.exists())
+        command[-1] = "-DCMAKE_BUILD_TYPE=Release"
+        build.validate_cache(command)
+
+    def test_matching_runtime_path_is_added_for_ctest(self):
+        command = ["ctest", "--test-dir", str(self.root), "-C", "Debug"]
+        env = build.command_environment(command, {"PATH": "original"})
+        self.assertTrue(env["PATH"].startswith(str(self.root / "bin/Debug")))
+        self.assertTrue(env["PATH"].endswith("original"))
+
     def test_invalid_jobs_rejected(self):
         for jobs in ("0", "-1", "257"):
             with self.subTest(jobs=jobs), self.assertRaises(SystemExit):

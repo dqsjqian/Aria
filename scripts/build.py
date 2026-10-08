@@ -110,7 +110,7 @@ def plan(args, root=ROOT, host=None):
         selected = "qt" if target == "native" else target
         flags += [f"-DWORKBENCH_TARGET_{name.upper()}={'ON' if name == selected else 'OFF'}"
                   for name in ("qt", "web", "ios", "android")]
-        flags += [f"-DARIA_DIR={aria}", f"-DBUILD_TESTING={'ON' if args.test else 'OFF'}"]
+        flags += [f"-DARIA_DIR={aria}"]
     elif kind == "agent":
         flags += [f"-DARIA_DIR={aria}", "-DARIA_TARGET_QT=ON"]
     else:
@@ -150,10 +150,71 @@ def plan(args, root=ROOT, host=None):
         return commands
     commands.append(["cmake", "--build", str(build), "--config", args.config,
                      "--parallel", str(args.jobs)] + (["--target", *args.target] if args.target else []))
-    if args.test:
+    if args.test and kind == "tools":
+        # The application tree has no CTest suite: its six independent module
+        # projects must each configure, build and run. Do not silently omit one.
+        for module in ("calendar", "cart", "dashboard", "frameworklab", "notes", "tools"):
+            module_build = build / "module-tests" / module
+            configure_module = ["cmake", "-S", str(source / "modules" / module / "tests"),
+                                "-B", str(module_build)]
+            if generator:
+                configure_module += ["-G", generator]
+            compiler_flags = (["-DCMAKE_C_COMPILER=gcc", "-DCMAKE_CXX_COMPILER=g++"]
+                              if toolchain == "mingw" else [])
+            commands.append(configure_module + compiler_flags + args.cmake_arg + [
+                f"-DCMAKE_BUILD_TYPE={args.config}", f"-DARIA_DIR={aria}",
+                f"-DARIA_DEPS_CACHE_DIR={source / 'build/_deps'}",
+                f"-DARIA_DEPENDENCIES_OFFLINE={'ON' if args.offline else 'OFF'}",
+                "-DWORKBENCH_TARGET_QT=OFF", "-DWORKBENCH_TARGET_IOS=OFF"])
+            commands.append(["cmake", "--build", str(module_build), "--config", args.config,
+                             "--parallel", str(args.jobs)])
+            commands.append(["ctest", "--test-dir", str(module_build), "-C", args.config,
+                             "--output-on-failure", "--no-tests=error"])
+    elif args.test:
         commands.append(["ctest", "--test-dir", str(build), "-C", args.config,
                          "--output-on-failure", "--no-tests=error"])
     return commands
+
+
+def validate_cache(command):
+    """Reject conflicting explicit cache reuse, never delete or relabel it."""
+    if command[0] != "cmake" or "-S" not in command or "-B" not in command:
+        return
+    directory = Path(command[command.index("-B") + 1])
+    cache = directory / "CMakeCache.txt"
+    if not cache.is_file():
+        return
+    values = {}
+    for line in cache.read_text(encoding="utf-8").splitlines():
+        if line and not line.startswith(("#", "//")) and "=" in line:
+            key, value = line.split("=", 1)
+            values[key.split(":", 1)[0]] = value
+    expected = {"CMAKE_HOME_DIRECTORY": str(Path(command[command.index("-S") + 1]).resolve())}
+    if "-G" in command:
+        expected["CMAKE_GENERATOR"] = command[command.index("-G") + 1]
+    for argument in command:
+        if argument.startswith("-D") and "=" in argument:
+            key, value = argument[2:].split("=", 1)
+            if key in {"CMAKE_BUILD_TYPE", "CMAKE_TOOLCHAIN_FILE", "ANDROID_ABI", "CMAKE_OSX_SYSROOT"}:
+                expected[key] = value
+    for key, value in expected.items():
+        actual = values.get(key)
+        if actual and actual != value:
+            if key in {"CMAKE_HOME_DIRECTORY", "CMAKE_TOOLCHAIN_FILE"} and Path(actual).resolve() == Path(value).resolve():
+                continue
+            raise ValueError(f"{key} conflicts with cache {directory}: {actual!r} != {value!r}; choose another --build-dir")
+
+
+def command_environment(command, env):
+    result = dict(env)
+    if command[0] == "ctest":
+        directory = Path(command[command.index("--test-dir") + 1])
+        config = command[command.index("-C") + 1]
+        # Standalone module tests and MSVC multi-config executables need the
+        # matching runtime directory, not DLLs from another build's PATH.
+        result["PATH"] = os.pathsep.join([str(directory / "bin" / config),
+                                         str(directory / "bin"), env.get("PATH", "")])
+    return result
 
 
 def main(argv=None):
@@ -171,9 +232,12 @@ def main(argv=None):
                 if not (prefix / "g++.exe").is_file():
                     raise ValueError("MinGW requires MSYS2_ROOT with ucrt64/bin/g++.exe")
                 env["PATH"] = str(prefix) + os.pathsep + env.get("PATH", "")
+        # Validate every existing cache before fetching dependencies or writing.
+        for command in commands:
+            validate_cache(command)
         for command in commands:
             print("+ " + shlex.join(command), flush=True)
-            subprocess.run(command, cwd=ROOT, env=env, check=True)
+            subprocess.run(command, cwd=ROOT, env=command_environment(command, env), check=True)
         return 0
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         print(f"build: {error}", file=sys.stderr)
