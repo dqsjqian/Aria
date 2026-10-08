@@ -7,6 +7,7 @@ Historical absolute budgets remain a separate result, never calibrated here.
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import math
@@ -17,9 +18,13 @@ import re
 import statistics
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 BENCHES = ("aria_bench_regression", "aria_bench_iproperty", "aria_bench_command", "aria_bench_trace_sink")
+BLOCK_PLAN = {bench: (64 if bench == "aria_bench_regression" else 512) for bench in BENCHES}
+PROTOCOL = "paired-median-stratified-v2"
+ORDER_SEED = 20261009
 LEGACY = {
     "aria_bench_iproperty": {"Property<int>::set(i)": (256, 4000),
                            "IProperty::set_any(std::any{i})": (256, 4000)},
@@ -119,8 +124,10 @@ def median_interval_ranks(n: int, comparisons: int = 24, family_alpha: float = 0
     Ties/discrete values are conservative; no observation is discarded.
     """
     choices = []
+    cumulative = 0
     for k in range(1, n // 2 + 1):
-        tail = 2 * sum(math.comb(n, j) for j in range(k)) / 2 ** n
+        cumulative += math.comb(n, k - 1)
+        tail = 2 * cumulative / 2 ** n
         if tail <= family_alpha / comparisons:
             choices.append((k, n - k + 1, 1 - comparisons * tail))
     if not choices:
@@ -151,79 +158,141 @@ def classify(blocks: list, limit: float, required_blocks: int = 64) -> dict:
     status = ("inconclusive" if not sufficient else
               "pass" if high <= limit else
               "regression" if low > limit else "inconclusive")
-    return {"status": status, "validity": "fixed-sample-complete" if sufficient else "wrong-sample-count",
-            "paired_ratios": ratios, "baseline_repeat_ratios": noise, "block_envelopes": envelopes,
+    return {"status": status, "observed_blocks": n, "required_blocks": required_blocks,
+            "marginal_noncoverage_bound_if_iid": (1 - coverage) / 24, "validity": "fixed-sample-complete" if sufficient else "wrong-sample-count",
+            "paired_ratios": ratios, "paired_ratio_rounding_intervals": list(zip(lower, upper)),
+            "baseline_repeat_ratios": noise, "block_envelopes": envelopes,
             "worst_case_envelope": [min(v[0] for v in envelopes), max(v[1] for v in envelopes)],
             "median_ratio": math.exp(statistics.median([math.log(v) for v in ratios])),
             "ratio_interval": [low, high], "order_statistic_ranks": [low_rank, high_rank],
-            "joint_coverage_lower_bound_if_iid": coverage,
+            "marginal_coverage_lower_bound_if_iid": 1 - (1 - coverage) / 24,
             "assumption": "independent identically distributed block ratios; controls do not prove iid"}
+
+
+def expected_statistics() -> dict:
+    return {f"{name} / batch-{statistic}": {"bench": bench, "blocks": BLOCK_PLAN[bench]}
+            for bench in BENCHES for name in (LEGACY.get(bench, EXPECTED))
+            for statistic in ("mean", "p99")}
+
+
+def make_schedule() -> list:
+    """Freeze 64 macros spanning both cost families; all orders fixed in advance.
+
+    More densely spaced cheap blocks may cluster. This schedule and randomized
+    orientation do not prove iid or justify an effective independent sample size.
+    """
+    orientations = {}
+    for bench, count in BLOCK_PLAN.items():
+        values = [False] * (count // 2) + [True] * (count // 2)
+        random.Random(f"{ORDER_SEED}:orientation:{bench}").shuffle(values)
+        orientations[bench] = values
+    placement = random.Random(f"{ORDER_SEED}:macro-placement")
+    bench_order = random.Random(f"{ORDER_SEED}:cheap-bench-order")
+    counters = {bench: 0 for bench in BENCHES}
+    schedule = []
+    for macro in range(1, 65):
+        slots = ["heavy"] + ["cheap"] * 8
+        placement.shuffle(slots)
+        for slot, family in enumerate(slots, 1):
+            benches = [BENCHES[0]] if family == "heavy" else list(BENCHES[1:])
+            if family == "cheap":
+                bench_order.shuffle(benches)
+            for bench in benches:
+                counters[bench] += 1
+                block = counters[bench]
+                reversed_order = orientations[bench][block - 1]
+                order = ["candidate", "baseline", "baseline", "candidate"] if reversed_order else [
+                    "baseline", "candidate", "candidate", "baseline"]
+                schedule.append({"sequence": len(schedule) + 1, "macro": macro,
+                                 "macro_slot": slot, "family": family, "bench": bench,
+                                 "block": block, "order": order})
+    assert counters == BLOCK_PLAN
+    return schedule
 
 
 def compare(baseline: Path, candidate: Path, output: Path, rounds: int,
             limit: float = 1.10, expected_candidate_control: int = 0) -> dict:
+    if rounds != 64:
+        raise ValueError("the fixed design requires exactly 64 macro blocks")
     output.mkdir(parents=True, exist_ok=True)
+    if any((output / name).exists() for name in ("schedule.json", "measurements.jsonl", "comparison.json")):
+        raise ValueError("evidence directory already contains an attempt; use a fresh directory")
     binaries = {"baseline": baseline.resolve(), "candidate": candidate.resolve()}
     expected_control = {"baseline": 0, "candidate": expected_candidate_control}
     runs = []
+    grouped = {}
+    schedule = make_schedule()
+    (output / "schedule.json").write_text(json.dumps(schedule, indent=2) + "\n", encoding="utf-8")
     def collect(side, bench, log):
         rows = measure(binaries[side] / bench, log)
         if any(row.get("control_stretch_percent", 0) != expected_control[side] for row in rows.values()):
             raise ValueError(f"unexpected measurement control on {side}: {bench}")
-        # Raw ordered samples already live in the immutable executable log.
-        # Keep summary/checkpoint JSON small to avoid quadratic I/O between blocks.
         for row in rows.values():
             row.pop("batch_means_ns", None)
         return rows
     for bench in BENCHES:
         for side in binaries:
             collect(side, bench, output / f"warmup-{side}-{bench}.txt")
-    # Predeclared seed and balanced randomized orientation limit order confounding.
-    # Randomization cannot establish stationarity or independence by itself.
-    orientations = [False] * (rounds // 2) + [True] * (rounds - rounds // 2)
-    random.Random(20261008).shuffle(orientations)
+    completed = {bench: 0 for bench in BENCHES}
     with (output / "measurements.jsonl").open("w", encoding="utf-8") as checkpoint:
-        for index, reversed_order in enumerate(orientations):
-            order = ("candidate", "baseline", "baseline", "candidate") if reversed_order else (
-                "baseline", "candidate", "candidate", "baseline")
-            for bench in BENCHES:
-                for position, side in enumerate(order, 1):
-                    log = output / f"{index + 1}-{position}-{side}-{bench}.txt"
+        for item in schedule:
+            bench = item["bench"]
+            for position, side in enumerate(item["order"], 1):
+                log = output / f"{item['sequence']}-{position}-{side}-{bench}.txt"
+                run = {**{key: value for key, value in item.items() if key != "order"},
+                       "position": position, "side": side, "raw_log": log.name,
+                       "started_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                       "monotonic_start_ns": time.monotonic_ns()}
+                checkpoint.write(json.dumps({**run, "event": "started"}) + "\n")
+                checkpoint.flush()
+                try:
                     rows = collect(side, bench, log)
-                    run = {"round": index + 1, "position": position, "side": side,
-                           "bench": bench, "raw_log": log.name, "metrics": rows}
-                    runs.append(run)
-                    checkpoint.write(json.dumps(run) + "\n")
+                except Exception as error:
+                    checkpoint.write(json.dumps({**run, "event": "failed", "error": str(error),
+                                                 "monotonic_end_ns": time.monotonic_ns()}) + "\n")
                     checkpoint.flush()
-            (output / "progress.json").write_text(json.dumps({"completed_blocks": index + 1,
-                                                              "fixed_total_blocks": rounds}) + "\n",
-                                                  encoding="utf-8")
+                    raise
+                run.update(metrics=rows, monotonic_end_ns=time.monotonic_ns(),
+                           completed_at_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
+                runs.append(run)
+                grouped.setdefault((bench, item["block"]), []).append(run)
+                checkpoint.write(json.dumps({**run, "event": "completed"}) + "\n")
+                checkpoint.flush()
+            completed[bench] += 1
+            (output / "progress.json").write_text(json.dumps({"current_macro": item["macro"],
+                        "completed_blocks_by_bench": completed, "fixed_blocks_by_bench": BLOCK_PLAN}) + "\n",
+                        encoding="utf-8")
     summary = {}
-    measured_names = {name for run in runs for name in run["metrics"]}
-    for name in sorted(measured_names):
-        for statistic in ("mean", "p99"):
-            blocks = []
-            for index in range(1, rounds + 1):
-                selected = [run for run in runs if run["round"] == index and name in run["metrics"]]
-                block = {side: [run["metrics"][name][statistic] for run in selected if run["side"] == side]
-                         for side in binaries}
-                block["rounding_radius_ns"] = max(run["metrics"][name].get("rounding_radius_ns", 0)
-                                                 for run in selected)
-                blocks.append(block)
-            summary[f"{name} / batch-{statistic}"] = classify(blocks, limit)
+    for key, shape in expected_statistics().items():
+        name, statistic = key.rsplit(" / batch-", 1)
+        blocks = []
+        for index in range(1, shape["blocks"] + 1):
+            selected = grouped.get((shape["bench"], index), [])
+            block = {side: [run["metrics"][name][statistic] for run in selected if run["side"] == side]
+                     for side in binaries}
+            if any(len(values) != 2 for values in block.values()):
+                raise ValueError("missing or duplicated run within a paired block")
+            block["rounding_radius_ns"] = max(run["metrics"][name].get("rounding_radius_ns", 0)
+                                             for run in selected)
+            blocks.append(block)
+        summary[key] = {**classify(blocks, limit, required_blocks=shape["blocks"]), "bench": shape["bench"]}
     statuses = {row["status"] for row in summary.values()}
     status = "regression" if "regression" in statuses else (
         "inconclusive" if "inconclusive" in statuses else "pass")
     report = {"host": {"system": platform.system(), "machine": platform.machine(),
-                       "platform": platform.platform(), "cpu_count": os.cpu_count()},
-              "workload": WORKLOAD, "rounds": rounds, "runs": runs, "summary": summary,
+                       "platform": platform.platform(), "cpu_count": os.cpu_count(),
+                       "python_version": sys.version},
+              "workload": WORKLOAD, "macro_blocks": rounds, "blocks_by_bench": BLOCK_PLAN,
+              "runs": runs, "summary": summary,
+              "joint_coverage_lower_bound_if_iid": 1 - sum(row["marginal_noncoverage_bound_if_iid"] for row in summary.values()),
               "comparison_kind": "slow20-control" if expected_candidate_control else (
                   "aa-control" if baseline.resolve() == candidate.resolve() else "candidate"),
               "candidate_control_stretch_percent": expected_candidate_control,
-              "status": status, "policy": {"ratio_limit": limit, "protocol": "paired-median-v1",
-              "fixed_blocks": 64, "family_alpha": 0.05, "family_comparisons": 24,
+              "status": status, "policy": {"ratio_limit": limit, "protocol": PROTOCOL,
+              "blocks_by_bench": BLOCK_PLAN, "family_alpha": 0.05, "family_comparisons": 24,
               "aggregation": "exact binomial order-statistic interval for the median ABBA geometric ratio",
-              "scope": "median repeated-run batch mean and batch-mean P99, not individual-operation latency"}}
+              "scope": "median repeated-run batch mean and batch-mean P99, not individual-operation latency",
+              "assumptions": "iid ratios within each statistic; cheap blocks may cluster within macros; controls and counts do not prove iid"}}
     (output / "comparison.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return report
 
@@ -242,15 +311,17 @@ def main() -> int:
                         "benchmark/paired-policy.json")
     args = parser.parse_args()
     if args.rounds != 64:
-        parser.error("--rounds must equal the fixed preregistered 64-block design")
+        parser.error("--rounds must equal the fixed preregistered 64-macro design")
     args.output.mkdir(parents=True, exist_ok=True)
+    if any(args.output.iterdir()):
+        parser.error("evidence directory is not empty; use a fresh directory without overwriting an attempt")
     try:
         policy = json.loads(args.policy.read_text(encoding="utf-8"))
         if (not isinstance(policy, dict) or policy.get("workload") != "fixed-window-v2"
-                or policy.get("fixed_blocks") != 64
+                or policy.get("macro_blocks") != 64 or policy.get("blocks_by_bench") != BLOCK_PLAN
                 or policy.get("family_alpha") != 0.05 or policy.get("family_comparisons") != 24
-                or policy.get("protocol") != "paired-median-v1"
-                or policy.get("order_seed") != 20261008
+                or policy.get("protocol") != PROTOCOL
+                or policy.get("order_seed") != ORDER_SEED
                 or policy.get("candidate_ratio_limit") != 1.10):
             raise ValueError("policy/workload identity or minimum block count mismatch")
         limit = policy["candidate_ratio_limit"]
@@ -275,7 +346,7 @@ def main() -> int:
             with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as target:
                 target.write(summary)
         return {"pass": 0, "regression": 1, "inconclusive": 3}[report["status"]]
-    except (OSError, ValueError, RuntimeError, KeyError) as error:
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError) as error:
         (args.output / "error.json").write_text(json.dumps({"status": "invalid", "error": str(error)}) +
                                                 "\n", encoding="utf-8")
         print(f"error: {error}", file=sys.stderr)

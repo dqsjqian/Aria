@@ -25,7 +25,8 @@ All notable changes to **aria** are documented here.
   incompatible profiles are explicitly unavailable, and repeated runs can no
   longer hide failures with best-of-N selection.
 - Add a versioned fixed-window collection/async benchmark with 1,024 batches,
-  identical release/candidate harnesses and 64 balanced paired blocks. Qualify
+  identical release/candidate harnesses and a fixed cost-stratified plan: 64
+  paired blocks for fixed-window workloads and 512 for all legacy metrics. Qualify
   measurements with independent A-A and actual 20% delay controls, then gate all
   twelve scenarios using joint median-ratio intervals. Keep inconclusive results
   nonzero and retain raw samples, worst-case diagnostics and provenance;

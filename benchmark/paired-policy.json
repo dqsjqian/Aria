@@ -1,10 +1,17 @@
 {
-  "protocol": "paired-median-v1",
+  "protocol": "paired-median-stratified-v2",
   "workload": "fixed-window-v2",
-  "candidate_ratio_limit": 1.10,
-  "fixed_blocks": 64,
+  "candidate_ratio_limit": 1.1,
+  "macro_blocks": 64,
+  "blocks_by_bench": {
+    "aria_bench_regression": 64,
+    "aria_bench_iproperty": 512,
+    "aria_bench_command": 512,
+    "aria_bench_trace_sink": 512
+  },
   "family_alpha": 0.05,
   "family_comparisons": 24,
-  "order_seed": 20261008,
-  "_policy": "Estimate the population median of balanced ABBA geometric ratios for each of twelve batch-mean and batch-mean-P99 metrics. Use the exact binomial median interval with Bonferroni control over 24 statistics; under iid block ratios, 64 blocks select ranks 20 and 45 and give at least 96.2493% joint coverage. Fixed sample size and orientation seed are declared before new controls/candidate runs, with no optional stopping or outlier deletion. Keep all raw runs, maximum cross-pair envelopes and repeated-baseline variation as diagnostics. The 10% regression limit and all historical absolute ceilings are unchanged. Previous short/envelope pilots remain inconclusive; they are not relabeled. Independent A-A and actual +20% wall-clock-delay binary controls must qualify the measurement before candidate acceptance. Controls do not prove iid or sensitivity to a 10% algorithm regression."
+  "order_seed": 20261009,
+  "_assumptions": "Ratios must be iid within each statistic for stated intervals. Interleaving/direction balance/control qualification do not prove this; dense cheap blocks may cluster within macro blocks. Coverage is per phase across 24 statistics, not across all three phases.",
+  "_policy": "Fixed cost-stratified design: 64 heavy and 512 cheap paired blocks within 64 interleaved macro blocks per phase. The 24 per-statistic exact binomial median intervals use alpha 0.05/24; ranks are [20,45] for R64 and [221,292] for P512, with per-phase joint coverage at least 96.0681% conditional on iid block ratios. All twelve workloads and the 1.10 ratio limit are unchanged. Preserve every prior attempt with its original status; no prior pass is reused. New independent A-A and actual +20% wall-clock-delay controls must qualify before new candidate measurements. No optional stopping, sample extension, best-run selection or outlier deletion."
 }

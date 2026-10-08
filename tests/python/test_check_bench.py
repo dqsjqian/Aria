@@ -1,5 +1,7 @@
 """Offline benchmark gate regressions: retain raw evidence and propagate failures."""
 import importlib.util
+import collections
+import io
 import json
 import os
 from pathlib import Path
@@ -154,6 +156,7 @@ class PairedBenchTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.row = "R metric mean=10ns p50=8ns p95=15ns p99=20ns  (64x50)\n"
         self.valid = "C ARIA_BENCH_CONTROL stretch_percent=0\n" + self.module.WORKLOAD + "\n" + self.row
+        self.original_expected = dict(self.module.EXPECTED)
         patch = mock.patch.object(self.module, "EXPECTED", {"metric": (64, 50)})
         patch.start()
         self.addCleanup(patch.stop)
@@ -223,30 +226,72 @@ class PairedBenchTests(unittest.TestCase):
                 self.assertEqual(set(self.module.measure(Path(bench), self.root / "legacy.txt")), set(shape))
 
     def test_paired_runs_balance_order_and_keep_every_measurement(self):
-        calls = []
+        calls, saved = [], {}
+        class Checkpoint(io.StringIO):
+            def close(self):
+                pass
+        checkpoint = Checkpoint()
         def measure(binary, log):
-            calls.append(binary.parent.name)
+            calls.append((binary.name, binary.parent.name))
             value = 20.0 if binary.parent.name == "old" else 10.0
-            return {"metric": {"mean": value, "p50": value, "p95": value, "p99": value,
-                               "samples": 64, "ops": 50}}
-        with mock.patch.object(self.module, "measure", side_effect=measure), \
-             mock.patch.object(self.module, "BENCHES", ("bench",)):
+            shape = self.module.LEGACY.get(binary.name, self.original_expected)
+            rows = {name: {"mean": value, "p50": value, "p95": value, "p99": value,
+                           "samples": samples, "ops": ops, "control_stretch_percent": 0}
+                    for name, (samples, ops) in shape.items()}
+            saved[log.name] = "retained fixture output"
+            return rows
+        def save(path, content, **kwargs):
+            saved[path.name] = content
+            return len(content)
+        with mock.patch.object(self.module, "EXPECTED", self.original_expected), \
+             mock.patch.object(self.module, "measure", side_effect=measure), \
+             mock.patch.object(Path, "write_text", autospec=True, side_effect=save), \
+             mock.patch.object(Path, "open", return_value=checkpoint):
             report = self.module.compare(self.root / "old", self.root / "new", self.root / "out", 64)
-        self.assertEqual(calls[:2], ["old", "new"])
-        orientations = [calls[i:i+4] for i in range(2, len(calls), 4)]
-        self.assertEqual(orientations.count(["old", "new", "new", "old"]), 32)
-        self.assertEqual(orientations.count(["new", "old", "old", "new"]), 32)
-        self.assertEqual(len(report["runs"]), 256)
-        for ratio in report["summary"]["metric / batch-p99"]["paired_ratios"]:
-            self.assertAlmostEqual(ratio, 0.5)
+        self.assertEqual(len(calls), 6408)  # 8 retained warmups + 6400 measured process runs
+        self.assertEqual(len(report["runs"]), 6400)
+        self.assertEqual(len(report["summary"]), 24)
+        self.assertEqual(len(json.loads(saved["schedule.json"])), 1600)
+        events = [json.loads(line) for line in checkpoint.getvalue().splitlines()]
+        self.assertEqual(collections.Counter(row["event"] for row in events), {"started": 6400, "completed": 6400})
+        for bench, blocks in self.module.BLOCK_PLAN.items():
+            measured = [run for run in report["runs"] if run["bench"] == bench]
+            self.assertEqual(len(measured), blocks * 4)
+            orientations = [[run["side"] for run in measured if run["block"] == i]
+                            for i in range(1, blocks + 1)]
+            self.assertEqual(orientations.count(["baseline", "candidate", "candidate", "baseline"]), blocks // 2)
+            self.assertEqual(orientations.count(["candidate", "baseline", "baseline", "candidate"]), blocks // 2)
+        for run in report["runs"]:
+            self.assertIn(run["raw_log"], saved)
+            self.assertLessEqual(run["monotonic_start_ns"], run["monotonic_end_ns"])
+        for row in report["summary"].values():
+            self.assertTrue(all(abs(ratio - 0.5) < 1e-12 for ratio in row["paired_ratios"]))
         self.assertEqual(report["status"], "pass")
-        self.assertTrue((self.root / "out/comparison.json").is_file())
+        self.assertAlmostEqual(report["joint_coverage_lower_bound_if_iid"], 0.9606807140106389)
+        self.assertEqual(json.loads(saved["progress.json"])["completed_blocks_by_bench"], self.module.BLOCK_PLAN)
+        self.assertIn("comparison.json", saved)
+
+    def test_collection_failure_keeps_started_and_failed_checkpoint(self):
+        completed = 0
+        def measure(binary, log):
+            nonlocal completed
+            completed += 1
+            if completed > 8:
+                log.write_bytes(b"partial failed output")
+                raise RuntimeError("fixture failure")
+            return {"metric": {"mean": 1, "p99": 1, "control_stretch_percent": 0}}
+        with mock.patch.object(self.module, "measure", side_effect=measure):
+            with self.assertRaisesRegex(RuntimeError, "fixture failure"):
+                self.module.compare(self.root / "old", self.root / "new", self.root / "out", 64)
+        events = [json.loads(line) for line in (self.root / "out/measurements.jsonl").read_text().splitlines()]
+        self.assertEqual([row["event"] for row in events], ["started", "failed"])
+        self.assertEqual((self.root / "out" / events[0]["raw_log"]).read_bytes(), b"partial failed output")
+        self.assertFalse((self.root / "out/comparison.json").exists())
 
     def test_wrong_delay_control_binary_is_rejected_before_measurement(self):
         row = {"metric": {"mean": 10, "p50": 10, "p95": 10, "p99": 10,
                           "samples": 64, "ops": 50, "control_stretch_percent": 0}}
-        with mock.patch.object(self.module, "measure", return_value=row), \
-             mock.patch.object(self.module, "BENCHES", ("bench",)):
+        with mock.patch.object(self.module, "measure", return_value=row):
             with self.assertRaisesRegex(ValueError, "unexpected measurement control"):
                 self.module.compare(self.root / "old", self.root / "slow", self.root / "out", 64,
                                     expected_candidate_control=20)

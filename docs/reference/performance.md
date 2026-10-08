@@ -281,36 +281,59 @@ python3 scripts/run-bench-validation.py --baseline <release-bin-dir> \
   --output <fresh-evidence-dir>
 ```
 
-The runner freezes the analysis code and policy before measurement, verifies
-binary hashes throughout, and runs three independent phases: release versus
-itself (A-A), release versus the delay control, then release versus candidate.
-Every phase uses exactly **64 blocks**, preceded by one retained, excluded
-warmup on each side. A predeclared seed (20261008) shuffles 32 ABBA and 32 BAAB
-orientations, with A the release and B the other binary. Sampling never stops
-early, extends after inspecting results, or discards outliers. Both **mean and
-batch-mean P99** are evaluated for all four fixed-window scenarios and all eight
-remaining historical metrics (Property/IProperty, observer, Computed and four
-trace paths). The latter keep their original `P` sample shapes and identical
-source in both production trees, retaining all twelve areas of coverage.
+The runner freezes and hashes its analysis, qualification code and policy before
+measurement and rechecks those files and all binary hashes after every phase.
+It rejects any nonempty evidence directory without modifying the previous
+attempt, including one interrupted before its first measurement. The three
+independent phases are release versus itself (A-A), release versus the delay
+control, then release versus candidate.
+
+The fixed `paired-median-stratified-v2` design samples the two existing cost
+families differently. Every phase has **64 macro blocks**, each containing one
+complete four-run fixed-window (`R`) block and eight complete legacy (`P`)
+blocks. A legacy block runs all three legacy binaries. Thus every `R` metric
+has **64** paired observations and every `P` metric has **512**. All twelve
+metrics retain their original per-executable sample shapes and both **mean and
+batch-mean P99**, for 24 statistics in total. The eight legacy metrics still
+cover Property/IProperty, observer, Computed and four trace paths.
+
+The predeclared seed 20261009 shuffles heavy/cheap placement within each macro
+and binary order within each legacy block. Every binary has its own balanced
+ABBA/BAAB orientation list: 32 of each for `R`, 256 of each for `P`, with A the
+release and B the other binary. The full schedule is saved before warmup or
+sampling. One retained, excluded warmup runs each binary on each side. No
+sampling stops early, extends after inspecting results or discards outliers.
+The checkpoint retains macro, paired-block and process sequence numbers, wall
+and monotonic start/end timestamps, failed attempts and raw log references.
 
 For each statistic, a block contributes the geometric ratio
-`sqrt(B1 * B2 / (A1 * A2))`. The estimand is the **population median of these
+`sqrt(B1 * B2 / (A1 * A2))`. The estimand remains the **population median of these
 repeated-run ratios**, not the worst run, a ratio of pooled operations, or
 individual-operation P99. The exact binomial order-statistic method described
 by [NIST](https://www.itl.nist.gov/div898/software/dataplot/refman1/auxillar/mediancl.htm)
-selects the 20th and 45th ordered ratios from 64 blocks. With Bonferroni control
-across 24 statistics, its joint coverage is at least 96.2493%, **conditional on
-independent, identically distributed block ratios**. Randomizing order and
-passing controls do not prove this assumption; scheduling drift may violate
-it. All block ratios, raw samples, repeat variation and the full worst-case
-cross-pair envelope remain available as diagnostics.
+selects the 20th and 45th ordered ratios for `R64`, and the 221st and 292nd for
+`P512`. Every statistic receives two-sided alpha at most `0.05 / 24`. The
+resulting mixed-family joint coverage lower bound is **96.0681% per phase**,
+conditional on independent, identically distributed block ratios within each
+statistic. This is not a joint coverage claim for all three phases together.
+Bonferroni does not require the different statistics to be independent.
+
+The more densely spaced cheap blocks may cluster under a common temperature
+or scheduling state. Increasing their count, interleaving cost families,
+randomizing order and passing controls do not prove the iid assumption. These
+assumptions and the timestamped observations must remain visible when reporting
+results. Every block ratio, raw sample, repeat variation and worst-case
+cross-pair envelope remains a diagnostic; none can silently replace the stated
+estimand. Rounding can only widen the interval, and qualification independently
+reconstructs each reported interval from the saved rounding bounds for every
+block and checks its verdict.
 
 [paired-policy.json](../../benchmark/paired-policy.json) retains the **1.10**
 relative regression limit established before the earlier pilots. This 10%
 bound is a project policy choice, not a historical budget or a physical or
 statistical constant. An upper interval endpoint at most 1.10 passes; a lower
 endpoint above 1.10 is a regression (exit 1); a crossing interval is
-**inconclusive (exit 3)**. The fixed 64-block design is mandatory.
+**inconclusive (exit 3)**. Exactly the predeclared 64/512 block counts are required.
 
 All 24 A-A statistics must pass, and all 24 actual-delay statistics must detect
 regression, before the candidate is measured. If either control is inconclusive
@@ -320,14 +343,19 @@ unqualified measurement from candidate performance. The positive control tests
 sensitivity to an artificial 20% wall-clock delay; it does not establish
 sensitivity to every 10% algorithm regression or cross-platform performance.
 
-Earlier four-scenario pilots used a 10% maximum baseline-repeat veto; review
-found that veto unnecessary for bounded paired improvement and insufficient to
+Earlier four-scenario pilots used a maximum baseline-repeat veto; review found
+that veto unnecessary for bounded paired improvement and insufficient to
 establish independence. A subsequent ten-block full cross-pair-envelope pilot
-preserved variability but left 17 of 24 A-A statistics inconclusive even before
-rounding audit. Those attempts remain intact and inconclusive. The fixed
-`paired-median-v1` protocol changes the explicitly stated estimand and sampling
-design, retains the original 10% budget, and requires new independent controls
-and candidate data; it never relabels the pilots as passes.
+left 17 of 24 A-A statistics inconclusive before rounding audit. The later
+uniform 64-block median pilot qualified 23 of 24 A-A statistics; legacy
+`IProperty::set_any` batch-mean P99 remained inconclusive. Its 256-batch P99 is
+the third-largest batch mean per executable run. This motivates greater
+predeclared replication across the entire cheap family while retaining every
+historical sample shape. All earlier attempts keep their original results.
+The stratified design requires entirely new A-A, real-delay and candidate
+measurements; it never carries forward selected old passes or raises the 10%
+budget. More observations improve precision under the model, but cannot
+guarantee qualification on a future host or prove its assumptions.
 
 Malformed/missing/duplicate/nonfinite/changed-workload data or failed binaries
 return 2; partial bytes and completed measurements survive the failure.
