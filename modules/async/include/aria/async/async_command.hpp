@@ -399,7 +399,7 @@ public:
     /// never manufacture a temporary by-value forwarding argument here.
     template<typename Fn>
     static PreparedAction make_action(Fn f) {
-        return [f = std::move(f)](const CancellationToken& token,
+        return [f = std::move(f)]([[maybe_unused]] const CancellationToken& token,
                                   std::tuple<Args...>& args) mutable -> Task<R> {
             return std::apply([&](auto&... values) -> Task<R> {
                 if constexpr (CancellableAction<Fn, Args...>) {
