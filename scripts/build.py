@@ -20,10 +20,10 @@ from pathlib import Path
 
 try:
     from aria_deps.build_kit import Pipeline
+    _HAS_BUILD_KIT = True
 except ImportError:
-    print("Error: aria-deps is required. Install it with:", file=sys.stderr)
-    print("    pip install aria-deps", file=sys.stderr)
-    sys.exit(1)
+    _HAS_BUILD_KIT = False
+    Pipeline = None
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,6 +52,10 @@ def cmake_flags(args) -> dict:
 
 
 def main(argv=None) -> int:
+    if not _HAS_BUILD_KIT:
+        print("Error: aria-deps is required. Install it with:", file=sys.stderr)
+        print("    pip install aria-deps", file=sys.stderr)
+        return 1
     pipeline = Pipeline(
         name="aria",
         root=ROOT,
