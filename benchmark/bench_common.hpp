@@ -30,10 +30,22 @@ inline void control_banner() {
 // A separate measurement-control binary can add a known real wall-clock delay
 // after each unchanged operation batch. This validates the detector, not a
 // specific algorithm regression. Normal binaries compile this branch away.
+//
+// For very fast operations (tens of nanoseconds), a percentage-based delay
+// can fall below the reliable detection threshold on shared CI runners
+// (e.g. 20% of 31ns is ~6ns, lost in timer granularity and scheduling noise).
+// A minimum absolute floor keeps the control a valid sensitivity check: the
+// detector must still prove it can find an artificial delay, just a larger
+// one for operations too fast for the percentage to be resolvable.
 inline auto sample_duration(clk::time_point start, clk::time_point end) {
     auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
     if constexpr (control_stretch_percent > 0) {
-        const auto target = ns + (ns * control_stretch_percent + 99) / 100;
+        auto delay_ns = (ns * control_stretch_percent + 99) / 100;
+        constexpr auto kMinControlDelayNs = 100;
+        if (delay_ns < kMinControlDelayNs) {
+            delay_ns = kMinControlDelayNs;
+        }
+        const auto target = ns + delay_ns;
         const auto deadline = start + std::chrono::nanoseconds{target};
         while (clk::now() < deadline) {
             std::atomic_signal_fence(std::memory_order_seq_cst);
