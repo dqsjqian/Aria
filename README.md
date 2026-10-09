@@ -202,7 +202,7 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
 
 | 架构优势 | 工程设计 |
 |---|---|
-| **现代 C++ 基础** | C++23 基线（GCC 14+ / Clang 19+ / AppleClang 21+ / MSVC v143），使用完整的协程与 concepts 能力；集成项目需采用 C++23 或更高标准。 |
+| **现代 C++ 基础** | C++23 基线（GCC 14+ / Clang 19+ / AppleClang 21+ / MSVC v145），使用完整的协程与 concepts 能力；集成项目需采用 C++23 或更高标准。 |
 | **原生 UI 自由** | 控件、布局和动画交给所选 UI 工具包，Aria 统一状态与界面之间的单向/双向数据流；共享业务核心，各端保留原生体验。 |
 | **分层兼容策略** | `aria-abi` / `aria-runtime` / `aria-binding` 在主版本号内保持 ABI 稳定，要求编译器、标准库与构建选项一致；`Property<T>` 等模板及其宿主类型更新后需重新编译。 |
 | **开放适配协议** | Qt6 / AppKit / UIKit / JNI / HTTP 开箱可用；其他 UI 工具包通过实现 `IViewAdapter` 接入（见[适配器指南](docs/guide/adapters/)）。 |
@@ -278,10 +278,10 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
 - **完整支持 C++23 的编译器**：
   - GCC >= 14（Windows 下可走 MSYS2 UCRT64 工具链）
   - Clang >= 19（macOS 上 AppleClang 21+ 即可）
-  - **MSVC v143 / Visual Studio 2022**（Windows，详见下文）
+  - **MSVC v145 / Visual Studio 2026**（当前 Windows CI 工具链，详见下文）
 - *(可选)* **Qt6** >= 6.4（用于 Qt6 适配器）
 
-> **Windows 同时支持 MSYS2 UCRT64（GCC）和 MSVC / Visual Studio 2022 或 2026 两条工具链。** 团队栈里有哪个就用哪个 —— 同一棵源码树都能编出完整框架 + 测试 + 适配器，不需要分支或 fork。
+> **Windows CI 验证 MSYS2 UCRT64（GCC）和 MSVC / Visual Studio 2026 两条工具链。** VS2026 使用 `Visual Studio 18 2026` 生成器和 v145 工具集，要求 CMake >= 4.2。自动构建脚本仍能发现已有 VS2022 安装；当前 MSVC 发布验收使用 VS2026。
 
 ## 🚀 快速开始
 
@@ -318,7 +318,7 @@ scripts\build.ps1 tests
 scripts\build.ps1 asan
 scripts\build.ps1 tsan       # Debug + ThreadSanitizer（MSVC 不支持，见下）
 
-# Windows —— MSVC / Visual Studio 2022 或 2026
+# Windows —— MSVC / Visual Studio 2026
 scripts\build-msvc.ps1       # Release（使用 build/flavors/msvc/ 目录）
 scripts\build-msvc.ps1 tests
 scripts\build-msvc.ps1 debug
@@ -329,13 +329,13 @@ scripts\build-msvc.ps1 debug
 | 工具链 | 脚本 | 构建目录 | 备注 |
 |---|---|---|---|
 | **MSYS2 UCRT64**（GCC 14+ / Clang 19+） | `scripts\build.ps1` | `build/flavors/release/` | 体积小（≈300 MB），大多数 CI 镜像已预装。 |
-| **MSVC**（VS 2022 / 2026） | `scripts\build-msvc.ps1` | `build/flavors/msvc/` | 通过 `vswhere` 自动定位 VS 安装；根据安装版本选择 Visual Studio 生成器。 |
+| **MSVC**（VS2026；保留 VS2022 发现兼容） | `scripts\build-msvc.ps1` | `build/flavors/msvc/` | 通过 `vswhere` 自动定位 VS 安装；根据安装版本选择 Visual Studio 生成器。 |
 
 <details>
 <summary>📖 MSVC 一次性配置</summary>
 
 ```powershell
-# 1. 安装 Visual Studio 2022 Build Tools（或完整 IDE），勾选
+# 1. 安装 Visual Studio 2026 Build Tools（或完整 IDE）及 CMake >= 4.2，勾选
 #    "Desktop development with C++" + "C++ CMake tools"。
 # 2. （可选）安装 Qt 6 的 msvc2022_64 组件。
 # 3. 任意 PowerShell 窗口里：
@@ -465,7 +465,7 @@ Task<std::string> fetch_user(int id) {
 
 | 平台 | UI 宿主 | 适配器 | 状态 |
 |------|---------|--------|------|
-| Windows | Qt6 | `aria-qt6` | ✅ MSYS2 UCRT64 + MSVC 2022 |
+| Windows | Qt6 | `aria-qt6` | ✅ MSYS2 UCRT64 + MSVC 2026 |
 | macOS | AppKit / Qt6 | `aria-qt6` / `aria-appkit` | ✅ 可用 |
 | Linux | Qt6 | `aria-qt6` | ✅ 可用 |
 | iOS | UIKit | `aria-uikit` | ✅ 可用 |

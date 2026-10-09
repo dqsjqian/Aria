@@ -22,8 +22,7 @@ import time
 from pathlib import Path
 
 BENCHES = ("aria_bench_regression", "aria_bench_iproperty", "aria_bench_command", "aria_bench_trace_sink")
-BLOCK_PLAN = {bench: (64 if bench == "aria_bench_regression" else 512) for bench in BENCHES}
-PROTOCOL = "paired-median-stratified-v2"
+PROTOCOL = "paired-median-scenario-v3"
 ORDER_SEED = 20261009
 LEGACY = {
     "aria_bench_iproperty": {"Property<int>::set(i)": (256, 4000),
@@ -48,11 +47,28 @@ EXPECTED = {
     "Sorted random append [10000,10200)": (1024, 200),
     "AsyncCommand round-trip [2 workers]": (1024, 50),
 }
+SCENARIOS = dict(zip(("list", "filtered", "sorted", "async"), EXPECTED))
+SUITES = {f"aria_bench_regression--{scenario}": {"bench": BENCHES[0], "scenario": scenario}
+          for scenario in SCENARIOS}
+SUITES.update({bench: {"bench": bench, "scenario": None} for bench in BENCHES[1:]})
+BLOCK_PLAN = {suite: (64 if shape["scenario"] else 512) for suite, shape in SUITES.items()}
 
 
-def measure(binary: Path, log: Path) -> dict:
+def bench_binary(directory: Path, name: str) -> Path:
+    """Resolve one explicit build output without guessing between stale files."""
+    choices = [path for path in (directory / name, directory / f"{name}.exe") if path.is_file()]
+    if len(choices) != 1:
+        raise ValueError(f"expected exactly one benchmark executable for {name} in {directory}; found {len(choices)}")
+    return choices[0]
+
+
+def measure(binary: Path, log: Path, scenario: str | None = None) -> dict:
+    name = binary.stem if binary.suffix.lower() == ".exe" else binary.name
+    if name not in BENCHES or (scenario is not None and (name != BENCHES[0] or scenario not in SCENARIOS)):
+        raise ValueError("unknown benchmark executable or scenario selector")
+    command = [str(binary)] + (["--scenario", scenario] if scenario is not None else [])
     try:
-        result = subprocess.run([str(binary)], capture_output=True, timeout=600)
+        result = subprocess.run(command, capture_output=True, timeout=600)
     except subprocess.TimeoutExpired as error:
         log.write_bytes((error.stdout or b"") + b"\n--- stderr ---\n" + (error.stderr or b""))
         raise RuntimeError(f"{binary.name} timed out; see {log.name}") from error
@@ -61,10 +77,16 @@ def measure(binary: Path, log: Path) -> dict:
     if result.returncode:
         raise RuntimeError(f"{binary.name} exited with {result.returncode}; see {log.name}")
     output = result.stdout.decode("utf-8")
-    expected = LEGACY.get(binary.name, EXPECTED)
-    marker = "P " if binary.name in LEGACY else "R "
-    if binary.name not in LEGACY and output.splitlines().count(WORKLOAD) != 1:
+    # Windows adds .exe to the same logical benchmark name. The suffix must
+    # not turn a legacy P workload into an unknown R workload.
+    expected = LEGACY[name] if name in LEGACY else (
+        {SCENARIOS[scenario]: EXPECTED[SCENARIOS[scenario]]} if scenario is not None else EXPECTED)
+    marker = "P " if name in LEGACY else "R "
+    if name not in LEGACY and output.splitlines().count(WORKLOAD) != 1:
         raise ValueError("missing or duplicated fixed-window workload identity")
+    selectors = [line for line in output.splitlines() if line.startswith("ARIA_SCENARIO")]
+    if selectors != ([] if name in LEGACY else [f"ARIA_SCENARIO {scenario or 'all'}"]):
+        raise ValueError("missing, duplicated or mismatched scenario identity")
     controls = [line.removeprefix("C ARIA_BENCH_CONTROL stretch_percent=")
                 for line in output.splitlines() if line.startswith("C ARIA_BENCH_CONTROL stretch_percent=")]
     if len(controls) != 1 or controls[0] not in ("0", "20"):
@@ -80,6 +102,8 @@ def measure(binary: Path, log: Path) -> dict:
                 raise ValueError(f"duplicate batch samples: {name}")
             samples[name] = sample["batch_means_ns"]
             continue
+        if line.startswith(("R ", "P ")) and not line.startswith(marker):
+            raise ValueError("unexpected measurement row family")
         if not line.startswith(marker):
             continue
         match = ROW.fullmatch(line)
@@ -170,8 +194,9 @@ def classify(blocks: list, limit: float, required_blocks: int = 64) -> dict:
 
 
 def expected_statistics() -> dict:
-    return {f"{name} / batch-{statistic}": {"bench": bench, "blocks": BLOCK_PLAN[bench]}
-            for bench in BENCHES for name in (LEGACY.get(bench, EXPECTED))
+    return {f"{name} / batch-{statistic}": {**shape, "suite": suite, "blocks": BLOCK_PLAN[suite]}
+            for suite, shape in SUITES.items()
+            for name in ([SCENARIOS[shape["scenario"]]] if shape["scenario"] else LEGACY[shape["bench"]])
             for statistic in ("mean", "p99")}
 
 
@@ -182,29 +207,32 @@ def make_schedule() -> list:
     orientation do not prove iid or justify an effective independent sample size.
     """
     orientations = {}
-    for bench, count in BLOCK_PLAN.items():
+    for suite, count in BLOCK_PLAN.items():
         values = [False] * (count // 2) + [True] * (count // 2)
-        random.Random(f"{ORDER_SEED}:orientation:{bench}").shuffle(values)
-        orientations[bench] = values
+        random.Random(f"{ORDER_SEED}:orientation:{suite}").shuffle(values)
+        orientations[suite] = values
     placement = random.Random(f"{ORDER_SEED}:macro-placement")
     bench_order = random.Random(f"{ORDER_SEED}:cheap-bench-order")
-    counters = {bench: 0 for bench in BENCHES}
+    counters = dict.fromkeys(SUITES, 0)
+    heavy = [suite for suite, shape in SUITES.items() if shape["scenario"]]
+    cheap = [suite for suite, shape in SUITES.items() if not shape["scenario"]]
     schedule = []
     for macro in range(1, 65):
-        slots = ["heavy"] + ["cheap"] * 8
+        slots = heavy + [None] * 8
         placement.shuffle(slots)
-        for slot, family in enumerate(slots, 1):
-            benches = [BENCHES[0]] if family == "heavy" else list(BENCHES[1:])
-            if family == "cheap":
-                bench_order.shuffle(benches)
-            for bench in benches:
-                counters[bench] += 1
-                block = counters[bench]
-                reversed_order = orientations[bench][block - 1]
+        for slot, heavy_suite in enumerate(slots, 1):
+            suites = [heavy_suite] if heavy_suite is not None else list(cheap)
+            if heavy_suite is None:
+                bench_order.shuffle(suites)
+            for suite in suites:
+                counters[suite] += 1
+                block = counters[suite]
+                reversed_order = orientations[suite][block - 1]
                 order = ["candidate", "baseline", "baseline", "candidate"] if reversed_order else [
                     "baseline", "candidate", "candidate", "baseline"]
                 schedule.append({"sequence": len(schedule) + 1, "macro": macro,
-                                 "macro_slot": slot, "family": family, "bench": bench,
+                                 "macro_slot": slot, "family": "heavy" if heavy_suite is not None else "cheap",
+                                 **SUITES[suite], "suite": suite,
                                  "block": block, "order": order})
     assert counters == BLOCK_PLAN
     return schedule
@@ -218,35 +246,81 @@ def compare(baseline: Path, candidate: Path, output: Path, rounds: int,
     if any((output / name).exists() for name in ("schedule.json", "measurements.jsonl", "comparison.json")):
         raise ValueError("evidence directory already contains an attempt; use a fresh directory")
     binaries = {"baseline": baseline.resolve(), "candidate": candidate.resolve()}
+    executables = {side: {bench: bench_binary(directory, bench) for bench in BENCHES}
+                   for side, directory in binaries.items()}
+    identities = {side: {bench: hashlib.sha256(binary.read_bytes()).hexdigest()
+                         for bench, binary in selected.items()} for side, selected in executables.items()}
+    manifest = output / "binary-sha256.json"
+    manifest_bytes = (json.dumps(identities, indent=2) + "\n").encode()
+    if manifest.exists():
+        manifest_bytes = manifest.read_bytes()
+        if json.loads(manifest_bytes) != identities:
+            raise ValueError("phase executable manifest differs before measurement")
+    else:
+        manifest.write_text(json.dumps(identities, indent=2) + "\n", encoding="utf-8")
+    provenance = {"phase_executables": {"file": manifest.name,
+                                      "sha256": hashlib.sha256(manifest_bytes).hexdigest()},
+                  "analysis_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    # Qualification freezes the complete project-library and analysis/policy
+    # identities outside each phase. Every invocation explicitly joins them.
+    # A standalone comparison has no campaign manifest and cannot qualify it.
+    for key, filename in (("campaign_binaries_and_libraries", "binary-sha256.json"),
+                          ("campaign_protocol", "protocol-sha256.json")):
+        source = output.parent / filename
+        provenance[key] = ({"file": "../" + filename,
+                            "sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
+                           if source.is_file() else None)
     expected_control = {"baseline": 0, "candidate": expected_candidate_control}
     runs = []
     grouped = {}
     schedule = make_schedule()
     (output / "schedule.json").write_text(json.dumps(schedule, indent=2) + "\n", encoding="utf-8")
-    def collect(side, bench, log):
-        rows = measure(binaries[side] / bench, log)
+    def collect(side, suite, log):
+        shape = SUITES[suite]
+        rows = measure(executables[side][shape["bench"]], log, scenario=shape["scenario"])
         if any(row.get("control_stretch_percent", 0) != expected_control[side] for row in rows.values()):
-            raise ValueError(f"unexpected measurement control on {side}: {bench}")
+            raise ValueError(f"unexpected measurement control on {side}: {suite}")
         for row in rows.values():
             row.pop("batch_means_ns", None)
         return rows
-    for bench in BENCHES:
-        for side in binaries:
-            collect(side, bench, output / f"warmup-{side}-{bench}.txt")
-    completed = {bench: 0 for bench in BENCHES}
+    warmups = []
+    with (output / "warmups.jsonl").open("w", encoding="utf-8") as checkpoint:
+        for suite, shape in SUITES.items():
+            for side in binaries:
+                log = output / f"warmup-{side}-{suite}.txt"
+                warmup = {**shape, "suite": suite, "side": side, "raw_log": log.name,
+                          "provenance": provenance,
+                          "started_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                          "monotonic_start_ns": time.monotonic_ns()}
+                checkpoint.write(json.dumps({**warmup, "event": "started"}) + "\n")
+                checkpoint.flush()
+                try:
+                    collect(side, suite, log)
+                except Exception as error:
+                    checkpoint.write(json.dumps({**warmup, "event": "failed", "error": str(error),
+                                                 "monotonic_end_ns": time.monotonic_ns()}) + "\n")
+                    checkpoint.flush()
+                    raise
+                warmup.update(monotonic_end_ns=time.monotonic_ns(),
+                              completed_at_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
+                warmups.append(warmup)
+                checkpoint.write(json.dumps({**warmup, "event": "completed"}) + "\n")
+                checkpoint.flush()
+    completed = dict.fromkeys(SUITES, 0)
     with (output / "measurements.jsonl").open("w", encoding="utf-8") as checkpoint:
         for item in schedule:
-            bench = item["bench"]
+            suite = item["suite"]
             for position, side in enumerate(item["order"], 1):
-                log = output / f"{item['sequence']}-{position}-{side}-{bench}.txt"
+                log = output / f"{item['sequence']}-{position}-{side}-{suite}.txt"
                 run = {**{key: value for key, value in item.items() if key != "order"},
                        "position": position, "side": side, "raw_log": log.name,
+                       "provenance": provenance,
                        "started_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                        "monotonic_start_ns": time.monotonic_ns()}
                 checkpoint.write(json.dumps({**run, "event": "started"}) + "\n")
                 checkpoint.flush()
                 try:
-                    rows = collect(side, bench, log)
+                    rows = collect(side, suite, log)
                 except Exception as error:
                     checkpoint.write(json.dumps({**run, "event": "failed", "error": str(error),
                                                  "monotonic_end_ns": time.monotonic_ns()}) + "\n")
@@ -255,19 +329,19 @@ def compare(baseline: Path, candidate: Path, output: Path, rounds: int,
                 run.update(metrics=rows, monotonic_end_ns=time.monotonic_ns(),
                            completed_at_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
                 runs.append(run)
-                grouped.setdefault((bench, item["block"]), []).append(run)
+                grouped.setdefault((suite, item["block"]), []).append(run)
                 checkpoint.write(json.dumps({**run, "event": "completed"}) + "\n")
                 checkpoint.flush()
-            completed[bench] += 1
+            completed[suite] += 1
             (output / "progress.json").write_text(json.dumps({"current_macro": item["macro"],
-                        "completed_blocks_by_bench": completed, "fixed_blocks_by_bench": BLOCK_PLAN}) + "\n",
+                        "completed_blocks_by_suite": completed, "fixed_blocks_by_suite": BLOCK_PLAN}) + "\n",
                         encoding="utf-8")
     summary = {}
     for key, shape in expected_statistics().items():
         name, statistic = key.rsplit(" / batch-", 1)
         blocks = []
         for index in range(1, shape["blocks"] + 1):
-            selected = grouped.get((shape["bench"], index), [])
+            selected = grouped.get((shape["suite"], index), [])
             block = {side: [run["metrics"][name][statistic] for run in selected if run["side"] == side]
                      for side in binaries}
             if any(len(values) != 2 for values in block.values()):
@@ -275,21 +349,22 @@ def compare(baseline: Path, candidate: Path, output: Path, rounds: int,
             block["rounding_radius_ns"] = max(run["metrics"][name].get("rounding_radius_ns", 0)
                                              for run in selected)
             blocks.append(block)
-        summary[key] = {**classify(blocks, limit, required_blocks=shape["blocks"]), "bench": shape["bench"]}
+        summary[key] = {**classify(blocks, limit, required_blocks=shape["blocks"]),
+                        **{field: shape[field] for field in ("bench", "suite", "scenario")}}
     statuses = {row["status"] for row in summary.values()}
     status = "regression" if "regression" in statuses else (
         "inconclusive" if "inconclusive" in statuses else "pass")
     report = {"host": {"system": platform.system(), "machine": platform.machine(),
                        "platform": platform.platform(), "cpu_count": os.cpu_count(),
                        "python_version": sys.version},
-              "workload": WORKLOAD, "macro_blocks": rounds, "blocks_by_bench": BLOCK_PLAN,
-              "runs": runs, "summary": summary,
+              "workload": WORKLOAD, "macro_blocks": rounds, "blocks_by_suite": BLOCK_PLAN,
+              "warmups": warmups, "runs": runs, "summary": summary,
               "joint_coverage_lower_bound_if_iid": 1 - sum(row["marginal_noncoverage_bound_if_iid"] for row in summary.values()),
               "comparison_kind": "slow20-control" if expected_candidate_control else (
                   "aa-control" if baseline.resolve() == candidate.resolve() else "candidate"),
               "candidate_control_stretch_percent": expected_candidate_control,
               "status": status, "policy": {"ratio_limit": limit, "protocol": PROTOCOL,
-              "blocks_by_bench": BLOCK_PLAN, "family_alpha": 0.05, "family_comparisons": 24,
+              "blocks_by_suite": BLOCK_PLAN, "family_alpha": 0.05, "family_comparisons": 24,
               "aggregation": "exact binomial order-statistic interval for the median ABBA geometric ratio",
               "scope": "median repeated-run batch mean and batch-mean P99, not individual-operation latency",
               "assumptions": "iid ratios within each statistic; cheap blocks may cluster within macros; controls and counts do not prove iid"}}
@@ -318,7 +393,7 @@ def main() -> int:
     try:
         policy = json.loads(args.policy.read_text(encoding="utf-8"))
         if (not isinstance(policy, dict) or policy.get("workload") != "fixed-window-v2"
-                or policy.get("macro_blocks") != 64 or policy.get("blocks_by_bench") != BLOCK_PLAN
+                or policy.get("macro_blocks") != 64 or policy.get("blocks_by_suite") != BLOCK_PLAN
                 or policy.get("family_alpha") != 0.05 or policy.get("family_comparisons") != 24
                 or policy.get("protocol") != PROTOCOL
                 or policy.get("order_seed") != ORDER_SEED
@@ -328,7 +403,7 @@ def main() -> int:
         if any(isinstance(value, bool) or not isinstance(value, (int, float)) or
                not math.isfinite(value) or value < 1 for value in (limit,)):
             raise ValueError("invalid paired ratio policy")
-        provenance = {side: {bench: hashlib.sha256((directory / bench).read_bytes()).hexdigest()
+        provenance = {side: {bench: hashlib.sha256(bench_binary(directory, bench).read_bytes()).hexdigest()
                             for bench in BENCHES}
                       for side, directory in (("baseline", args.baseline), ("candidate", args.candidate))}
         (args.output / "binary-sha256.json").write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")

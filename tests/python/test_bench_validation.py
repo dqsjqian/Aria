@@ -23,18 +23,18 @@ def report(status, control):
         n = shape["blocks"]
         values = ([1.0] * (n // 2) + [1.2] * (n // 2) if status == "inconclusive"
                   else [1.0 if status == "pass" else 1.2] * n)
-        summary[name] = {"bench": shape["bench"], "validity": "fixed-sample-complete",
+        summary[name] = {**{key: shape[key] for key in ("bench", "suite", "scenario")}, "validity": "fixed-sample-complete",
                          "observed_blocks": n, "required_blocks": n,
                          "paired_ratios": values,
                          "paired_ratio_rounding_intervals": [[v, v] for v in values],
                          "ratio_interval": [min(values), max(values)],
                          "order_statistic_ranks": [20, 45] if n == 64 else [221, 292],
                          "status": status}
-    return {"macro_blocks": 64, "blocks_by_bench": validation.BLOCK_PLAN,
+    return {"macro_blocks": 64, "blocks_by_suite": validation.BLOCK_PLAN,
             "workload": "ARIA_WORKLOAD fixed-window-v2 batch-mean-nearest-rank",
-            "policy": {"protocol": "paired-median-stratified-v2", "family_alpha": .05,
+            "policy": {"protocol": "paired-median-scenario-v3", "family_alpha": .05,
                        "family_comparisons": 24, "ratio_limit": 1.1,
-                       "blocks_by_bench": validation.BLOCK_PLAN},
+                       "blocks_by_suite": validation.BLOCK_PLAN},
             "comparison_kind": "slow20-control" if control else "aa-control",
             "candidate_control_stretch_percent": control, "summary": summary, "status": status}
 
@@ -49,6 +49,7 @@ class MeasurementQualificationTests(unittest.TestCase):
             aa = report("pass", 0)
             name = next(iter(aa["summary"]))
             aa["summary"][name] = report(status, 0)["summary"][name]
+            aa["status"] = status
             result = validation.verify_controls(aa, report("regression", 20))
             self.assertEqual(result["status"], "measurement-unavailable")
             self.assertEqual(set(result["unavailable_metrics"]), {name})
@@ -57,7 +58,7 @@ class MeasurementQualificationTests(unittest.TestCase):
                              "measurement-unavailable")
 
     def test_protocol_identity_exact_names_and_complete_counts_are_required(self):
-        for key, value in (("macro_blocks", 63), ("summary", {}), ("blocks_by_bench", {}),
+        for key, value in (("macro_blocks", 63), ("summary", {}), ("blocks_by_suite", {}),
                            ("candidate_control_stretch_percent", 0), ("workload", "other")):
             slow = report("regression", 20)
             slow[key] = value
@@ -86,6 +87,20 @@ class MeasurementQualificationTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 validation.verify_controls(aa, report("regression", 20))
 
+    def test_aggregate_regression_cannot_hide_one_unqualified_scenario(self):
+        slow = report("regression", 20)
+        name = next(iter(slow["summary"]))
+        slow["summary"][name] = report("pass", 20)["summary"][name]
+        result = validation.verify_controls(report("pass", 0), slow)
+        self.assertEqual(result["status"], "measurement-unavailable")
+        self.assertEqual(set(result["unavailable_metrics"]), {name})
+        for field, value in (("suite", "aria_bench_regression--filtered"), ("scenario", "filtered"),
+                             ("scenario", None), ("bench", "aria_bench_command")):
+            slow = report("regression", 20)
+            slow["summary"][name][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                validation.verify_controls(report("pass", 0), slow)
+
 
 class ValidationRunnerTests(unittest.TestCase):
     def setUp(self):
@@ -111,10 +126,22 @@ class ValidationRunnerTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 2)
             status = aa_status if name == "aa-control" else "regression" if name == "slow20-control" else "pass"
             value = report(status, 20 if name == "slow20-control" else 0)
+            if name == "candidate":
+                value["comparison_kind"] = "candidate"
+                if corruption == "candidate-missing":
+                    value["summary"].pop(next(iter(value["summary"])))
+                if corruption == "candidate-scenario":
+                    value["summary"][next(iter(value["summary"]))]["scenario"] = "filtered"
+                if corruption == "candidate-aggregate":
+                    value["status"] = "regression"
+                if corruption == "candidate-identity":
+                    value["comparison_kind"] = "aa-control"
             directory.mkdir(parents=True)
             (directory / "comparison.json").write_text(json.dumps(value))
-            if corruption == "policy":
-                (self.output / "paired-policy.json").write_text("changed frozen policy")
+            if corruption in ("policy", "analysis", "qualification"):
+                frozen = {"policy": "paired-policy.json", "analysis": "compare-bench-protocol.py",
+                          "qualification": "qualification-runner-protocol.py"}[corruption]
+                (self.output / frozen).write_text("changed frozen code or policy")
             if corruption == "binary":
                 (self.directories["baseline"] / validation.BENCHES[0]).write_bytes(b"changed binary")
             if corruption == "library-content":
@@ -151,13 +178,22 @@ class ValidationRunnerTests(unittest.TestCase):
         self.assertEqual(result["candidate_status"], "not-measured")
         self.assertEqual(result["status"], "measurement-unavailable")
 
+    def test_candidate_requires_its_complete_statistics_and_phase_identity(self):
+        for corruption in ("candidate-missing", "candidate-scenario", "candidate-aggregate", "candidate-identity"):
+            self.output = self.root / corruption
+            self.calls.clear()
+            with self.subTest(corruption=corruption):
+                self.assertEqual(self.run_runner(corruption=corruption), 2)
+                self.assertEqual(self.calls, ["aa-control", "slow20-control", "candidate"])
+                self.assertEqual(json.loads((self.output / "validation-error.json").read_text())["status"], "invalid")
+
     def test_measurement_process_failure_is_invalid_not_regression(self):
         self.assertEqual(self.run_runner(process_failure=True), 2)
         self.assertEqual(self.calls, ["aa-control"])
         self.assertEqual(json.loads((self.output / "validation-error.json").read_text())["status"], "invalid")
 
     def test_frozen_policy_or_binary_change_cannot_accept_a_result(self):
-        for corruption in ("policy", "binary"):
+        for corruption in ("policy", "analysis", "qualification", "binary"):
             self.output = self.root / corruption
             self.calls.clear()
             with self.subTest(corruption=corruption):
@@ -185,6 +221,66 @@ class ValidationRunnerTests(unittest.TestCase):
         identities = validation.binary_hashes(self.directories)["baseline"]["project_shared_libraries"]
         self.assertEqual(set(identities), {"bin/libaria_runtime.3.dylib", "lib/libsample.so",
                                           "lib/libsample.so.3.2", "lib/sample.DLL", "lib/libsample.dylib"})
+
+    def windows_outputs(self, multi_config=False):
+        for side, directory in list(self.directories.items()):
+            target = directory / "Release" if multi_config else directory
+            target.mkdir(exist_ok=True)
+            for bench in validation.BENCHES:
+                (directory / bench).rename(target / f"{bench}.exe")
+            (target / "aria_runtime.dll").write_bytes(b"Windows runtime fixture")
+            (target / "aria_abi.dll").write_bytes(b"Windows ABI fixture")
+            self.directories[side] = target
+        self.runtime = self.directories["baseline"] / "aria_runtime.dll"
+
+    def test_windows_single_configuration_requires_adjacent_dlls_and_preserves_controls(self):
+        self.windows_outputs()
+        self.assertEqual(self.run_runner(), 0)
+        self.assertEqual(self.calls, ["aa-control", "slow20-control", "candidate"])
+        manifest = json.loads((self.output / "binary-sha256.json").read_text())["candidate"]
+        self.assertTrue(all(name.endswith(".exe") for name in manifest["executable_names"].values()))
+        self.assertEqual(manifest["windows_adjacent_project_dlls"],
+                         {"aria_runtime": "bin/aria_runtime.dll", "aria_abi": "bin/aria_abi.dll"})
+
+    def test_windows_multiconfiguration_uses_build_root_lib_and_config(self):
+        self.windows_outputs(multi_config=True)
+        lib = self.directories["baseline"].parent.parent / "lib" / "Release"
+        lib.mkdir(parents=True)
+        (lib / "additional.DLL").write_bytes(b"extra retained DLL")
+        identity = validation.binary_hashes(self.directories)["baseline"]
+        self.assertIn("bin/Release/aria_runtime.dll", identity["project_shared_libraries"])
+        self.assertIn("lib/Release/additional.DLL", identity["project_shared_libraries"])
+        self.assertNotIn("lib/additional.DLL", identity["project_shared_libraries"])
+        self.assertEqual(self.run_runner(), 0)
+
+    def test_missing_windows_dll_cannot_fall_back_to_lib_or_path(self):
+        self.windows_outputs()
+        directory = self.directories["baseline"]
+        lib = directory.parent / "lib"
+        lib.mkdir()
+        (directory / "aria_abi.dll").rename(lib / "aria_abi.dll")
+        self.assertEqual(self.run_runner(), 2)
+        self.assertEqual(self.calls, [])
+        self.assertIn("adjacent Windows project DLL", (self.output / "validation-error.json").read_text())
+
+    def test_windows_redirection_and_executable_ambiguity_fail_before_sampling(self):
+        self.windows_outputs()
+        for kind in ("redirection", "ambiguity", "mixed-suffix"):
+            self.output = self.root / kind
+            directory = self.directories["baseline"]
+            name = validation.BENCHES[0]
+            extra = directory / (f"{name}.exe.local" if kind == "redirection" else name)
+            extra.write_bytes(b"unexpected loader/input identity")
+            if kind == "mixed-suffix":
+                (directory / f"{name}.exe").unlink()
+            self.assertEqual(self.run_runner(), 2)
+            self.assertEqual(self.calls, [])
+            extra.unlink()
+
+    def test_windows_dll_content_change_is_invalid_after_control(self):
+        self.windows_outputs()
+        self.assertEqual(self.run_runner(corruption="library-content"), 2)
+        self.assertEqual(self.calls, ["aa-control"])
 
     def test_library_alias_retarget_or_dangling_target_is_invalid(self):
         original = self.runtime.with_name("original_runtime.dylib")

@@ -1,4 +1,4 @@
-"""Offline stratified analysis contracts; never executes a benchmark."""
+"""Offline scenario-paired analysis contracts; never executes a benchmark."""
 import collections
 import copy
 import importlib.util
@@ -35,30 +35,44 @@ def report(status, control):
             "status": status,
         }
     return {
-        "macro_blocks": 64, "blocks_by_bench": compare.BLOCK_PLAN,
+        "macro_blocks": 64, "blocks_by_suite": compare.BLOCK_PLAN,
         "workload": compare.WORKLOAD,
         "policy": {"protocol": compare.PROTOCOL, "family_alpha": 0.05,
                    "family_comparisons": 24, "ratio_limit": 1.1,
-                   "blocks_by_bench": compare.BLOCK_PLAN},
+                   "blocks_by_suite": compare.BLOCK_PLAN},
         "comparison_kind": "slow20-control" if control else "aa-control",
-        "candidate_control_stretch_percent": control, "summary": summary,
+        "candidate_control_stretch_percent": control, "summary": summary, "status": status,
     }
 
 
-class StratifiedProtocolTests(unittest.TestCase):
+class ScenarioProtocolTests(unittest.TestCase):
 
     def test_schedule_fixed_complete_individually_balanced_and_interleaved(self):
         schedule = compare.make_schedule()
         self.assertEqual(schedule, compare.make_schedule())
-        self.assertEqual(collections.Counter((x['bench'] for x in schedule)), compare.BLOCK_PLAN)
+        self.assertEqual(len(schedule), 1792)
+        self.assertEqual([x['sequence'] for x in schedule], list(range(1, 1793)))
+        self.assertEqual(collections.Counter((x['suite'] for x in schedule)), compare.BLOCK_PLAN)
         for bench, n in compare.BLOCK_PLAN.items():
-            rows = [x for x in schedule if x['bench'] == bench]
+            rows = [x for x in schedule if x['suite'] == bench]
             self.assertEqual([x['block'] for x in rows], list(range(1, n + 1)))
             self.assertEqual(collections.Counter((x['order'][0] for x in rows)), {'baseline': n // 2, 'candidate': n // 2})
             self.assertTrue(all((collections.Counter(x['order']) == {'baseline': 2, 'candidate': 2} for x in rows)))
         for macro in range(1, 65):
-            self.assertEqual(collections.Counter((x['bench'] for x in schedule if x['macro'] == macro)), dict.fromkeys(compare.BENCHES[1:], 8) | {compare.BENCHES[0]: 1})
+            rows = [x for x in schedule if x['macro'] == macro]
+            self.assertEqual(collections.Counter(x['suite'] for x in rows), dict.fromkeys(compare.BENCHES[1:], 8) | {suite: 1 for suite in compare.SUITES if compare.SUITES[suite]['scenario']})
+            self.assertEqual(set(x['macro_slot'] for x in rows), set(range(1, 13)))
+            for slot in range(1, 13):
+                group = [x for x in rows if x['macro_slot'] == slot]
+                if group[0]['family'] == 'heavy':
+                    self.assertEqual(len(group), 1)
+                    self.assertIn(group[0]['scenario'], compare.SCENARIOS)
+                else:
+                    self.assertEqual({x['bench'] for x in group}, set(compare.BENCHES[1:]))
+                    self.assertTrue(all(x['scenario'] is None for x in group))
         self.assertGreater(len({x['macro_slot'] for x in schedule if x['family'] == 'heavy'}), 1)
+        for row in schedule:
+            self.assertEqual({field: row[field] for field in ('bench', 'scenario')}, compare.SUITES[row['suite']])
 
     def test_exact_ranks_and_mixed_coverage(self):
         self.assertEqual(compare.median_interval_ranks(64)[:2], (20, 45))

@@ -134,13 +134,33 @@ fi
 # first, fall back to the legacy <build>/benchmark layout.
 if [[ -n "${ARIA_BENCH_DIR:-}" ]]; then
     bench_dir="${ARIA_BENCH_DIR}"
-elif [[ -x "${build_dir}/bin/aria_bench_iproperty" ]]; then
-    bench_dir="${build_dir}/bin"
-elif [[ -x "${build_dir}/benchmark/aria_bench_iproperty" ]]; then
-    bench_dir="${build_dir}/benchmark"
 else
     bench_dir="${build_dir}/bin"  # default to canonical layout for the error message
+    for candidate_dir in "${build_dir}/bin" "${build_dir}/bin/Release" \
+                         "${build_dir}/benchmark" "${build_dir}/benchmark/Release"; do
+        if [[ -x "${candidate_dir}/aria_bench_iproperty" || -x "${candidate_dir}/aria_bench_iproperty.exe" ]]; then
+            bench_dir="${candidate_dir}"
+            break
+        fi
+    done
 fi
+
+benchmark_path() {
+    local native="${bench_dir}/$1" windows="${bench_dir}/$1.exe"
+    if [[ -f "$native" && -f "$windows" && ! "$native" -ef "$windows" ]]; then
+        echo "error: ambiguous benchmark executables: $native and $windows" >&2
+        return 2
+    fi
+    # MSYS may expose foo.exe through foo too; select the explicit file name.
+    if [[ -x "$windows" ]]; then
+        printf '%s\n' "$windows"
+    elif [[ -x "$native" ]]; then
+        printf '%s\n' "$native"
+    else
+        echo "error: bench binary not built: $native or $windows" >&2
+        return 2
+    fi
+}
 
 thresholds_file="${ARIA_BENCH_THRESHOLDS:-${repo_root}/benchmark/thresholds.json}"
 
@@ -220,11 +240,7 @@ for ((run=1; run<=runs; run++)); do
         echo "  -- run ${run}/${runs}"
     fi
     for b in "${benches[@]}"; do
-        bin="${bench_dir}/${b}"
-        if [[ ! -x "${bin}" ]]; then
-            echo "error: bench binary not built: ${bin}" >&2
-            exit 2
-        fi
+        bin="$(benchmark_path "$b")" || exit 2
         echo "    - ${b}"
         "${bin}" | tee -a "${tmp_log}"
     done
@@ -238,6 +254,10 @@ record_profile
 # is reported (so new benches don't silently slip through unchecked).
 python3 - "${thresholds_file}" "${tmp_log}" "${host_key}" "${runs}" <<'PY'
 import json, math, re, sys
+
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8", errors="strict")
 
 thresholds_path, log_path, host_key, runs_str = sys.argv[1:5]
 runs = int(runs_str)

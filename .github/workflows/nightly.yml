@@ -23,40 +23,125 @@ concurrency:
 
 jobs:
   bench:
-    name: Paired regression (Ubuntu 24.04, GCC 14) + historical report
-    runs-on: ubuntu-24.04
+    name: Paired regression (${{ matrix.name }}) + historical report
+    timeout-minutes: 360
+    strategy:
+      # Each environment must finish its own controls and candidate campaign.
+      # A failing environment must not cancel the other environment's samples.
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS 26, AppleClang
+            os: macos-26
+            artifact_key: macos
+            cc: /usr/bin/clang
+            cxx: /usr/bin/clang++
+          - name: Ubuntu 24.04, GCC 14
+            os: ubuntu-24.04
+            artifact_key: linux
+            cc: /usr/bin/gcc-14
+            cxx: /usr/bin/g++-14
+          - name: Windows, VS2026 MSVC
+            os: windows-2025-vs2026
+            artifact_key: windows
+            cc: cl
+            cxx: cl
+    runs-on: ${{ matrix.os }}
     env:
-      CC: /usr/bin/gcc-14
-      CXX: /usr/bin/g++-14
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install GCC 14 and ninja
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build g++-14
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
 
-      - name: Record Linux environment before builds and measurement
+      - name: Offline benchmark protocol contracts
+        working-directory: tests/python
+        run: python -m unittest -v test_check_bench test_bench_validation test_bench_protocol
+
+      - name: Prepare MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          toolset: '14.5'
+
+      - name: Require actual VS2026 compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ($env:VisualStudioVersion -notmatch '^18\.') {
+            throw "Expected VS2026 environment, got $env:VisualStudioVersion"
+          }
+          if ($env:VCToolsVersion -notmatch '^14\.5') {
+            throw "Expected VS2026 v145 compiler tools, got $env:VCToolsVersion"
+          }
+          $compiler = (Get-Command cl.exe -ErrorAction Stop).Source
+          $vcTools = [IO.Path]::GetFullPath($env:VCToolsInstallDir)
+          if (-not $compiler.StartsWith($vcTools, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "cl.exe is not from the selected VS2026 toolset"
+          }
+          Write-Output "VisualStudioVersion=$env:VisualStudioVersion"
+          Write-Output "VCToolsVersion=$env:VCToolsVersion"
+          (Get-Item $compiler).VersionInfo | Format-List FileVersion,ProductVersion
+
+      - name: Install benchmark tools
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            brew install ninja
+          elif [[ "$RUNNER_OS" == "Linux" ]]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ninja-build g++-14
+          else
+            cmake --version
+            ninja --version
+          fi
+
+      - name: Record environment before builds and measurement
+        shell: bash
         run: |
           mkdir -p bench-comparison
           {
-            date --utc --iso-8601=seconds
-            uname -srvmo
-            cat /etc/os-release
-            lscpu
-            taskset -pc $$
-            cat /proc/loadavg
-            for path in /proc/pressure/cpu /sys/fs/cgroup/cpu.max /sys/fs/cgroup/cpu.stat /sys/fs/cgroup/cpuset.cpus.effective; do
-              echo "--- $path ---"
-              if [[ -r "$path" ]]; then cat "$path"; else echo unavailable; fi
-            done
+            date -u '+%Y-%m-%dT%H:%M:%SZ'
+            uname -a
+            if [[ "$RUNNER_OS" == "macOS" ]]; then
+              sysctl machdep.cpu.brand_string hw.model hw.logicalcpu hw.memsize
+              uptime
+              vm_stat
+            elif [[ "$RUNNER_OS" == "Windows" ]]; then
+              powershell.exe -NoProfile -Command 'Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors; Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,TotalVisibleMemorySize,FreePhysicalMemory'
+            else
+              cat /etc/os-release
+              lscpu
+              taskset -pc $$
+              cat /proc/loadavg
+              for path in /proc/pressure/cpu /sys/fs/cgroup/cpu.max /sys/fs/cgroup/cpu.stat /sys/fs/cgroup/cpuset.cpus.effective; do
+                echo "--- $path ---"
+                if [[ -r "$path" ]]; then cat "$path"; else echo unavailable; fi
+              done
+            fi
           } > bench-comparison/host-before.txt
           {
-            "$CC" --version
-            "$CXX" --version
+            if [[ "$RUNNER_OS" == "Windows" ]]; then
+              powershell.exe -NoProfile -Command '"VisualStudioVersion=$env:VisualStudioVersion"; "VCToolsVersion=$env:VCToolsVersion"; (Get-Item (Get-Command cl.exe).Source).VersionInfo | Format-List FileVersion,ProductVersion'
+            else
+              "$CC" --version
+              "$CXX" --version
+            fi
             cmake --version
             ninja --version
-            dpkg-query -W -f='${Package} ${Version}\n' gcc-14 g++-14 ninja-build
+            if [[ "$RUNNER_OS" == "macOS" ]]; then
+              xcodebuild -version
+              xcrun --show-sdk-version
+            elif [[ "$RUNNER_OS" == "Linux" ]]; then
+              dpkg-query -W -f='${Package} ${Version}\n' gcc-14 g++-14 ninja-build
+            fi
           } > bench-comparison/toolchain.txt
 
       - name: Configure (Release, no sanitizers)
@@ -93,7 +178,7 @@ jobs:
         run: |
           mkdir -p bench-comparison
           gh release view "$BASELINE_REF" --json tagName,isDraft,isPrerelease > bench-comparison/release-baseline.json
-          python3 scripts/verify-bench-release.py bench-comparison/release-baseline.json "$BASELINE_REF"
+          python scripts/verify-bench-release.py bench-comparison/release-baseline.json "$BASELINE_REF"
 
       - name: Checkout release baseline
         uses: actions/checkout@v7
@@ -105,7 +190,11 @@ jobs:
         id: build-baseline
         run: |
           cp benchmark/*.cpp benchmark/bench_common.hpp benchmark/CMakeLists.txt baseline-source/benchmark/
-          sha256sum benchmark/*.cpp benchmark/bench_common.hpp benchmark/CMakeLists.txt > bench-comparison/harness-sha256.txt
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            shasum -a 256 benchmark/*.cpp benchmark/bench_common.hpp benchmark/CMakeLists.txt > bench-comparison/harness-sha256.txt
+          else
+            sha256sum benchmark/*.cpp benchmark/bench_common.hpp benchmark/CMakeLists.txt > bench-comparison/harness-sha256.txt
+          fi
           cmake -S baseline-source -B baseline-source/build/flavors/bench -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_TESTS=OFF \
@@ -118,7 +207,11 @@ jobs:
           cmake --build baseline-source/build/flavors/bench -j --target aria_bench_regression aria_bench_iproperty aria_bench_command aria_bench_trace_sink
           git rev-parse HEAD > bench-comparison/candidate-revision.txt
           git -C baseline-source rev-parse HEAD > bench-comparison/baseline-revision.txt
-          "$CXX" --version > bench-comparison/compiler.txt
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            powershell.exe -NoProfile -Command '(Get-Item (Get-Command cl.exe).Source).VersionInfo | Format-List FileVersion,ProductVersion' > bench-comparison/compiler.txt
+          else
+            "$CXX" --version > bench-comparison/compiler.txt
+          fi
 
       - name: Build independent real-delay measurement control
         id: build-control
@@ -150,8 +243,8 @@ jobs:
       - name: Historical absolute budget (profile-qualified)
         if: always() && steps.build-candidate.outcome == 'success'
         shell: bash
-        # Linux/GCC has no historical M3 Pro/AppleClang calibration. Exit 3 is
-        # explicitly unavailable, never an absolute-budget pass.
+        # Hosted VMs and Linux/GCC have no historical physical M3 Pro
+        # calibration. Exit 3 is unavailable, never an absolute-budget pass.
         # The independent paired gate below still must pass on this runner.
         run: |
           set -o pipefail
@@ -166,28 +259,40 @@ jobs:
 
       - name: Gate fixed-window mean and batch-mean P99 against the release
         if: always() && steps.build-control.outcome == 'success'
+        # A deadline is a failed/incomplete campaign, never an early pass.
+        # Leave job time for always-uploaded checkpoints and raw evidence.
+        timeout-minutes: 330
         run: |
-          python3 scripts/run-bench-validation.py \
+          python scripts/run-bench-validation.py \
             --baseline baseline-source/build/flavors/bench/bin \
             --candidate build/flavors/bench/bin \
             --slow-control baseline-source/build/flavors/control/bin \
             --output bench-comparison/validation
 
-      - name: Record Linux environment after measurement
+      - name: Record environment after measurement
         if: always()
+        shell: bash
         # Observation only: do not change affinity, scheduling, load limits,
         # sample counts or acceptance policy in response to these values.
         run: |
           mkdir -p bench-comparison
           {
-            date --utc --iso-8601=seconds
-            lscpu
-            taskset -pc $$
-            cat /proc/loadavg
-            for path in /proc/pressure/cpu /sys/fs/cgroup/cpu.max /sys/fs/cgroup/cpu.stat /sys/fs/cgroup/cpuset.cpus.effective; do
-              echo "--- $path ---"
-              if [[ -r "$path" ]]; then cat "$path"; else echo unavailable; fi
-            done
+            date -u '+%Y-%m-%dT%H:%M:%SZ'
+            if [[ "$RUNNER_OS" == "macOS" ]]; then
+              sysctl machdep.cpu.brand_string hw.model hw.logicalcpu hw.memsize
+              uptime
+              vm_stat
+            elif [[ "$RUNNER_OS" == "Windows" ]]; then
+              powershell.exe -NoProfile -Command 'Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors; Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber,TotalVisibleMemorySize,FreePhysicalMemory'
+            else
+              lscpu
+              taskset -pc $$
+              cat /proc/loadavg
+              for path in /proc/pressure/cpu /sys/fs/cgroup/cpu.max /sys/fs/cgroup/cpu.stat /sys/fs/cgroup/cpuset.cpus.effective; do
+                echo "--- $path ---"
+                if [[ -r "$path" ]]; then cat "$path"; else echo unavailable; fi
+              done
+            fi
           } > bench-comparison/host-after.txt
 
       - name: Upload bench output
@@ -196,10 +301,16 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: bench-output-${{ github.run_id }}
+          name: bench-output-${{ matrix.artifact_key }}-${{ github.run_id }}
           path: |
             bench-output.txt
             bench-comparison/
+            build/flavors/bench/bin/
+            build/flavors/bench/lib/
+            baseline-source/build/flavors/bench/bin/
+            baseline-source/build/flavors/bench/lib/
+            baseline-source/build/flavors/control/bin/
+            baseline-source/build/flavors/control/lib/
           retention-days: 30
 
   # ────────────────────────────────────────────────────────────────────

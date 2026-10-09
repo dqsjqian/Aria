@@ -293,22 +293,30 @@ attempt, including one interrupted before its first measurement. The three
 independent phases are release versus itself (A-A), release versus the delay
 control, then release versus candidate.
 
-The fixed `paired-median-stratified-v2` design samples the two existing cost
-families differently. Every phase has **64 macro blocks**, each containing one
-complete four-run fixed-window (`R`) block and eight complete legacy (`P`)
-blocks. A legacy block runs all three legacy binaries. Thus every `R` metric
-has **64** paired observations and every `P` metric has **512**. All twelve
-metrics retain their original per-executable sample shapes and both **mean and
-batch-mean P99**, for 24 statistics in total. The eight legacy metrics still
-cover Property/IProperty, observer, Computed and four trace paths.
+The fixed `paired-median-scenario-v3` design keeps **64 macro blocks** per
+phase. Each macro contains one four-run block for each of the four fixed-window
+(`R`) scenarios and eight blocks for each legacy (`P`) suite. Each `R` scenario
+is launched separately with `aria_bench_regression --scenario list|filtered|sorted|async`.
+A List pair no longer waits for Filtered, Sorted and Async measurements inside
+its partner process. Each scenario retains its original fixture, reset, random
+seed, 1,024 batches and 200/200/200/50 operations per batch. Async retains two
+workers and its 100 warmup invocations. The default executable still runs all
+four scenarios.
 
-The predeclared seed 20261009 shuffles heavy/cheap placement within each macro
-and binary order within each legacy block. Every binary has its own balanced
-ABBA/BAAB orientation list: 32 of each for `R`, 256 of each for `P`, with A the
-release and B the other binary. The full schedule is saved before warmup or
-sampling. One retained, excluded warmup runs each binary on each side. No
-sampling stops early, extends after inspecting results or discards outliers.
-The checkpoint retains macro, paired-block and process sequence numbers, wall
+Every `R` metric has **64** paired observations and every `P` metric has
+**512**. All twelve metrics retain **mean and batch-mean P99**, for 24 statistics.
+The eight legacy metrics still cover Property/IProperty, observer, Computed
+and four trace paths. There are 1,792 paired blocks and 7,168 formal process
+calls per phase, plus 14 retained and excluded warmup processes. Scene selection
+must match the exact requested metric; missing, extra or mislabeled rows fail.
+
+The predeclared seed 20261009 shuffles the four scenario slots and eight legacy
+group slots within each macro, and binary order within each legacy group.
+Each scenario/suite has an independently shuffled balanced ABBA/BAAB orientation
+list: 32 of each for `R`, 256 of each for `P`, with A the release and B the other
+binary. The full schedule is saved before warmup or sampling. No sampling stops
+early, extends after inspecting results or discards outliers. The checkpoint
+retains scenario/suite, macro, paired-block and process sequence numbers, wall
 and monotonic start/end timestamps, failed attempts and raw log references.
 
 For each statistic, a block contributes the geometric ratio
@@ -371,26 +379,34 @@ physical host must also pass the unchanged absolute gate. An absolute result
 marked unavailable is never described as passing. A red relative gate cannot
 be waived by the historical reference report or by a better mean alone.
 
-The Nightly **bench job** uses the `ubuntu-24.04` runner image and explicitly
-selects `/usr/bin/gcc-14` / `/usr/bin/g++-14` for all three Release builds.
-TSan and fuzz jobs remain on `macos-26`. The image label and compiler major
-version do not fix the physical CPU or package patch versions, so artifacts
-also record compiler/package versions, CPU topology, inherited affinity,
-load, CPU pressure and available cgroup quota information. These observations
-do not change affinity, sample counts, acceptance limits or retry behavior.
-Linux/GCC cannot satisfy the historical physical M3 Pro/AppleClang profile;
-its absolute-budget result remains explicitly **unavailable**.
+Nightly runs the same complete protocol independently on three environments:
+`macos-26` with AppleClang, `ubuntu-24.04` with GCC 14, and
+`windows-2025-vs2026` with the actual VS2026 MSVC environment and Ninja Release.
+All three performance jobs must qualify their own complete controls and pass
+their own candidate measurements. A Linux or Windows pass cannot replace an
+unavailable macOS measurement. TSan and fuzz remain separate macOS jobs.
+Windows output explicitly identifies its MSVC `/O2` Release configuration;
+project DLLs must be adjacent and are frozen alongside the `.exe` files.
+The Windows PATH and working directory are recorded, while CRT, system and
+side-by-side loader identities remain an explicit host-provenance boundary.
 
-This environment change follows incomplete measurement qualification on the
-macOS hosted VM: run `37821972879` had two inconclusive A-A batch-mean P99
-statistics and two inconclusive delay-control statistics, so it did not
-measure the candidate. The Linux environment must qualify with its own fresh,
-complete A-A and delay controls before measuring its exact candidate revision.
-All 24 statistics, fixed R64/P512 counts and the 1.10 limit remain unchanged;
-moving the job is not evidence that the new environment will qualify.
-The workflow concurrency group preserves an active campaign when another
-scheduled or manual run arrives; it does not cancel an unfinished fixed sample.
-This protects measurement completeness and does not add a retry.
+Runner labels and compiler versions do not fix the physical CPU or package
+patch versions. Artifacts retain actual toolchain/build commands, CPU topology
+and available platform load/memory/affinity/pressure information before and
+after measurement. These observations do not adapt samples or acceptance.
+Hosted VMs, Linux and Windows do not satisfy the historical physical M3 Pro
+calibration; their absolute-budget results remain **unavailable**.
+
+The earlier macOS run `37821972879` had two inconclusive A-A and two inconclusive
+real-delay statistics and never measured the candidate. The v3 scenario
+schedule addresses the long time between measurements of the same scenario;
+it does not establish a particular scheduler cause or guarantee qualification.
+Separating processes changes cache/allocator history, so all controls and
+candidate samples must be collected afresh; no earlier pass is reused.
+The single Linux-only v2 attempt is supplementary evidence, not closure of the
+macOS failure. All 24 statistics, R64/P512 counts, original workloads and 1.10
+limit remain intact. Concurrent runs queue rather than cancel active samples,
+and a failing platform does not cancel another platform's campaign.
 
 The separate physical M3 Pro campaign measured commit
 `77098cf3b023a5cbe063e2e3af4e50198c6b8691` against published `v3.1.1`: all

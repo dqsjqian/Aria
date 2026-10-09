@@ -213,7 +213,7 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 
 | Architectural strength | Engineering design |
 |---|---|
-| **Modern C++ foundation** | C++23 baseline (GCC 14+ / Clang 19+ / AppleClang 21+ / MSVC v143) with full coroutines and concepts. Integrating projects must use C++23 or later. |
+| **Modern C++ foundation** | C++23 baseline (GCC 14+ / Clang 19+ / AppleClang 21+ / MSVC v145) with full coroutines and concepts. Integrating projects must use C++23 or later. |
 | **Native UI freedom** | Your UI toolkit owns widgets, layout, and animation. Aria unifies one-way and two-way state binding, sharing the business core while preserving native experiences. |
 | **Layered compatibility** | `aria-abi` / `aria-runtime` / `aria-binding` maintain ABI stability within a major version, with matching compiler, standard library, and build options. Rebuild templates such as `Property<T>` and their containing types after updates. |
 | **Open adapter protocol** | Qt6 / AppKit / UIKit / JNI / HTTP ship out of the box. Integrate other UI toolkits by implementing `IViewAdapter` (see the [adapter guides](docs/guide/adapters/)). |
@@ -289,11 +289,11 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 - **Compiler** with full C++23 support:
   - GCC >= 14 (the MSYS2 UCRT64 toolchain on Windows)
   - Clang >= 19 (AppleClang 21+ on macOS)
-  - **MSVC v143 / Visual Studio 2022** (Windows, see below)
+  - **MSVC v145 / Visual Studio 2026** (current Windows CI toolchain, see below)
 - *(optional)* **Qt6** >= 6.4 (for the Qt6 adapter)
 
 > **Windows is supported on two toolchains: MSYS2 UCRT64 (GCC) and
-> MSVC / Visual Studio 2022 or 2026.** Pick whichever fits your team's existing
+> MSVC / Visual Studio 2026.** Pick whichever fits your team's existing
 > stack — both build the full framework + tests + adapters from a single
 > tree, no source forks. See ["Windows toolchains"](#windows-toolchains) below.
 
@@ -349,7 +349,7 @@ scripts\build.ps1 tests
 scripts\build.ps1 asan
 scripts\build.ps1 tsan       # debug + ThreadSanitizer (not available on MSVC, see below)
 
-# Windows — MSVC / Visual Studio 2022 or 2026
+# Windows — MSVC / Visual Studio 2026
 scripts\build-msvc.ps1       # release  (build/flavors/msvc/ tree)
 scripts\build-msvc.ps1 tests
 scripts\build-msvc.ps1 debug
@@ -365,7 +365,7 @@ neither one needs to know about the other.
 | Toolchain | Script | Build dir | Notes |
 |---|---|---|---|
 | **MSYS2 UCRT64** (GCC 14+ / Clang 19+) | `scripts\build.ps1` | `build/flavors/release/` | Lightweight (~300 MB). Pre-installed on most CI images. Auto-detected from `C:\msys64\ucrt64\bin` and a few other common paths. |
-| **MSVC** (VS 2022 / 2026) | `scripts\build-msvc.ps1` | `build/flavors/msvc/` | Auto-detects the VS install via `vswhere`, scrubs MSYS2 env vars (`INCLUDE` / `LIB` / `CPATH` / ...) before running CMake, and selects the Visual Studio generator matching the installation. |
+| **MSVC** (VS2026; VS2022 discovery retained) | `scripts\build-msvc.ps1` | `build/flavors/msvc/` | Auto-detects the VS install via `vswhere`, scrubs MSYS2 env vars (`INCLUDE` / `LIB` / `CPATH` / ...) before running CMake, and selects the Visual Studio generator matching the installation. |
 
 You can switch back and forth without `clean` — the two trees are
 isolated. CI validates both toolchains on pushes and pull requests.
@@ -373,7 +373,7 @@ isolated. CI validates both toolchains on pushes and pull requests.
 #### MSVC one-time setup
 
 ```powershell
-# 1. Install Visual Studio 2022 Build Tools (or the full IDE) with
+# 1. Install Visual Studio 2026 Build Tools (or the full IDE), CMake >= 4.2, and
 #    workload "Desktop development with C++" + "C++ CMake tools".
 # 2. (Optional) install Qt 6 with the msvc2022_64 kit if you need the
 #    Qt6 adapter.
@@ -399,7 +399,10 @@ Rationale for shipping both: Aria uses C++ coroutines extensively that
 libstdc++, libc++, **and** the MSVC STL all handle cleanly. Pinning a
 single Windows toolchain artificially excluded a large chunk of users
 in the .NET / Visual Studio ecosystem — we now validate against MSVC
-v143 on the same release gate as macOS, Ubuntu, and MSYS2.
+v145 / VS2026 on the same release gate as macOS, Ubuntu, and MSYS2.
+The `Visual Studio 18 2026` generator requires CMake >= 4.2. The automatic
+build script retains discovery of existing VS2022 installations; current
+MSVC release validation uses VS2026.
 
 ### Use it from your own project
 
@@ -513,7 +516,7 @@ Task<std::string> fetch_user(int id) {
 
 | Platform   | UI host        | Adapter                            |
 |------------|----------------|------------------------------------|
-| Windows    | Qt6            | `aria-qt6` ✅ ready (MSYS2 UCRT64 + MSVC 2022) |
+| Windows    | Qt6            | `aria-qt6` ✅ ready (MSYS2 UCRT64 + MSVC 2026) |
 | macOS      | AppKit / Qt6   | `aria-qt6` ✅ ready; AppKit ✅ ready |
 | Linux      | Qt6            | `aria-qt6` ✅ ready             |
 | iOS        | UIKit          | `aria-uikit` ✅ ready |

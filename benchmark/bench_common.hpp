@@ -19,7 +19,7 @@ namespace aria_bench {
 using clk = std::chrono::steady_clock;
 
 #ifndef ARIA_BENCH_CONTROL_STRETCH_PERCENT
-#define ARIA_BENCH_CONTROL_STRETCH_PERCENT 0
+    #define ARIA_BENCH_CONTROL_STRETCH_PERCENT 0
 #endif
 inline constexpr int control_stretch_percent = ARIA_BENCH_CONTROL_STRETCH_PERCENT;
 
@@ -43,7 +43,6 @@ inline auto sample_duration(clk::time_point start, clk::time_point end) {
     return ns;
 }
 
-
 /// Accumulator that keeps a benchmarked expression from being optimised
 /// away, without `volatile`.
 ///
@@ -60,13 +59,9 @@ inline auto sample_duration(clk::time_point start, clk::time_point end) {
 /// once afterwards.
 class Sink {
 public:
-    void feed(long long v) noexcept {
-        acc_.fetch_add(v, std::memory_order_relaxed);
-    }
+    void feed(long long v) noexcept { acc_.fetch_add(v, std::memory_order_relaxed); }
 
-    [[nodiscard]] long long value() const noexcept {
-        return acc_.load(std::memory_order_relaxed);
-    }
+    [[nodiscard]] long long value() const noexcept { return acc_.load(std::memory_order_relaxed); }
 
 private:
     std::atomic<long long> acc_{0};
@@ -75,21 +70,27 @@ private:
 template<typename Fn>
 inline double measure_ns(int iterations, Fn&& fn) {
     auto t0 = clk::now();
-    for (int i = 0; i < iterations; ++i) fn(i);
+    for (int i = 0; i < iterations; ++i)
+        fn(i);
     auto t1 = clk::now();
     auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
     return double(ns) / iterations;
 }
 
 inline void row(const std::string& name, double ns, int iters) {
-    std::cout << "  " << std::left << std::setw(54) << name
-              << std::right << std::setw(10) << std::fixed << std::setprecision(1)
-              << ns << " ns/op  (" << iters << " iters)\n";
+    std::cout << "  " << std::left << std::setw(54) << name << std::right << std::setw(10)
+              << std::fixed << std::setprecision(1) << ns << " ns/op  (" << iters << " iters)\n";
 }
 
 inline void banner(const std::string& title) {
     std::cout << "\n=== " << title << " ===\n";
+#if !defined(NDEBUG)
+    std::cout << "  (assertions enabled; see build commands for optimization flags)\n\n";
+#elif defined(_MSC_VER)
+    std::cout << "  (MSVC Release: /O2 /DNDEBUG)\n\n";
+#else
     std::cout << "  (-O3 -DNDEBUG)\n\n";
+#endif
     control_banner();
 }
 
@@ -115,17 +116,17 @@ inline void banner(const std::string& title) {
 
 struct PercentileStats {
     double mean_ns = 0.0;
-    double p50_ns  = 0.0;
-    double p95_ns  = 0.0;
-    double p99_ns  = 0.0;
-    int    samples = 0;
-    int    ops_per_sample = 0;
+    double p50_ns = 0.0;
+    double p95_ns = 0.0;
+    double p99_ns = 0.0;
+    int samples = 0;
+    int ops_per_sample = 0;
     std::vector<double> sample_means_ns;
 };
 
 template<typename Fn>
-inline PercentileStats measure_percentiles_prepared(int samples, int ops_per_sample,
-                                                   auto&& prepare, Fn&& fn) {
+inline PercentileStats
+measure_percentiles_prepared(int samples, int ops_per_sample, auto&& prepare, Fn&& fn) {
     std::vector<double> ns_per_op;
     ns_per_op.reserve(static_cast<std::size_t>(samples));
 
@@ -133,7 +134,7 @@ inline PercentileStats measure_percentiles_prepared(int samples, int ops_per_sam
     int op_index = 0;
 
     for (int s = 0; s < samples; ++s) {
-        prepare(s); // Fixture construction/reset is deliberately outside timing.
+        prepare(s);  // Fixture construction/reset is deliberately outside timing.
         auto t0 = clk::now();
         for (int j = 0; j < ops_per_sample; ++j) {
             fn(op_index++);
@@ -145,17 +146,17 @@ inline PercentileStats measure_percentiles_prepared(int samples, int ops_per_sam
     }
 
     PercentileStats out;
-    out.samples        = samples;
+    out.samples = samples;
     out.ops_per_sample = ops_per_sample;
-    out.mean_ns        = double(total_ns) / (double(samples) * double(ops_per_sample));
+    out.mean_ns = double(total_ns) / (double(samples) * double(ops_per_sample));
 
     if (!ns_per_op.empty()) {
         out.sample_means_ns = ns_per_op;
         std::sort(ns_per_op.begin(), ns_per_op.end());
         auto pick = [&](double q) {
             // Nearest rank: ceil(q * N), converted to a zero-based index.
-            const auto rank = static_cast<std::size_t>(
-                std::ceil(q * static_cast<double>(ns_per_op.size())));
+            const auto rank =
+                static_cast<std::size_t>(std::ceil(q * static_cast<double>(ns_per_op.size())));
             const auto idx = std::min(ns_per_op.size() - 1, rank - 1);
             return ns_per_op[idx];
         };
@@ -175,20 +176,20 @@ inline PercentileStats measure_percentiles(int samples, int ops_per_sample, Fn&&
 // Print a percentile-rich row alongside the existing mean-only `row()`
 // output. The leading "P  " marker makes the line trivially greppable
 // from CI scripts (check-bench.sh keys off it).
-inline void row_pct(const std::string& name, const PercentileStats& s,
-                    const char* marker = "P ") {
-    std::cout << marker << std::left << std::setw(52) << name
-              << std::right << std::fixed << std::setprecision(6)
-              << "mean=" << std::setw(8) << s.mean_ns << "ns  "
-              << "p50="  << std::setw(8) << s.p50_ns  << "ns  "
-              << "p95="  << std::setw(8) << s.p95_ns  << "ns  "
-              << "p99="  << std::setw(8) << s.p99_ns  << "ns"
+inline void row_pct(const std::string& name, const PercentileStats& s, const char* marker = "P ") {
+    std::cout << marker << std::left << std::setw(52) << name << std::right << std::fixed
+              << std::setprecision(6) << "mean=" << std::setw(8) << s.mean_ns << "ns  "
+              << "p50=" << std::setw(8) << s.p50_ns << "ns  "
+              << "p95=" << std::setw(8) << s.p95_ns << "ns  "
+              << "p99=" << std::setw(8) << s.p99_ns << "ns"
               << "  (" << s.samples << "x" << s.ops_per_sample << ")\n";
-    { // Raw ordered batch means are retained for every acceptance metric.
+    {  // Raw ordered batch means are retained for every acceptance metric.
         std::cout << "S {\"metric\":" << std::quoted(name) << ",\"batch_means_ns\":[";
         bool first = true;
         for (double value : s.sample_means_ns) {
-            if (!first) { std::cout << ','; }
+            if (!first) {
+                std::cout << ',';
+            }
             std::cout << std::setprecision(6) << value;
             first = false;
         }

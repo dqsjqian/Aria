@@ -21,6 +21,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Offline benchmark protocol contracts
+        working-directory: tests/python
+        run: python -m unittest -v test_check_bench test_bench_validation test_bench_protocol
+
       - name: Install ninja
         run: brew install ninja
 
@@ -36,6 +44,19 @@ jobs:
 
       - name: Build
         run: cmake --build build/flavors/release -j
+
+      - name: Real benchmark scenario CLI smoke
+        run: |
+          python scripts/check-bench-scenarios.py --bin-dir build/flavors/release/bin \
+            --output build/flavors/release/scenario-cli-smoke
+
+      - name: Retain scenario CLI smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: scenario-cli-smoke-macos
+          path: build/flavors/release/scenario-cli-smoke/
+          if-no-files-found: ignore
 
       - name: Test
         run: ctest --test-dir build/flavors/release --output-on-failure
@@ -245,6 +266,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Offline benchmark protocol contracts
+        working-directory: tests/python
+        run: python -m unittest -v test_check_bench test_bench_validation test_bench_protocol
+
       - name: Install toolchain + Qt6
         run: |
           sudo apt-get update
@@ -270,6 +299,19 @@ jobs:
 
       - name: Build
         run: cmake --build build/flavors/release -j
+
+      - name: Real benchmark scenario CLI smoke
+        run: |
+          python scripts/check-bench-scenarios.py --bin-dir build/flavors/release/bin \
+            --output build/flavors/release/scenario-cli-smoke
+
+      - name: Retain scenario CLI smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: scenario-cli-smoke-linux-${{ matrix.compiler }}
+          path: build/flavors/release/scenario-cli-smoke/
+          if-no-files-found: ignore
 
       - name: Test
         env:
@@ -338,11 +380,18 @@ jobs:
           update: true
           install: >-
             git
+            python
             mingw-w64-ucrt-x86_64-toolchain
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-qt6-base
             mingw-w64-ucrt-x86_64-nodejs
+
+      - name: Historical benchmark shell contracts (MSYS2 POSIX Python)
+        working-directory: tests/python
+        run: |
+          /usr/bin/python -c 'import os; assert os.name == "posix"'
+          /usr/bin/python -m unittest -v test_check_bench.CheckBenchTests
 
       - name: Show toolchain versions
         run: |
@@ -382,7 +431,7 @@ jobs:
             ctest --test-dir build/flavors/package-http --no-tests=error --output-on-failure
 
   # ────────────────────────────────────────────────────────────────────
-  # Windows — native MSVC (Visual Studio 2022) + Qt6 binary install
+  # Windows — native MSVC (Visual Studio 2026) + Qt6 binary install
   # ----------------------------------------------------------------------------
   # The MSYS2 job above covers GCC-on-Windows; this one covers the
   # *real* MSVC toolchain that downstream consumers most often pair
@@ -390,10 +439,24 @@ jobs:
   # ABI-stable claims on Windows.
   # ────────────────────────────────────────────────────────────────────
   windows-msvc:
-    name: Windows (MSVC 2022)
-    runs-on: windows-2022
+    name: Windows (MSVC 2026)
+    runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Offline benchmark protocol contracts (native Windows Python)
+        shell: pwsh
+        working-directory: tests/python
+        # The paired/qualification tests mock subprocesses; they do not execute
+        # POSIX fixtures. The shell class runs in the MSYS2 job above.
+        run: |
+          python -c 'import os; assert os.name == "nt"'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest -v test_check_bench test_bench_validation test_bench_protocol
 
       - name: Install Qt6 (binary)
         uses: jurplel/install-qt-action@v4
@@ -409,7 +472,7 @@ jobs:
         run: |
           Get-Command node -ErrorAction Stop
           cmake -S . -B build/flavors/release `
-            -G "Visual Studio 17 2022" -A x64 `
+            -G "Visual Studio 18 2026" -A x64 -T v145 `
             -DCMAKE_BUILD_TYPE=Release `
             -DARIA_BUILD_QT6=ON `
             -DARIA_BUILD_HTTP=ON `
@@ -418,6 +481,20 @@ jobs:
       - name: Build
         shell: pwsh
         run: cmake --build build/flavors/release --config Release -j
+
+      - name: Real benchmark scenario CLI smoke
+        shell: pwsh
+        run: |
+          python scripts/check-bench-scenarios.py --bin-dir build/flavors/release/bin/Release `
+            --output build/flavors/release/scenario-cli-smoke
+
+      - name: Retain scenario CLI smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: scenario-cli-smoke-windows
+          path: build/flavors/release/scenario-cli-smoke/
+          if-no-files-found: ignore
 
       - name: Test
         shell: pwsh
@@ -436,7 +513,7 @@ jobs:
             throw "Expected exactly one installed ariaConfig.cmake, found $($ariaConfigs.Count)"
           }
           cmake -S tests/package_http -B build/flavors/package-http `
-            -G "Visual Studio 17 2022" -A x64 `
+            -G "Visual Studio 18 2026" -A x64 -T v145 `
             -Daria_DIR="$($ariaConfigs[0].DirectoryName)" `
             -DARIA_PACKAGE_EXPECT_TLS=OFF
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -449,7 +526,7 @@ jobs:
         shell: pwsh
         run: |
           cmake -S . -B build/flavors/asan `
-            -G "Visual Studio 17 2022" -A x64 `
+            -G "Visual Studio 18 2026" -A x64 -T v145 `
             -DARIA_ENABLE_ASAN=ON `
             -DARIA_ENABLE_UBSAN=OFF `
             -DARIA_ENABLE_TSAN=OFF `
