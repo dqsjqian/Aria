@@ -1,26 +1,26 @@
 # `scripts/` — Repo-level scripts
 
-These scripts bootstrap, build, test, package, and maintain the Aria framework.
-The flagship sample application is **AriaTools**; use its own repository and
-build instructions to run or develop the product sample.
+These scripts build, test, benchmark, and maintain the Aria framework. The
+flagship sample application is **AriaTools**; use its own repository and build
+instructions to run or develop the product sample.
 
 ## Overview
 
 | Script | Platforms | Purpose |
 | --- | --- | --- |
-| [`init-project.sh`](./init-project.sh) / [`init-project.ps1`](./init-project.ps1) | macOS/Linux / Windows | Generate machine-local VSCode settings, framework/test launch profiles, and framework/tests/docs/benchmark tasks. |
-| [`build.sh`](./build.sh) | macOS/Linux | Framework build, tests, sanitizers, Android cross-build, and packaging. |
-| [`build.ps1`](./build.ps1) | Windows (MSYS2 UCRT64) | Framework build, tests, Android cross-build, and packaging with GCC/Ninja. |
-| [`build-msvc.ps1`](./build-msvc.ps1) | Windows (MSVC) | Framework build, tests, sanitizers, and packaging with Visual Studio. |
-| [`check-bench.sh`](./check-bench.sh) | macOS/Linux | Benchmark regression gate. |
+| [`build.py`](./build.py) | All (Python 3) | Portable configure/build/test entry for native, Qt, web, iOS and Android targets; `--toolchain msvc\|mingw` on Windows, `--dry-run` prints the plan. |
+| [`dependencies.py`](./dependencies.py) / [`update_dependencies.py`](./update_dependencies.py) | All (Python 3) | Shared dependency resolver (GitHub, sqlite.org, bellard.org providers) and its CLI entry. |
+| [`check-bench.sh`](./check-bench.sh) | macOS/Linux | Benchmark absolute-budget gate. |
+| [`check-bench-scenarios.py`](./check-bench-scenarios.py) | All (Python 3) | Verify fixed-window scenario bench output in CI. |
+| [`bench-profile.py`](./bench-profile.py) | All (Python 3) | Host calibration profile consumed by the absolute-budget gate. |
+| [`compare-bench.py`](./compare-bench.py) / [`run-bench-validation.py`](./run-bench-validation.py) | All (Python 3) | Paired regression gate (`paired-median-scenario-v3.1`) and its three-phase qualification runner. |
+| [`verify-bench-release.py`](./verify-bench-release.py) | All (Python 3) | Verify the published baseline release before measuring against it. |
 | [`check-docs-api.sh`](./check-docs-api.sh) | macOS/Linux | Documentation API coverage check. |
-| [`filter-docs.py`](./filter-docs.py) | All (Python 3) | Prepare Markdown input for Doxygen. |
-| [`prepare-docs-html.py`](./prepare-docs-html.py) / [`check-docs-html.py`](./check-docs-html.py) | All (Python 3) | Prepare generated documentation pages and check links in the HTML output. |
+| [`prepare-docs-html.py`](./prepare-docs-html.py) / [`check-docs-html.py`](./check-docs-html.py) | All (Python 3) | Prepare generated documentation pages and check links in the HTML output; used by the CMake docs target. |
 | [`install-doxygen.sh`](./install-doxygen.sh) | macOS | Install the pinned documentation generator into a specified directory. |
 | [`tidy-gate.sh`](./tidy-gate.sh) | macOS/Linux | clang-tidy baseline gate; fails only on new debt vs `clang-tidy-baseline.txt`. |
 | [`pick-ios-simulator.py`](./pick-ios-simulator.py) | macOS | Pick a known-good iPhone + iOS runtime pair for the simulator test job. |
 | [`run-android-tests.py`](./run-android-tests.py) | All (Python 3, adb) | Deploy and run native tests on an Android emulator or device. |
-| [`sync-cmake.sh`](./sync-cmake.sh) | macOS/Linux | Report module `.cpp`/`.mm` sources missing from their `CMakeLists.txt`. |
 
 ## Build-tree layout
 
@@ -37,6 +37,7 @@ build/
 │   ├── tsan-gate/          release verification gate
 │   ├── bench/              benchmark build
 │   └── msvc/               Visual Studio build
+├── unified/                build.py default trees (isolated per plan)
 ├── platforms/
 │   └── android/            Android NDK cross-build
 └── dist/
@@ -45,87 +46,31 @@ build/
 ```
 
 `rm -rf build/` provides a complete clean slate while keeping CMake caches
-isolated between build flavors.
+isolated between build trees. Configuring straight into `build/` is rejected
+by the build-tree guard in `CMakeLists.txt`.
 
-## Bootstrap
-
-Run once after cloning, and rerun whenever the generated VSCode templates
-change:
+## Build and test
 
 ```bash
-./scripts/init-project.sh
+python3 scripts/build.py --test                                # release + ctest
+python3 scripts/build.py --config Debug                        # debug
+python3 scripts/build.py --config Debug --cmake-arg=-DARIA_ENABLE_ASAN=ON --cmake-arg=-DARIA_ENABLE_UBSAN=ON --test
+python3 scripts/build.py --config Debug --cmake-arg=-DARIA_ENABLE_TSAN=ON --test
+python3 scripts/build.py --platform android --ndk <path>       # Android NDK
+python3 scripts/build.py --toolchain msvc --test               # Windows MSVC
+python3 scripts/build.py --toolchain mingw --test              # Windows MSYS2 UCRT64
 ```
 
-```powershell
-.\scripts\init-project.ps1
-```
-
-The generated `.vscode/*.json` files are ignored by Git. Edit the templates in
-`init-project.sh` or `init-project.ps1`, not the generated files.
-
-Generated tasks cover framework configuration/build, ctest, sanitizer builds,
-documentation, benchmarks, Android NDK, and clang-tidy. The only generated
-launch profile debugs a selected framework test binary.
-The macOS/Linux clang-tidy task uses `tidy-gate.sh` and the configured build's
-translation units, with included headers checked through `.clang-tidy`.
-
-## Build and package
-
-Default invocation builds Release, runs ctest, and creates the installed SDK
-under `build/dist/tree/`:
-
-```bash
-./scripts/build.sh
-./scripts/build.sh debug
-./scripts/build.sh tests
-./scripts/build.sh asan
-./scripts/build.sh tsan
-./scripts/build.sh tsan-gate
-./scripts/build.sh android
-./scripts/build.sh pack-zip
-./scripts/build.sh clean
-```
-
-```powershell
-# MSYS2 UCRT64
-.\scripts\build.ps1
-.\scripts\build.ps1 debug
-.\scripts\build.ps1 tests
-.\scripts\build.ps1 asan
-.\scripts\build.ps1 android
-.\scripts\build.ps1 pack-zip
-.\scripts\build.ps1 clean
-
-# Visual Studio / MSVC
-.\scripts\build-msvc.ps1
-.\scripts\build-msvc.ps1 debug
-.\scripts\build-msvc.ps1 tests
-.\scripts\build-msvc.ps1 asan
-.\scripts\build-msvc.ps1 pack-zip
-.\scripts\build-msvc.ps1 clean
-```
+Use `--dry-run` to inspect the complete command plan without touching disk.
 
 Useful environment variables:
 
 - `CC` / `CXX`: override the compiler on macOS/Linux or MSYS2.
 - `QT_DIR`: point adapter builds at a Qt 6 installation matching the compiler.
-  The Windows scripts validate the kit's libraries and reject MSVC/MinGW mixing;
-  the MinGW script first searches the selected compiler's own prefix.
 - `ARIA_NO_QT6=1`: disable the Qt 6 adapter, including in an existing build cache.
 - `ARIA_NO_APPKIT=1`: disable AppKit adapter detection on macOS.
-- `JOBS=N`: set parallelism for `build.sh`.
-
-Each build mode explicitly sets all sanitizer flags. Switching the shared
-Visual Studio tree from `asan` to `release` therefore disables ASan again.
 
 ## Maintenance
-
-After adding implementation files below `modules/`, check their CMake source
-registration:
-
-```bash
-./scripts/sync-cmake.sh
-```
 
 For benchmark and documentation gates:
 
@@ -137,6 +82,6 @@ For benchmark and documentation gates:
 ## AriaTools
 
 AriaTools is the single flagship sample application. It is intentionally kept
-outside the framework build and project-initialization scripts, so changes to
-its UI and product dependencies do not alter framework build trees. Follow the
-AriaTools project README for setup, build, run, and debugging instructions.
+outside the framework build, so changes to its UI and product dependencies do
+not alter framework build trees. Follow the AriaTools project README for
+setup, build, run, and debugging instructions.

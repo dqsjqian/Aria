@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
 import hashlib
 import json
 import os
@@ -18,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+from urllib.parse import urljoin
 import tempfile
 import urllib.error
 import urllib.parse
@@ -353,11 +355,67 @@ def validate_record(record: dict) -> None:
         raise DependencyError("Locked download must contain SHA256")
 
 
+def resolve_sqlite(spec: dict, requested: str, context) -> dict:
+    """Official sqlite.org amalgamation provider with SHA3-256 verification."""
+    page_url = 'https://www.sqlite.org/download.html'
+    rows = csv.reader(context.get_text(page_url).splitlines())
+    products = [row for row in rows if len(row) >= 5 and row[0] == 'PRODUCT'
+                and re.fullmatch(r'\d{4}/sqlite-amalgamation-\d+\.zip', row[2])
+                and re.fullmatch(r'\d+\.\d+\.\d+(?:\.\d+)?', row[1])]
+    chosen = next((row for row in products if row[1] == requested), None)
+    if requested == 'latest':
+        if not products:
+            raise DependencyError('SQLite download page contains no stable amalgamation')
+        chosen = max(products, key=lambda row: tuple(map(int, row[1].split('.'))))
+    if chosen:
+        version, relative, expected_sha3 = chosen[1], chosen[2], chosen[4]
+        url = urljoin(page_url, relative)
+        data = context.get_bytes(url)
+        if hashlib.sha3_256(data).hexdigest() != expected_sha3:
+            raise DependencyError('SQLite official SHA3-256 mismatch')
+        digest = context.download_digest(url, hashlib.sha256(data).hexdigest())
+        checksum_source = 'sqlite.org download product CSV; SHA3-256 verified'
+    else:
+        if not re.fullmatch(r'3\.\d{1,2}\.\d{1,2}(?:\.\d{1,2})?', requested):
+            raise DependencyError('SQLite version must be a released 3.x.y[.z] version')
+        version = requested
+        release_url = 'https://www.sqlite.org/releaselog/' + version.replace('.', '_') + '.html'
+        release = context.get_text(release_url)
+        date = re.search(r'SQLite Release\s+' + re.escape(version) + r'\s+On\s+(\d{4})-\d{2}-\d{2}', release)
+        if not date:
+            raise DependencyError('Cannot determine official SQLite release year: ' + version)
+        parts = [int(part) for part in version.split('.')]
+        parts += [0] * (4 - len(parts))
+        number = str(parts[0]) + ''.join(f'{part:02}' for part in parts[1:])
+        url = f'https://www.sqlite.org/{date.group(1)}/sqlite-amalgamation-{number}.zip'
+        digest = context.download_digest(url)
+        checksum_source = 'SHA256 computed from official sqlite.org release archive'
+    return {'version': version, 'tag': version, 'revision': '', 'url': url,
+            'sha256': digest, 'checksum_source': checksum_source}
+
+
+def resolve_quickjs(spec: dict, requested: str, context) -> dict:
+    """Official bellard.org QuickJS source provider."""
+    base = 'https://bellard.org/quickjs/'
+    if requested == 'latest':
+        versions = re.findall(r'href=[\"\']quickjs-(\d{4}-\d{2}-\d{2})\.tar\.xz[\"\']', context.get_text(base))
+        if not versions:
+            raise DependencyError('QuickJS page contains no stable source release')
+        version = max(versions)
+    else:
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', requested):
+            raise DependencyError('QuickJS version must be an official YYYY-MM-DD release')
+        version = requested
+    url = f'{base}quickjs-{version}.tar.xz'
+    return {'version': version, 'tag': version, 'revision': '', 'url': url,
+            'sha256': context.download_digest(url),
+            'checksum_source': 'SHA256 computed from official bellard.org release archive'}
+
+
 def resolve_record(spec: dict, requested: str, context: Context) -> dict:
     if spec.get("provider") == "github":
         record = resolve_github(spec, requested, context)
     elif spec.get("provider") in {"sqlite", "quickjs"}:
-        from dependency_sources import resolve_quickjs, resolve_sqlite
         provider = resolve_sqlite if spec["provider"] == "sqlite" else resolve_quickjs
         record = provider(spec, requested, context)
     else:

@@ -94,7 +94,7 @@ Prerequisites:
 - CMake 3.22+ (bundled with Android SDK)
 
 ```bash
-./scripts/build.sh android
+python3 scripts/build.py --platform android --ndk <ndk-path>
 ```
 
 For a runnable Android application and the View-backed typed adapter lab, follow the build instructions in [AriaTools](https://github.com/dqsjqian/AriaTools).

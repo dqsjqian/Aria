@@ -19,6 +19,10 @@ All notable changes to **aria** are documented here.
 - Calibrate the paired regression gate (protocol v3.1): the twelve batch-mean
   statistics carry the decision; batch-P99 statistics remain fully measured
   with fixed-sample evidence and are recorded as observations.
+- Consolidate the script surface: `build.py` is the single build entry;
+  `build.sh`, `build.ps1`, `build-msvc.ps1`, `init-project.sh`,
+  `init-project.ps1`, `sync-cmake.sh` and `filter-docs.py` are removed, and
+  the sqlite/quickjs provider module is folded into `dependencies.py`.
 
 ## 3.2.0 — 2026-10-09
 

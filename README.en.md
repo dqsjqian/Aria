@@ -308,10 +308,9 @@ ctest --test-dir build/flavors/release --output-on-failure
 ```
 
 > `build/` is a *container* for build trees — never configure straight into
-> it. The unified build layout is documented at the top of
-> [`scripts/build.sh`](scripts/build.sh); the
-> per-flavor script `scripts/build.sh [release|debug|asan|tsan]` picks the
-> right directory for you.
+> it. The layout convention is enforced by the build-tree guard at the top of
+> [`CMakeLists.txt`](CMakeLists.txt); `python scripts/build.py` picks an
+> isolated default directory for you.
 
 > Normal builds use the bundled doctest header. CMake fetches the fallback
 > test dependency only if that vendored header is absent.
@@ -333,42 +332,29 @@ use `--cmake-arg=-DNAME[:TYPE]=VALUE` and cannot override the selected configura
 or toolchain. Compiler, toolchain and architecture cache conflicts are checked
 before fetching dependencies; existing build directories are preserved.
 
-### One-liner build scripts
+Common invocations:
 
 ```bash
-# macOS / Linux
-scripts/build.sh             # release
-scripts/build.sh tests       # release + ctest
-scripts/build.sh asan        # debug + AddressSanitizer + UBSan
-scripts/build.sh tsan        # debug + ThreadSanitizer
-scripts/build.sh clean
-
-# Windows — MSYS2 UCRT64 (GCC + Ninja)
-scripts\build.ps1            # release
-scripts\build.ps1 tests
-scripts\build.ps1 asan
-scripts\build.ps1 tsan       # debug + ThreadSanitizer (not available on MSVC, see below)
-
-# Windows — MSVC / Visual Studio 2026
-scripts\build-msvc.ps1       # release  (build/flavors/msvc/ tree)
-scripts\build-msvc.ps1 tests
-scripts\build-msvc.ps1 debug
-scripts\build-msvc.ps1 asan  # /fsanitize=address (no UBSan on MSVC)
+python3 scripts/build.py --test                          # release + ctest
+python3 scripts/build.py --config Debug                  # debug
+python3 scripts/build.py --config Debug --cmake-arg=-DARIA_ENABLE_ASAN=ON --cmake-arg=-DARIA_ENABLE_UBSAN=ON --test
+python3 scripts/build.py --config Debug --cmake-arg=-DARIA_ENABLE_TSAN=ON --test
+python3 scripts/build.py --toolchain msvc --test         # Windows MSVC
+python3 scripts/build.py --toolchain mingw --test        # Windows MSYS2 UCRT64
 ```
 
 ### Windows toolchains
 
-Aria ships with **two parallel build scripts** for Windows. They live
-side-by-side in `scripts/`, write to separate build directories, and
-neither one needs to know about the other.
+Aria supports **two parallel Windows toolchains** through the same portable
+entry, each in its own isolated build tree.
 
-| Toolchain | Script | Build dir | Notes |
-|---|---|---|---|
-| **MSYS2 UCRT64** (GCC 14+ / Clang 19+) | `scripts\build.ps1` | `build/flavors/release/` | Lightweight (~300 MB). Pre-installed on most CI images. Auto-detected from `C:\msys64\ucrt64\bin` and a few other common paths. |
-| **MSVC** (VS2026; VS2022 discovery retained) | `scripts\build-msvc.ps1` | `build/flavors/msvc/` | Auto-detects the VS install via `vswhere`, scrubs MSYS2 env vars (`INCLUDE` / `LIB` / `CPATH` / ...) before running CMake, and selects the Visual Studio generator matching the installation. |
+| Toolchain | Command | Notes |
+|---|---|---|
+| **MSVC** (VS2026; VS2022 discovery retained) | `python scripts/build.py --toolchain msvc` | Default. Selects the Visual Studio generator matching the installation. |
+| **MSYS2 UCRT64** (GCC 14+ / Clang 19+) | `python scripts/build.py --toolchain mingw` | Lightweight (~300 MB). Pre-installed on most CI images. Auto-detected from `C:\msys64\ucrt64\bin` and a few other common paths. |
 
-You can switch back and forth without `clean` — the two trees are
-isolated. CI validates both toolchains on pushes and pull requests.
+You can switch back and forth without cleanup — the trees stay isolated.
+CI validates both toolchains on pushes and pull requests.
 
 #### MSVC one-time setup
 
@@ -377,8 +363,8 @@ isolated. CI validates both toolchains on pushes and pull requests.
 #    workload "Desktop development with C++" + "C++ CMake tools".
 # 2. (Optional) install Qt 6 with the msvc2022_64 kit if you need the
 #    Qt6 adapter.
-# 3. From any PowerShell window:
-scripts\build-msvc.ps1 tests
+# 3. From a Developer PowerShell:
+python scripts/build.py --toolchain msvc --test
 ```
 
 #### MSYS2 one-time setup
@@ -392,7 +378,7 @@ pacman -S --needed mingw-w64-ucrt-x86_64-toolchain `
                    mingw-w64-ucrt-x86_64-ninja git
 # 3. (Optional) Add C:\msys64\ucrt64\bin to your PATH.
 # 4. From any shell:
-scripts\build.ps1 tests
+python scripts/build.py --toolchain mingw --test
 ```
 
 Rationale for shipping both: Aria uses C++ coroutines extensively that

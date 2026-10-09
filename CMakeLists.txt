@@ -12,11 +12,11 @@ project(aria
 
 # ── Build-tree location guard ────────────────────────────────────────────────
 #
-# `build/` is a CONTAINER for build trees, not a build tree itself. The layout
-# is documented at the top of scripts/build.sh:
+# `build/` is a CONTAINER for build trees, not a build tree itself:
 #
 #   build/ide/                IDE workspace
 #   build/flavors/<name>/     command-line + CI build flavors
+#   build/unified/<suffix>/   scripts/build.py default trees
 #   build/platforms/<name>/   cross-compilation targets
 #   build/dist/               release artefacts (shared across flavors)
 #
@@ -49,13 +49,10 @@ if(NOT ARIA_ALLOW_BUILD_ROOT AND CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_
             "\n"
             "    cmake -S . -B build/flavors/debug -DCMAKE_BUILD_TYPE=Debug\n"
             "\n"
-            "Or let the build script choose for you:\n"
+            "Or use the portable build entry:\n"
             "\n"
-            "    scripts/build.sh            ->  build/flavors/release\n"
-            "    scripts/build.sh debug      ->  build/flavors/debug\n"
-            "    scripts/build.sh asan       ->  build/flavors/asan\n"
+            "    python3 scripts/build.py --config Debug   ->  build/unified/<suffix>\n"
             "\n"
-            "See the layout map at the top of scripts/build.sh.\n"
             "Escape hatch (not recommended): -DARIA_ALLOW_BUILD_ROOT=ON\n")
     endif()
 endif()

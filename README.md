@@ -293,7 +293,7 @@ cmake --build build/flavors/release -j
 ctest --test-dir build/flavors/release --output-on-failure
 ```
 
-> `build/` 是构建树的**容器**，不要直接配置进它。统一布局见 [`scripts/build.sh`](scripts/build.sh) 顶部。
+> `build/` 是构建树的**容器**，不要直接配置进它。布局约定见 [`CMakeLists.txt`](CMakeLists.txt) 顶部的 build-tree guard。
 
 ### 跨平台统一入口
 
@@ -303,33 +303,23 @@ macOS 的 `--arch x86_64` / `--arch arm64` 选择实际目标架构；Visual Stu
 
 Android 需 `--ndk`；iOS 需 macOS/Xcode。移动端执行测试仍使用现有模拟器/设备脚本，统一入口不会把交叉编译冒充运行通过。Windows 默认 MSVC，显式 `--toolchain mingw` 使用独立缓存；使用 Ninja/MSVC 时先打开 Developer PowerShell。原有打包脚本仍负责 SDK 安装与归档。
 
-### 🔧 一键构建脚本
+常用组合：
 
 ```bash
-# macOS / Linux
-scripts/build.sh             # Release
-scripts/build.sh tests       # Release + 跑测试
-scripts/build.sh asan        # Debug + AddressSanitizer + UBSan
-scripts/build.sh tsan        # Debug + ThreadSanitizer
-
-# Windows —— MSYS2 UCRT64（GCC + Ninja）
-scripts\build.ps1            # Release
-scripts\build.ps1 tests
-scripts\build.ps1 asan
-scripts\build.ps1 tsan       # Debug + ThreadSanitizer（MSVC 不支持，见下）
-
-# Windows —— MSVC / Visual Studio 2026
-scripts\build-msvc.ps1       # Release（使用 build/flavors/msvc/ 目录）
-scripts\build-msvc.ps1 tests
-scripts\build-msvc.ps1 debug
+python3 scripts/build.py --test                          # Release + 跑测试
+python3 scripts/build.py --config Debug                  # Debug
+python3 scripts/build.py --config Debug --cmake-arg=-DARIA_ENABLE_ASAN=ON --cmake-arg=-DARIA_ENABLE_UBSAN=ON --test
+python3 scripts/build.py --config Debug --cmake-arg=-DARIA_ENABLE_TSAN=ON --test
+python3 scripts/build.py --toolchain msvc --test         # Windows MSVC
+python3 scripts/build.py --toolchain mingw --test        # Windows MSYS2 UCRT64
 ```
 
 ### 🛠 Windows 工具链
 
-| 工具链 | 脚本 | 构建目录 | 备注 |
-|---|---|---|---|
-| **MSYS2 UCRT64**（GCC 14+ / Clang 19+） | `scripts\build.ps1` | `build/flavors/release/` | 体积小（≈300 MB），大多数 CI 镜像已预装。 |
-| **MSVC**（VS2026；保留 VS2022 发现兼容） | `scripts\build-msvc.ps1` | `build/flavors/msvc/` | 通过 `vswhere` 自动定位 VS 安装；根据安装版本选择 Visual Studio 生成器。 |
+| 工具链 | 命令 | 备注 |
+|---|---|---|
+| **MSVC**（VS2026；保留 VS2022 发现兼容） | `python scripts/build.py --toolchain msvc` | 默认工具链；根据安装版本选择 Visual Studio 生成器。 |
+| **MSYS2 UCRT64**（GCC 14+ / Clang 19+） | `python scripts/build.py --toolchain mingw` | 体积小（≈300 MB），大多数 CI 镜像已预装。 |
 
 <details>
 <summary>📖 MSVC 一次性配置</summary>
@@ -338,8 +328,8 @@ scripts\build-msvc.ps1 debug
 # 1. 安装 Visual Studio 2026 Build Tools（或完整 IDE）及 CMake >= 4.2，勾选
 #    "Desktop development with C++" + "C++ CMake tools"。
 # 2. （可选）安装 Qt 6 的 msvc2022_64 组件。
-# 3. 任意 PowerShell 窗口里：
-scripts\build-msvc.ps1 tests
+# 3. Developer PowerShell 里：
+python scripts/build.py --toolchain msvc --test
 ```
 </details>
 
@@ -355,7 +345,7 @@ pacman -S --needed mingw-w64-ucrt-x86_64-toolchain \
                    mingw-w64-ucrt-x86_64-ninja git
 # 3. （可选）把 C:\msys64\ucrt64\bin 加入 PATH
 # 4. 从任意终端执行：
-scripts\build.ps1 tests
+python scripts/build.py --toolchain mingw --test
 ```
 </details>
 
