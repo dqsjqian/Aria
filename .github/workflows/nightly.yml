@@ -263,7 +263,43 @@ jobs:
         # Leave job time for always-uploaded checkpoints and raw evidence.
         timeout-minutes: 330
         run: |
-          python scripts/run-bench-validation.py \
+          mkdir -p bench-comparison
+          python_executable="$(command -v python)"
+          {
+            printf 'RUNNER_OS=%s\npythonLocation=%s\npython_executable=%s\n' \
+              "$RUNNER_OS" "${pythonLocation:-}" "$python_executable"
+            while IFS='=' read -r name value; do
+              case "$name" in
+                LD_LIBRARY_PATH|LD_PRELOAD|LD_AUDIT|DYLD_*) printf '%s=%s\n' "$name" "$value" ;;
+              esac
+            done < <(env | LC_ALL=C sort)
+          } > bench-comparison/measurement-loader-environment-before.txt
+          measurement_command=("$python_executable")
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            # setup-python adds its own single lib directory. Its official
+            # CPython build has that directory in RPATH/RUNPATH, so remove only
+            # this verified action-provided value before the measurement gate.
+            # All other loader overrides remain subject to the production gate.
+            if [[ -z "${RUNNER_TOOL_CACHE:-}" || -z "${pythonLocation:-}" || \
+                  ! "$pythonLocation" =~ ^"${RUNNER_TOOL_CACHE}"/Python/3\.13\.[0-9]+/x64$ || \
+                  ( -n "${LD_LIBRARY_PATH:-}" && "$LD_LIBRARY_PATH" != "$pythonLocation/lib" ) ]]; then
+              echo "Unsupported setup-python loader environment" >&2
+              exit 2
+            fi
+            resolved_prefix="$(readlink -f "$pythonLocation")"
+            resolved_python="$(readlink -f "$python_executable")"
+            if [[ "$resolved_python" != "$resolved_prefix"/bin/* ]]; then
+              echo "Python executable is outside the setup-python installation" >&2
+              exit 2
+            fi
+            readelf -d "$resolved_python" > bench-comparison/python-runtime-dynamic.txt
+            measurement_command=(env -u LD_LIBRARY_PATH "$python_executable")
+          fi
+          # Prove the selected interpreter and required stdlib imports start
+          # with the same environment that the single fixed campaign receives.
+          "${measurement_command[@]}" -c 'import hashlib,json,math,os,platform,random,shutil,statistics,subprocess,sys; print(json.dumps({"executable":sys.executable,"version":sys.version,"loader_overrides":{k:v for k,v in os.environ.items() if v and (k.startswith("DYLD_") or k in ("LD_LIBRARY_PATH","LD_PRELOAD","LD_AUDIT"))}},sort_keys=True))' \
+            > bench-comparison/python-runtime-measurement-environment.json
+          "${measurement_command[@]}" scripts/run-bench-validation.py \
             --baseline baseline-source/build/flavors/bench/bin \
             --candidate build/flavors/bench/bin \
             --slow-control baseline-source/build/flavors/control/bin \
