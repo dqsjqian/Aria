@@ -41,7 +41,10 @@ inline auto sample_duration(clk::time_point start, clk::time_point end) {
     auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
     if constexpr (control_stretch_percent > 0) {
         auto delay_ns = (ns * control_stretch_percent + 99) / 100;
-        constexpr auto kMinControlDelayNs = 100;
+        // Minimum absolute delay: 1us. Operations faster than ~5us have
+        // 20% deltas (<1us) buried in shared-runner noise; the floor
+        // ensures the slow20 control is actually detectable.
+        constexpr auto kMinControlDelayNs = 1000;
         if (delay_ns < kMinControlDelayNs) {
             delay_ns = kMinControlDelayNs;
         }
