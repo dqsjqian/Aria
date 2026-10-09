@@ -761,6 +761,20 @@ Implications:
   > executor it depends on**. The usual pattern is "ui executor
   > as an app singleton, AsyncCommand as a VM member".
 
+Each command owns one action target. Invocation frames keep shared ownership
+of that target and their argument tuple until the action completes, including
+after command destruction. Sequential calls preserve a mutable action's state;
+starting an invocation does not copy the user callable. The frame's erased
+wrapper can still allocate or copy shared handles, depending on the standard
+library.
+
+`Parallel` calls and overlapping work under `LatestOnly` can access the same
+target from different workers. The caller must synchronize mutable captures or
+keep every access on the same single-thread executor, including after executor
+switches; cancellation does not serialize the action. These
+ownership guarantees cover the command's direct action target. Timeout/retry
+wrappers may separately copy their inner factories when binding an invocation.
+
 ### L-38: AsyncResource lifecycle
 
 `AsyncResource<T, Key>` maintains cache + dedupe and shares the same

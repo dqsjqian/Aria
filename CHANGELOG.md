@@ -52,6 +52,12 @@ All notable changes to **aria** are documented here.
 - Invoke async actions directly from the invocation-owned argument tuple,
   removing a forwarding coroutine allocation for plain actions. Preserve
   reference-parameter and cancellation-token lifetimes across suspension.
+- Retain one shared AsyncCommand action target across invocations. Preserve
+  mutable callback state and avoid invoking user copy constructors when a run
+  starts, while keeping suspended action and borrowed-argument lifetimes intact.
+- Wait for worker-pool idle state through atomic wait/notify, removing the extra
+  queue-mutex acquisition after the last task. Preserve concurrent producers,
+  multiple idle waiters, nested tasks, exception recovery and drain-before-join.
 - Use publication epochs with C++ atomic wait/notify for worker availability;
   preserve queue serialization and idle joining while avoiding the worker
   condition-variable wake/re-lock handshake. Add repeated wakeup, concurrent

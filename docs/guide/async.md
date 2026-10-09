@@ -151,7 +151,7 @@ An async command exposes three reactive properties that the UI can bind to:
 #include "aria/async/async_command.hpp"
 
 aria::async::AsyncCommand<SearchResult, std::string> search{ui, worker,
-    [](std::string query) -> aria::async::Task<SearchResult> {
+    [&worker](std::string query) -> aria::async::Task<SearchResult> {
         co_await aria::async::schedule_on(worker);
         co_return perform_search(query);
     }
@@ -172,7 +172,7 @@ Accept a `CancellationToken` as the first parameter:
 
 ```cpp
 aria::async::AsyncCommand<Data, int> fetch{ui, worker,
-    [](aria::async::CancellationToken tok, int id) -> aria::async::Task<Data> {
+    [&worker](aria::async::CancellationToken tok, int id) -> aria::async::Task<Data> {
         co_await aria::async::schedule_on(worker);
         tok.throw_if_cancelled();
         co_return heavy_load(id);
@@ -182,20 +182,26 @@ aria::async::AsyncCommand<Data, int> fetch{ui, worker,
 
 ### Concurrency Policies
 
+The command retains one action object across calls. Mutable captures keep their
+state between sequential invocations. `Parallel`, and work still unwinding after
+`LatestOnly` cancellation, can invoke this object from different workers; protect
+shared mutable state or keep every access on the same single-thread executor,
+including after the action switches executors.
+
 ```cpp
 #include "aria/async/async_command.hpp"
 
 // Parallel (default): multiple invocations run concurrently
 aria::async::AsyncCommand<void, std::string> cmd_parallel{
-    ui, worker, action, {}, aria::async::AsyncCommandPolicy::Parallel};
+    ui, worker, save_action, aria::async::AsyncCommandPolicy::Parallel};
 
 // LatestOnly: new execute() cancels in-flight work (search-as-you-type)
 aria::async::AsyncCommand<Results, std::string> cmd_latest{
-    ui, worker, action, {}, aria::async::AsyncCommandPolicy::LatestOnly};
+    ui, worker, search_action, aria::async::AsyncCommandPolicy::LatestOnly};
 
 // DropIfRunning: ignore execute() while busy (prevent double-submit)
 aria::async::AsyncCommand<void> cmd_drop{
-    ui, worker, action, {}, aria::async::AsyncCommandPolicy::DropIfRunning};
+    ui, worker, refresh_action, aria::async::AsyncCommandPolicy::DropIfRunning};
 ```
 
 ### Inside a ViewModel

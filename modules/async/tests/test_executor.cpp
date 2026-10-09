@@ -1,8 +1,11 @@
 #include <doctest/doctest.h>
 
 #include "aria/async/executor.hpp"
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <latch>
+#include <stdexcept>
 #include <thread>
 
 using namespace aria::async;
@@ -65,6 +68,122 @@ TEST_CASE("ThreadPoolExecutor: idle destruction wakes and joins all workers") {
         ThreadPoolExecutor executor{4};
         executor.wait_idle();
     }
+}
+
+TEST_CASE("ThreadPoolExecutor: all idle waiters include concurrently queued work") {
+    ThreadPoolExecutor executor{2};
+    std::latch entered{2};
+    std::latch release{1};
+    std::atomic<unsigned> completed{0};
+    for (int task = 0; task < 2; ++task) {
+        executor.post([&] {
+            entered.count_down();
+            release.wait();
+            completed.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+    entered.wait();
+
+    std::latch waiting{4};
+    std::array<unsigned, 4> observed{};
+    std::vector<std::thread> waiters;
+    waiters.reserve(observed.size());
+    for (auto& count : observed) {
+        waiters.emplace_back([&executor, &waiting, &completed, &count] {
+            waiting.count_down();
+            executor.wait_idle();
+            count = completed.load(std::memory_order_relaxed);
+        });
+    }
+    waiting.wait();
+
+    // Both workers remain occupied while producers publish additional work.
+    // Idle waiters must observe the queued work as well as the active tasks.
+    std::vector<std::thread> producers;
+    producers.reserve(4);
+    for (int producer = 0; producer < 4; ++producer) {
+        producers.emplace_back([&] {
+            for (int task = 0; task < 32; ++task) {
+                executor.post([&] { completed.fetch_add(1, std::memory_order_relaxed); });
+            }
+        });
+    }
+    for (auto& producer : producers) {
+        producer.join();
+    }
+    release.count_down();
+    for (auto& waiter : waiters) {
+        waiter.join();
+    }
+    for (const auto count : observed) {
+        CHECK(count == 130);
+    }
+    executor.wait_idle();
+    CHECK(completed.load(std::memory_order_relaxed) == 130);
+}
+
+TEST_CASE("ThreadPoolExecutor: idle waits include work posted by active callbacks") {
+    ThreadPoolExecutor executor{1};
+    std::atomic<unsigned> completed{0};
+    std::function<void(int)> submit;
+    submit = [&](int remaining) {
+        executor.post([&, remaining] {
+            completed.fetch_add(1, std::memory_order_relaxed);
+            if (remaining != 0) {
+                submit(remaining - 1);
+            }
+        });
+    };
+    submit(32);
+    executor.wait_idle();
+    CHECK(completed.load(std::memory_order_relaxed) == 33);
+    executor.post([&] { completed.fetch_add(1, std::memory_order_relaxed); });
+    executor.wait_idle();
+    CHECK(completed.load(std::memory_order_relaxed) == 34);
+}
+
+TEST_CASE("ThreadPoolExecutor: callback failure still publishes idle and queued work") {
+    ThreadPoolExecutor executor{1};
+    std::atomic<unsigned> completed{0};
+    executor.post([&] {
+        executor.post([&] { completed.fetch_add(1, std::memory_order_relaxed); });
+        throw std::runtime_error("expected executor callback failure");
+    });
+    executor.wait_idle();
+    CHECK(completed.load(std::memory_order_relaxed) == 1);
+    executor.post([&] { completed.fetch_add(1, std::memory_order_relaxed); });
+    executor.wait_idle();
+    CHECK(completed.load(std::memory_order_relaxed) == 2);
+}
+
+TEST_CASE("ThreadPoolExecutor: destruction drains active and queued tasks before joining") {
+    auto executor = std::make_unique<ThreadPoolExecutor>(2);
+    std::latch entered{2};
+    std::latch release{1};
+    std::atomic<unsigned> completed{0};
+    for (int task = 0; task < 2; ++task) {
+        executor->post([&] {
+            entered.count_down();
+            release.wait();
+            completed.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+    entered.wait();
+    for (int task = 0; task < 32; ++task) {
+        executor->post([&] { completed.fetch_add(1, std::memory_order_relaxed); });
+    }
+    std::latch destroying{1};
+    std::atomic<bool> destroyed{false};
+    std::thread teardown([pool = std::move(executor), &destroying, &destroyed] mutable {
+        destroying.count_down();
+        pool.reset();
+        destroyed.store(true, std::memory_order_release);
+    });
+    destroying.wait();
+    release.count_down();
+    teardown.join();
+    CHECK(destroyed.load(std::memory_order_acquire));
+    CHECK(completed.load(std::memory_order_relaxed) == 34);
 }
 
 namespace {

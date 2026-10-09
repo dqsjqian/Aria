@@ -7,15 +7,68 @@
 #include "support/threaded_command_fixture.hpp"
 
 #include <chrono>
+#include <array>
+#include <atomic>
+#include <latch>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace aria;
 using namespace aria::async;
 using aria::async::testing::ThreadedCommandFixture;
 
 namespace {
+
+struct ActionCopyProbe {
+    std::shared_ptr<int> copies;
+    std::shared_ptr<bool> reject_copy;
+
+    ActionCopyProbe(std::shared_ptr<int> count, std::shared_ptr<bool> reject)
+        : copies(std::move(count)), reject_copy(std::move(reject)) {}
+    ActionCopyProbe(const ActionCopyProbe& other)
+        : copies(other.copies), reject_copy(other.reject_copy) {
+        if (*reject_copy) {
+            throw std::runtime_error("unexpected action copy");
+        }
+        ++*copies;
+    }
+    ActionCopyProbe(ActionCopyProbe&&) noexcept = default;
+    ~ActionCopyProbe() = default;
+    ActionCopyProbe& operator=(const ActionCopyProbe&) = delete;
+    ActionCopyProbe& operator=(ActionCopyProbe&&) = delete;
+
+    Task<int> operator()(int value) const { co_return value; }
+};
+
+struct SharedParallelAction {
+    std::atomic<int> counter{0};
+    std::latch* entered;
+    std::latch* release;
+    std::array<int, 2>* observed;
+
+    SharedParallelAction(std::latch& ready, std::latch& proceed, std::array<int, 2>& values)
+        : entered(&ready), release(&proceed), observed(&values) {}
+    SharedParallelAction(const SharedParallelAction& other)
+        : counter(other.counter.load()), entered(other.entered),
+          release(other.release), observed(other.observed) {}
+    SharedParallelAction(SharedParallelAction&& other) noexcept
+        : counter(other.counter.load()), entered(other.entered),
+          release(other.release), observed(other.observed) {}
+    ~SharedParallelAction() = default;
+    SharedParallelAction& operator=(const SharedParallelAction&) = delete;
+    SharedParallelAction& operator=(SharedParallelAction&&) = delete;
+
+    Task<void> operator()(std::size_t slot) {
+        const int value = counter.fetch_add(1) + 1;
+        entered->count_down();
+        release->wait();
+        observed->at(slot) = value;
+        co_return;
+    }
+};
 
 void wait_until(const std::function<bool()>& done,
                 std::chrono::milliseconds timeout = std::chrono::seconds{1}) {
@@ -71,6 +124,143 @@ static_assert(
 // negative trait assertions.
 
 }  // namespace executor_safety_compile_check
+
+// Doctest subcase/assertion expansion inflates these straight-line cases.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("AsyncCommand: sequential invocations retain mutable action state") {
+    InlineExecutor ui;
+    InlineExecutor worker;
+    SUBCASE("plain result action") {
+        // The command owns this coroutine's mutable closure across invocations.
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-capturing-lambda-coroutines)
+        AsyncCommand<int> command{ui, worker, [counter = 0] mutable -> Task<int> {
+            co_return ++counter;
+        }};
+        command.execute();
+        CHECK(command.last_result.get().value_or(-1) == 1);
+        command.execute();
+        CHECK(command.last_result.get().value_or(-1) == 2);
+    }
+    SUBCASE("cancellable result action") {
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-capturing-lambda-coroutines)
+        AsyncCommand<int> command{ui, worker, [counter = 0](CancellationToken) mutable -> Task<int> {
+            co_return ++counter;
+        }};
+        command.execute();
+        CHECK(command.last_result.get().value_or(-1) == 1);
+        command.execute();
+        CHECK(command.last_result.get().value_or(-1) == 2);
+    }
+    SUBCASE("plain void action") {
+        std::vector<int> values;
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-capturing-lambda-coroutines)
+        AsyncCommand<void> command{ui, worker, [&values, counter = 0] mutable -> Task<void> {
+            values.push_back(++counter);
+            co_return;
+        }};
+        command.execute();
+        command.execute();
+        CHECK(values == std::vector<int>{1, 2});
+    }
+    SUBCASE("cancellable void action") {
+        std::vector<int> values;
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-capturing-lambda-coroutines)
+        AsyncCommand<void> command{ui, worker, [&values, counter = 0](CancellationToken) mutable -> Task<void> {
+                values.push_back(++counter);
+                co_return;
+            }};
+        command.execute();
+        command.execute();
+        CHECK(values == std::vector<int>{1, 2});
+    }
+}
+
+// Doctest assertion expansion adds branches to an otherwise linear sequence.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+TEST_CASE("AsyncCommand: invocation does not copy the saved user action") {
+    InlineExecutor ui;
+    InlineExecutor worker;
+    auto copies = std::make_shared<int>(0);
+    auto reject_copy = std::make_shared<bool>(false);
+    AsyncCommand<int, int> command{ui, worker, ActionCopyProbe{copies, reject_copy}};
+    *copies = 0;
+    command.execute(1);
+    command.execute(2);
+    CHECK(*copies == 0);
+    CHECK(command.last_result.get().value_or(-1) == 2);
+
+    *reject_copy = true;
+    command.execute(3);
+    CHECK(command.last_result.get().value_or(-1) == 3);
+    CHECK_FALSE(command.last_error.get().has_value());
+    CHECK(*copies == 0);
+
+    AsyncCommandResult<int> result;
+    std::exception_ptr exception;
+    // This named launcher closure stays alive through synchronous Inline execution.
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-capturing-lambda-coroutines)
+    auto launch = [&] -> Task<void> {
+        try {
+            result = co_await command.co_execute(4);
+        } catch (...) {
+            exception = std::current_exception();
+        }
+    };
+    launch().start_detached_();
+    CHECK_FALSE(static_cast<bool>(exception));
+    CHECK(result.completed());
+    CHECK(result.value.value_or(-1) == 4);
+    CHECK(command.last_result.get().value_or(-1) == 4);
+    CHECK(*copies == 0);
+}
+
+TEST_CASE("AsyncCommand: shared action survives command destruction while suspended") {
+    MainThreadExecutor ui;
+    MainThreadExecutor worker;
+    MainThreadExecutor continuation;
+    int observed = 0;
+    auto token = std::make_shared<int>(7);
+    std::weak_ptr<int> lifetime = token;
+    // The suspended coroutine borrows both the shared closure and owned tuple.
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-capturing-lambda-coroutines,cppcoreguidelines-avoid-reference-coroutine-parameters)
+    auto action = [token, &continuation, &observed](const std::string& text) -> Task<int> {
+        co_await schedule_on(continuation);
+        observed = *token + static_cast<int>(text.size());
+        co_return observed;
+    };
+    auto command = std::make_unique<AsyncCommand<int, std::string>>(ui, worker, std::move(action));
+    token.reset();
+    command->execute(std::string(8192, 'x'));
+    ui.drain();
+    worker.drain();
+    CHECK_FALSE(lifetime.expired());
+    command.reset();
+    CHECK_FALSE(lifetime.expired());
+    continuation.drain();
+    ui.drain();
+    CHECK(observed == 8199);
+    CHECK(lifetime.expired());
+}
+
+TEST_CASE("AsyncCommand: parallel workers share a synchronized action target") {
+    MainThreadExecutor ui;
+    ThreadPoolExecutor worker{2};
+    std::latch entered{2};
+    std::latch release{1};
+    std::array<int, 2> observed{};
+    AsyncCommand<void, std::size_t> command{ui, worker,
+        SharedParallelAction{entered, release, observed}};
+    command.execute(0);
+    command.execute(1);
+    ui.drain();
+    entered.wait();
+    release.count_down();
+    worker.wait_idle();
+    ui.drain();
+    CHECK((observed == std::array<int, 2>{1, 2}
+        || observed == std::array<int, 2>{2, 1}));
+    CHECK_FALSE(command.is_executing.get());
+}
 
 TEST_CASE("AsyncCommand: borrowed action arguments remain owned across suspension") {
     MainThreadExecutor ui;

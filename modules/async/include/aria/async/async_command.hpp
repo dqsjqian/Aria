@@ -397,15 +397,19 @@ public:
     /// Invoke directly from the frame-owned argument tuple. A coroutine
     /// action may borrow its const-reference parameters until completion, so
     /// never manufacture a temporary by-value forwarding argument here.
+    /// Copies of the frame-owned wrapper keep one action target alive. Mutable
+    /// action state is preserved; callers synchronize it when worker invocations
+    /// can run concurrently under Parallel or overlap after LatestOnly cancellation.
     template<typename Fn>
     static PreparedAction make_action(Fn f) {
-        return [f = std::move(f)]([[maybe_unused]] const CancellationToken& token,
-                                  std::tuple<Args...>& args) mutable -> Task<R> {
+        auto target = std::make_shared<Fn>(std::move(f));
+        return [target = std::move(target)]([[maybe_unused]] const CancellationToken& token,
+                                           std::tuple<Args...>& args) -> Task<R> {
             return std::apply([&](auto&... values) -> Task<R> {
                 if constexpr (CancellableAction<Fn, Args...>) {
-                    return f(token, std::move(values)...);
+                    return (*target)(token, std::move(values)...);
                 } else {
-                    return f(std::move(values)...);
+                    return (*target)(std::move(values)...);
                 }
             }, args);
         };

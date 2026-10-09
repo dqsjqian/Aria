@@ -17,8 +17,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: nightly-bench
-  # Preserve the active fixed-sample campaign when a schedule or dispatch arrives.
+  group: nightly-bench-${{ github.sha }}
+  # Source revisions have independent fixed-sample campaigns. A new revision
+  # must not replace an earlier revision's pending campaign.
   cancel-in-progress: false
 
 jobs:

@@ -140,13 +140,21 @@ public:
     [[nodiscard]] std::size_t worker_count() const noexcept { return workers_.size(); }
 
     /// Block until queue is drained AND no worker is currently running a
-    /// task.  Uses a condition variable rather than a bounded spin-sleep so
-    /// long tasks don't race the destructor.
+    /// task. Atomic waiting observes the published count without a spin loop.
     void wait_idle() {
-        std::unique_lock lk(mutex_);
-        idle_cv_.wait(lk, [this] {
-            return queue_.empty() && inflight_.load() == 0;
-        });
+        while (true) {
+            int pending = 0;
+            {
+                // Queue publication and its count increment are one locked
+                // operation. Sample both before waiting outside the lock.
+                std::lock_guard lk(mutex_);
+                pending = inflight_.load(std::memory_order_acquire);
+                if (queue_.empty() && pending == 0) { return; }
+            }
+            // Completion between unlock and wait changes the sampled value,
+            // so a notification cannot be lost in that handoff window.
+            inflight_.wait(pending, std::memory_order_acquire);
+        }
     }
 
 private:
@@ -174,9 +182,8 @@ private:
             }
             // Decrement AFTER the task has finished (not when we dequeued).
             if (inflight_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                // Last one — notify a possibly-waiting destructor.
-                std::lock_guard lk(mutex_);
-                idle_cv_.notify_all();
+                // Atomic waiters need no queue-lock handshake on completion.
+                inflight_.notify_all();
             }
         }
     }
@@ -188,7 +195,8 @@ private:
     // A worker samples the epoch while holding the queue lock, then waits
     // outside it: a post between unlock and wait changes the sampled value.
     std::atomic<std::uint64_t> wake_sequence_{0};
-    std::condition_variable idle_cv_;  // wakes wait_idle()
+    // Reserved to retain the existing ThreadPoolExecutor object layout.
+    [[maybe_unused]] std::condition_variable idle_cv_;
     std::atomic<int> inflight_{0};
     bool stop_;
 };
