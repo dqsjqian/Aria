@@ -16,6 +16,7 @@ instructions to run or develop the product sample.
 | [`compare-bench.py`](./compare-bench.py) / [`run-bench-validation.py`](./run-bench-validation.py) | All (Python 3) | Paired regression gate (`paired-median-scenario-v3.1`) and its three-phase qualification runner. |
 | [`verify-bench-release.py`](./verify-bench-release.py) | All (Python 3) | Verify the published baseline release before measuring against it. |
 | [`check-docs-api.sh`](./check-docs-api.sh) | macOS/Linux | Documentation API coverage check. |
+| [`filter-docs.py`](./filter-docs.py) | All (Python 3) | Doxygen input filter that injects the source revision and repository URL into Markdown pages. |
 | [`docs-html.py`](./docs-html.py) | All (Python 3) | Prepare generated Doxygen pages and check links in the HTML output; used by the CMake `aria_docs` target. |
 | [`install-doxygen.sh`](./install-doxygen.sh) | macOS | Install the pinned documentation generator into a specified directory. |
 | [`tidy-gate.sh`](./tidy-gate.sh) | macOS/Linux | clang-tidy baseline gate; fails only on new debt vs `clang-tidy-baseline.txt`. |
