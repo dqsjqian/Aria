@@ -92,9 +92,13 @@ def extra_definitions(arguments, flags):
 
 
 def locked_aria_version(root):
-    reader = Path(__file__).resolve().parent / "ci/dependencies.py"
+    # dependencies.py location varies by repo: tools/ci/ (most) or scripts/ (Aria)
+    reader = root / "tools/ci/dependencies.py"
     if not reader.is_file():
         reader = Path(__file__).resolve().with_name("dependencies.py")
+    if not reader.is_file():
+        # Fallback: try alongside build.py's parent
+        reader = Path(__file__).resolve().parent / "dependencies.py"
     spec = importlib.util.spec_from_file_location("build_dependencies", reader)
     dependencies = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(dependencies)
