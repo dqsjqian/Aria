@@ -250,11 +250,11 @@ if(ARIA_BUILD_DOCS)
             COMMAND ${CMAKE_COMMAND} -E rm -rf "${ARIA_DOCS_OUTPUT_DIR}/html"
             COMMAND ${DOXYGEN_EXECUTABLE} "${CMAKE_BINARY_DIR}/Doxyfile"
             COMMAND ${Python3_EXECUTABLE}
-                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/prepare-docs-html.py"
-                "${ARIA_DOCS_OUTPUT_DIR}/html"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/docs-html.py"
+                prepare "${ARIA_DOCS_OUTPUT_DIR}/html"
             COMMAND ${Python3_EXECUTABLE}
-                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-docs-html.py"
-                "${ARIA_DOCS_OUTPUT_DIR}/html"
+                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/docs-html.py"
+                check "${ARIA_DOCS_OUTPUT_DIR}/html"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
             COMMENT "Generating Aria API reference with Doxygen → ${ARIA_DOCS_OUTPUT_DIR}/html"
             VERBATIM)

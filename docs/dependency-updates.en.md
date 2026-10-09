@@ -7,12 +7,12 @@ Run these commands from the **Aria repository root**. Use Python 3.10+ with its 
 ## Commands
 
 ```bash
-python scripts/update_dependencies.py --help
-python scripts/update_dependencies.py
-python scripts/update_dependencies.py --only mira
-python scripts/update_dependencies.py --only json --only mira
-python scripts/update_dependencies.py --version json=3.12.0 --version openssl=4.0.3
-python scripts/update_dependencies.py --only json --only mira --version json=3.12.0
+python scripts/dependencies.py update --file dependencies.json --help
+python scripts/dependencies.py update --file dependencies.json
+python scripts/dependencies.py update --file dependencies.json --only mira
+python scripts/dependencies.py update --file dependencies.json --only json --only mira
+python scripts/dependencies.py update --file dependencies.json --version json=3.12.0 --version openssl=4.0.3
+python scripts/dependencies.py update --file dependencies.json --only json --only mira --version json=3.12.0
 ```
 
 The available, case-sensitive names are: `json`, `doctest`, `mira`, `openssl`. Repeat `--only` for multiple selections and `--version` for different overrides. When using both, select every overridden name with `--only`. Unknown names, duplicate overrides and overrides outside the selection are errors.

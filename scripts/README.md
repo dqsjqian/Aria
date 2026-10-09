@@ -9,14 +9,14 @@ instructions to run or develop the product sample.
 | Script | Platforms | Purpose |
 | --- | --- | --- |
 | [`build.py`](./build.py) | All (Python 3) | Portable configure/build/test entry for native, Qt, web, iOS and Android targets; `--toolchain msvc\|mingw` on Windows, `--dry-run` prints the plan. |
-| [`dependencies.py`](./dependencies.py) / [`update_dependencies.py`](./update_dependencies.py) | All (Python 3) | Shared dependency resolver (GitHub, sqlite.org, bellard.org providers) and its CLI entry. |
+| [`dependencies.py`](./dependencies.py) | All (Python 3) | Shared dependency resolver (GitHub, sqlite.org, bellard.org providers); `resolve` and `update` subcommands. |
 | [`check-bench.sh`](./check-bench.sh) | macOS/Linux | Benchmark absolute-budget gate. |
 | [`check-bench-scenarios.py`](./check-bench-scenarios.py) | All (Python 3) | Verify fixed-window scenario bench output in CI. |
 | [`bench-profile.py`](./bench-profile.py) | All (Python 3) | Host calibration profile consumed by the absolute-budget gate. |
 | [`compare-bench.py`](./compare-bench.py) / [`run-bench-validation.py`](./run-bench-validation.py) | All (Python 3) | Paired regression gate (`paired-median-scenario-v3.1`) and its three-phase qualification runner. |
 | [`verify-bench-release.py`](./verify-bench-release.py) | All (Python 3) | Verify the published baseline release before measuring against it. |
 | [`check-docs-api.sh`](./check-docs-api.sh) | macOS/Linux | Documentation API coverage check. |
-| [`prepare-docs-html.py`](./prepare-docs-html.py) / [`check-docs-html.py`](./check-docs-html.py) | All (Python 3) | Prepare generated documentation pages and check links in the HTML output; used by the CMake docs target. |
+| [`docs-html.py`](./docs-html.py) | All (Python 3) | Prepare generated Doxygen pages and check links in the HTML output; used by the CMake `aria_docs` target. |
 | [`install-doxygen.sh`](./install-doxygen.sh) | macOS | Install the pinned documentation generator into a specified directory. |
 | [`tidy-gate.sh`](./tidy-gate.sh) | macOS/Linux | clang-tidy baseline gate; fails only on new debt vs `clang-tidy-baseline.txt`. |
 | [`pick-ios-simulator.py`](./pick-ios-simulator.py) | macOS | Pick a known-good iPhone + iOS runtime pair for the simulator test job. |

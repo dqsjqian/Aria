@@ -18,22 +18,22 @@
 
 ```bash
 # 查看所有参数
-python scripts/update_dependencies.py --help
+python scripts/dependencies.py update --file dependencies.json --help
 
 # 按依赖声明要求更新全部依赖
-python scripts/update_dependencies.py
+python scripts/dependencies.py update --file dependencies.json
 
 # 只更新一个依赖，其他锁记录完全保留
-python scripts/update_dependencies.py --only mira
+python scripts/dependencies.py update --file dependencies.json --only mira
 
 # 更新多个依赖：每个名称使用一个 --only
-python scripts/update_dependencies.py --only json --only mira
+python scripts/dependencies.py update --file dependencies.json --only json --only mira
 
 # 本次指定两个版本；其他库按依赖声明（未填 version 的选择最新稳定版）
-python scripts/update_dependencies.py --version json=3.12.0 --version openssl=4.0.3
+python scripts/dependencies.py update --file dependencies.json --version json=3.12.0 --version openssl=4.0.3
 
 # 只处理指定的两个库，并给其中一个指定版本
-python scripts/update_dependencies.py --only json --only mira --version json=3.12.0
+python scripts/dependencies.py update --file dependencies.json --only json --only mira --version json=3.12.0
 ```
 
 `--version` 可重复，但同一个名称不能重复。`--only` 与 `--version` 同用时，每个版本覆盖项都必须出现在 `--only` 中；拼错名称或遗漏选择会报错，不会默默忽略。版本写上游稳定版本号，例如 JSON 的 `3.12.0`；不接受 `main`、`nightly`、`2.0.0-rc1` 作为稳定选择。
@@ -53,7 +53,7 @@ python scripts/update_dependencies.py --only json --only mira --version json=3.1
 }
 ```
 
-然后运行 `python scripts/update_dependencies.py`：两个固定库保持所需版本，未固定库选择最新稳定版。只想升级第三个库时，运行 `python scripts/update_dependencies.py --only mira`。以后想解除固定，删除该项的 `version` 字段再主动更新。
+然后运行 `python scripts/dependencies.py update --file dependencies.json`：两个固定库保持所需版本，未固定库选择最新稳定版。只想升级第三个库时，运行 `python scripts/dependencies.py update --file dependencies.json --only mira`。以后想解除固定，删除该项的 `version` 字段再主动更新。
 
 优先级与持久性：
 

@@ -17,9 +17,9 @@ CMake can consume valid embedded results without Python or network access.
 The optional authenticated `gh` CLI can supply GitHub API access.
 
 ```bash
-python3 scripts/update_dependencies.py
-python3 scripts/update_dependencies.py --only mira
-python3 scripts/update_dependencies.py --version json=3.12.0 --version openssl=4.0.3
+python3 scripts/dependencies.py update --file dependencies.json
+python3 scripts/dependencies.py update --file dependencies.json --only mira
+python3 scripts/dependencies.py update --file dependencies.json --version json=3.12.0 --version openssl=4.0.3
 python3 scripts/dependencies.py resolve --file dependencies.json --offline
 ```
 

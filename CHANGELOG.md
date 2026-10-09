@@ -21,8 +21,11 @@ All notable changes to **aria** are documented here.
   with fixed-sample evidence and are recorded as observations.
 - Consolidate the script surface: `build.py` is the single build entry;
   `build.sh`, `build.ps1`, `build-msvc.ps1`, `init-project.sh`,
-  `init-project.ps1`, `sync-cmake.sh` and `filter-docs.py` are removed, and
-  the sqlite/quickjs provider module is folded into `dependencies.py`.
+  `init-project.ps1`, `sync-cmake.sh`, `filter-docs.py`, the
+  `update_dependencies.py` wrapper (its `update` subcommand lives in
+  `dependencies.py`) and the split `prepare`/`check` docs scripts (merged
+  into `docs-html.py`) are removed; the sqlite/quickjs provider module is
+  folded into `dependencies.py`.
 
 ## 3.2.0 — 2026-10-09
 
