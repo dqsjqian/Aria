@@ -5,6 +5,7 @@ import contextlib
 import collections
 import io
 import json
+import ntpath
 import os
 from pathlib import Path
 import shlex
@@ -52,9 +53,13 @@ class CheckBenchTests(unittest.TestCase):
             f"exit {status}\n"
         )
         if sys.platform in ("cygwin", "msys") and (self.bin_dir / f"{name}.exe").is_file():
-            # MSYS open() aliases a missing bare name to an existing .exe. Native
-            # Windows IO creates the second literal file needed by this fixture.
-            windows_path = subprocess.check_output(["cygpath", "-w", str(binary)], text=True).strip()
+            # Both MSYS open() and cygpath alias a missing bare name to .exe.
+            # Convert only the existing directory, then append the literal name
+            # before native Windows IO creates the second fixture file.
+            windows_directory = subprocess.check_output(
+                ["cygpath", "-w", str(binary.parent)], text=True,
+            ).strip()
+            windows_path = ntpath.join(windows_directory, binary.name)
             powershell = shutil.which("powershell.exe")
             if powershell is None:
                 windows_root = (os.environ.get("SYSTEMROOT") or os.environ.get("SystemRoot")
@@ -63,6 +68,9 @@ class CheckBenchTests(unittest.TestCase):
                 posix_root = subprocess.check_output(["cygpath", "-u", windows_root], text=True).strip()
                 powershell = str(Path(posix_root) / "System32/WindowsPowerShell/v1.0/powershell.exe")
             encoded_path = base64.b64encode(windows_path.encode("utf-8")).decode("ascii")
+            literal_path = base64.b64decode(encoded_path).decode("utf-8")
+            self.assertEqual(ntpath.basename(literal_path), binary.name, literal_path)
+            self.assertFalse(literal_path.lower().endswith(".exe"), literal_path)
             encoded_script = base64.b64encode(script.encode("utf-8")).decode("ascii")
             command = (
                 "$ErrorActionPreference = 'Stop'; "
@@ -115,7 +123,10 @@ class CheckBenchTests(unittest.TestCase):
         original = windows.read_bytes()
         self.write_bench(BENCHES[0], "stale competing output\n")
         names = {entry.name for entry in self.bin_dir.iterdir()}
-        self.assertTrue({bare.name, windows.name}.issubset(names))
+        self.assertTrue(
+            {bare.name, windows.name}.issubset(names),
+            f"literal fixture names missing: platform={sys.platform}, entries={sorted(names)}",
+        )
         self.assertFalse(bare.samefile(windows))
         self.assertEqual(windows.read_bytes(), original)
         result = self.run_bench()
