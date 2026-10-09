@@ -14,6 +14,12 @@ All notable changes to **aria** are documented here.
 
 ---
 
+## Unreleased
+
+- Calibrate the paired regression gate (protocol v3.1): the twelve batch-mean
+  statistics carry the decision; batch-P99 statistics remain fully measured
+  with fixed-sample evidence and are recorded as observations.
+
 ## 3.2.0 — 2026-10-09
 
 - Select the published Mira 1.1.1 HTTP dependency and retain ABI version 2.

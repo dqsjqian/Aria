@@ -17,32 +17,64 @@ validation = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(validation)
 
 
-def report(status, control):
+def report(status, control, p99_status=None):
+    p99_status = status if p99_status is None else p99_status
     summary = {}
     for name, shape in validation.EXPECTED_STATISTICS.items():
+        row_status = p99_status if name.endswith(" / batch-p99") else status
         n = shape["blocks"]
-        values = ([1.0] * (n // 2) + [1.2] * (n // 2) if status == "inconclusive"
-                  else [1.0 if status == "pass" else 1.2] * n)
-        summary[name] = {**{key: shape[key] for key in ("bench", "suite", "scenario")}, "validity": "fixed-sample-complete",
+        values = ([1.0] * (n // 2) + [1.2] * (n // 2) if row_status == "inconclusive"
+                  else [1.0 if row_status == "pass" else 1.2] * n)
+        summary[name] = {**{key: shape[key] for key in ("bench", "suite", "scenario")},
+                         "role": "decision" if name.endswith(" / batch-mean") else "observed",
+                         "validity": "fixed-sample-complete",
                          "observed_blocks": n, "required_blocks": n,
                          "paired_ratios": values,
                          "paired_ratio_rounding_intervals": [[v, v] for v in values],
                          "ratio_interval": [min(values), max(values)],
                          "order_statistic_ranks": [20, 45] if n == 64 else [221, 292],
-                         "status": status}
+                         "status": row_status}
     return {"macro_blocks": 64, "blocks_by_suite": validation.BLOCK_PLAN,
             "workload": "ARIA_WORKLOAD fixed-window-v2 batch-mean-nearest-rank",
-            "policy": {"protocol": "paired-median-scenario-v3", "family_alpha": .05,
+            "policy": {"protocol": validation.PROTOCOL, "family_alpha": .05,
                        "family_comparisons": 24, "ratio_limit": 1.1,
                        "blocks_by_suite": validation.BLOCK_PLAN},
             "comparison_kind": "slow20-control" if control else "aa-control",
-            "candidate_control_stretch_percent": control, "summary": summary, "status": status}
+            "candidate_control_stretch_percent": control, "summary": summary,
+            "status": status}
 
 
 class MeasurementQualificationTests(unittest.TestCase):
     def test_every_statistic_must_qualify_in_both_independent_controls(self):
         result = validation.verify_controls(report("pass", 0), report("regression", 20))
         self.assertEqual(result["status"], "measurement-qualified")
+
+    def test_observed_p99_inconclusive_does_not_block_the_decision_statistics(self):
+        aa = report("pass", 0, p99_status="inconclusive")
+        slow = report("regression", 20, p99_status="inconclusive")
+        self.assertEqual(aa["status"], "pass")
+        self.assertEqual(slow["status"], "regression")
+        result = validation.verify_controls(aa, slow)
+        self.assertEqual(result["status"], "measurement-qualified")
+        self.assertEqual(result["unavailable_metrics"], {})
+
+    def test_observed_p99_missing_or_corrupt_evidence_still_fails(self):
+        for field, value in (("observed_blocks", 63), ("paired_ratios", [1.2] * 63),
+                             ("role", "decision"), ("validity", "wrong-sample-count")):
+            slow = report("regression", 20)
+            name = next(name for name, row in slow["summary"].items()
+                        if row["role"] == "observed" and row["observed_blocks"] == 64)
+            slow["summary"][name][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                validation.verify_controls(report("pass", 0), slow)
+
+    def test_observed_p99_regression_does_not_fail_a_passing_candidate(self):
+        candidate = report("pass", 0, p99_status="regression")
+        self.assertEqual(candidate["status"], "pass")
+        aa = report("pass", 0)
+        slow = report("regression", 20)
+        self.assertEqual(validation.verify_statistics(candidate), "pass")
+        self.assertEqual(validation.verify_controls(aa, slow)["status"], "measurement-qualified")
 
     def test_unknown_or_false_control_results_never_qualify(self):
         for status in ("inconclusive", "regression"):

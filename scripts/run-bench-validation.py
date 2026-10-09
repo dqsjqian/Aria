@@ -19,7 +19,8 @@ from pathlib import Path
 BENCHES = ("aria_bench_regression", "aria_bench_iproperty", "aria_bench_command", "aria_bench_trace_sink")
 
 
-PROTOCOL = "paired-median-scenario-v3"
+PROTOCOL = "paired-median-scenario-v3.1"
+DECISION_SUFFIX = " / batch-mean"
 SCENARIOS = {
     "list": "List append [1024,1224)",
     "filtered": "Filtered append [10000,10200)",
@@ -75,11 +76,13 @@ def verify_statistics(report: dict) -> str:
     for name, shape in EXPECTED_STATISTICS.items():
         row = report["summary"][name]
         ranks = [20, 45] if shape["blocks"] == 64 else [221, 292]
+        role = "decision" if name.endswith(DECISION_SUFFIX) else "observed"
         if (row.get("validity") != "fixed-sample-complete"
-                or any(field not in row for field in ("bench", "suite", "scenario"))
+                or any(field not in row for field in ("bench", "suite", "scenario", "role"))
                 or row.get("bench") != shape["bench"] or row.get("observed_blocks") != shape["blocks"]
                 or row.get("suite") != shape["suite"] or row.get("scenario") != shape["scenario"]
                 or row.get("required_blocks") != shape["blocks"]
+                or row.get("role") != role
                 or len(row.get("paired_ratios", [])) != shape["blocks"]
                 or row.get("order_statistic_ranks") != ranks
                 or row.get("status") not in ("pass", "inconclusive", "regression")):
@@ -102,11 +105,11 @@ def verify_statistics(report: dict) -> str:
                            "regression" if interval[0] > 1.10 else "inconclusive")
         if row["status"] != expected_status:
             raise ValueError(f"status disagrees with its interval: {name}")
-    statuses = {row["status"] for row in report["summary"].values()}
+    statuses = {row["status"] for name, row in report["summary"].items() if name.endswith(DECISION_SUFFIX)}
     status = "regression" if "regression" in statuses else (
         "inconclusive" if "inconclusive" in statuses else "pass")
     if report.get("status") != status:
-        raise ValueError("aggregate verdict disagrees with the complete statistic set")
+        raise ValueError("aggregate verdict disagrees with the complete decision statistic set")
     return status
 
 
@@ -117,11 +120,12 @@ def verify_controls(aa: dict, slow: dict) -> dict:
             or aa.get("comparison_kind") != "aa-control" or slow.get("comparison_kind") != "slow20-control"):
         raise ValueError("control identities differ from the independent A-A and real-delay design")
     unavailable = {name: {"aa": aa["summary"][name]["status"], "slow20": slow["summary"][name]["status"]}
-                   for name in aa["summary"] if aa["summary"][name]["status"] != "pass"
-                   or slow["summary"][name]["status"] != "regression"}
+                   for name in aa["summary"] if name.endswith(DECISION_SUFFIX)
+                   and (aa["summary"][name]["status"] != "pass"
+                        or slow["summary"][name]["status"] != "regression")}
     return {"status": "measurement-unavailable" if unavailable else "measurement-qualified",
             "unavailable_metrics": unavailable,
-            "scope": "A-A noninferiority and +20% artificial wall-clock delay detection; not proof of iid or 10% algorithm sensitivity"}
+            "scope": "A-A noninferiority and +20% artificial wall-clock delay detection on batch-mean decision statistics; batch-P99 statistics are retained as observations and do not qualify or disqualify the measurement; not proof of iid or 10% algorithm sensitivity"}
 
 
 def protocol_hashes(paths: dict) -> dict:

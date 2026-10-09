@@ -17,22 +17,27 @@ def load(name, file):
 compare = load('stratified_compare', 'compare-bench.py')
 validation = load('stratified_validation', 'run-bench-validation.py')
 
-def report(status, control):
+def report(status, control, p99_status=None):
+    p99_status = status if p99_status is None else p99_status
     value = 1.0 if status == "pass" else 1.2
     interval = [1.0, 1.2] if status == "inconclusive" else [value, value]
     summary = {}
     for name, shape in compare.expected_statistics().items():
         count = shape["blocks"]
+        row_status = p99_status if name.endswith(" / batch-p99") else status
+        row_value = 1.0 if row_status == "pass" else 1.2
         values = ([1.0] * (count // 2) + [1.2] * (count // 2)
-                  if status == "inconclusive" else [value] * count)
+                  if row_status == "inconclusive" else [row_value] * count)
         summary[name] = {
             **shape, "validity": "fixed-sample-complete",
+            "role": "decision" if name.endswith(" / batch-mean") else "observed",
             "observed_blocks": count, "required_blocks": count,
             "paired_ratios": values,
             "paired_ratio_rounding_intervals": [[item, item] for item in values],
-            "ratio_interval": interval,
+            "ratio_interval": interval if row_status == status else
+                ([1.0, 1.2] if row_status == "inconclusive" else [row_value, row_value]),
             "order_statistic_ranks": [20, 45] if count == 64 else [221, 292],
-            "status": status,
+            "status": row_status,
         }
     return {
         "macro_blocks": 64, "blocks_by_suite": compare.BLOCK_PLAN,
@@ -98,6 +103,24 @@ class ScenarioProtocolTests(unittest.TestCase):
     def test_control_signature_matches_comparator(self):
         self.assertEqual(validation.EXPECTED_STATISTICS, compare.expected_statistics())
         self.assertEqual(validation.verify_controls(report('pass', 0), report('regression', 20))['status'], 'measurement-qualified')
+
+    def test_observed_p99_inconclusive_does_not_disqualify_controls(self):
+        aa = report('pass', 0, p99_status='inconclusive')
+        slow = report('regression', 20, p99_status='inconclusive')
+        result = validation.verify_controls(aa, slow)
+        self.assertEqual(result['status'], 'measurement-qualified')
+        self.assertEqual(result['unavailable_metrics'], {})
+
+    def test_observed_p99_evidence_must_stay_complete(self):
+        slow = report('regression', 20)
+        key = next(k for k, v in slow['summary'].items()
+                   if v['role'] == 'observed' and v['blocks'] == 512)
+        for field, value in (('observed_blocks', 511), ('paired_ratios', [1.2] * 511),
+                             ('role', 'decision')):
+            broken = copy.deepcopy(slow)
+            broken['summary'][key][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                validation.verify_controls(report('pass', 0), broken)
 
     def test_qualification_rejects_changed_or_missing_evidence(self):
         original = report('regression', 20)

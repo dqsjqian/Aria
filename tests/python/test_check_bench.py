@@ -244,7 +244,8 @@ class PairedBenchTests(unittest.TestCase):
         for status, code in (("pass", 0), ("regression", 1), ("inconclusive", 3)):
             output = self.root / f"cli-{status}"
             summary = {f"{name} / batch-{statistic}": {
-                "status": status, "ratio_interval": [0.9, 1.05], "baseline_repeat_ratios": [1.0]}
+                "status": status, "role": "decision" if statistic == "mean" else "observed",
+                "ratio_interval": [0.9, 1.05], "baseline_repeat_ratios": [1.0]}
                 for bench in self.module.BENCHES
                 for name in self.module.LEGACY.get(bench, self.original_expected)
                 for statistic in ("mean", "p99")}

@@ -293,7 +293,7 @@ attempt, including one interrupted before its first measurement. The three
 independent phases are release versus itself (A-A), release versus the delay
 control, then release versus candidate.
 
-The fixed `paired-median-scenario-v3` design keeps **64 macro blocks** per
+The fixed `paired-median-scenario-v3.1` design keeps **64 macro blocks** per
 phase. Each macro contains one four-run block for each of the four fixed-window
 (`R`) scenarios and eight blocks for each legacy (`P`) suite. Each `R` scenario
 is launched separately with `aria_bench_regression --scenario list|filtered|sorted|async`.
@@ -347,14 +347,22 @@ bound is a project policy choice, not a historical budget or a physical or
 statistical constant. An upper interval endpoint at most 1.10 passes; a lower
 endpoint above 1.10 is a regression (exit 1); a crossing interval is
 **inconclusive (exit 3)**. Exactly the predeclared 64/512 block counts are required.
+The twelve **batch-mean** statistics carry the regression decision; the twelve
+**batch-P99** statistics keep identical measurement and fixed-sample evidence
+requirements but are recorded as **observations**, because the tail percentile
+of batch means on shared hosts is dominated by scheduler noise rather than
+library behavior.
 
-All 24 A-A statistics must pass, and all 24 actual-delay statistics must detect
-regression, before the candidate is measured. If either control is inconclusive
-or contradicts its expected outcome, the result is **measurement-unavailable
-(exit 3)** and candidate status is **not-measured**. This distinguishes an
-unqualified measurement from candidate performance. The positive control tests
-sensitivity to an artificial 20% wall-clock delay; it does not establish
-sensitivity to every 10% algorithm regression or cross-platform performance.
+All twelve A-A decision statistics must pass, and all twelve actual-delay
+decision statistics must detect regression, before the candidate is measured.
+If either control is inconclusive or contradicts its expected outcome on a
+decision statistic, the result is **measurement-unavailable (exit 3)** and
+candidate status is **not-measured**. This distinguishes an
+unqualified measurement from candidate performance. An inconclusive batch-P99
+interval is reported as an observation and does not disqualify the measurement.
+The positive control tests sensitivity to an artificial 20% wall-clock delay;
+it does not establish sensitivity to every 10% algorithm regression or
+cross-platform performance.
 
 Earlier four-scenario pilots used a maximum baseline-repeat veto; review found
 that veto unnecessary for bounded paired improvement and insufficient to

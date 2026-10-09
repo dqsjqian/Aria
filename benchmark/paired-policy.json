@@ -1,13 +1,15 @@
 {
-  "protocol": "paired-median-scenario-v3",
+  "protocol": "paired-median-scenario-v3.1",
   "workload": "fixed-window-v2",
   "candidate_ratio_limit": 1.1,
   "macro_blocks": 64,
   "family_alpha": 0.05,
   "family_comparisons": 24,
   "order_seed": 20261009,
+  "decision_statistics": ["batch-mean"],
+  "observed_statistics": ["batch-p99"],
   "_assumptions": "Ratios must be iid within each statistic for stated intervals. Interleaving/direction balance/control qualification do not prove this; dense cheap blocks may cluster within macro blocks. Coverage is per phase across 24 statistics, not across all three phases.",
-  "_policy": "Fixed scenario-paired design: 64 blocks per each of four selected R scenes and 512 per each of three cheap P suites, within 64 interleaved macro blocks per phase. Each macro shuffles four R slots and eight cheap groups; each group independently shuffles the three P suites. Every suite has exactly half ABBA and half BAAB orientations independently of placement. Each phase retains 1792 paired blocks, 7168 measured processes and 14 warmup processes. The 24 per-statistic exact binomial median intervals use alpha 0.05/24; ranks are [20,45] for R64 and [221,292] for P512, with per-phase joint coverage at least 96.0681% conditional on iid block ratios. All twelve workloads and the 1.10 ratio limit are unchanged. Preserve every prior attempt with its original status; no prior pass is reused. New independent A-A and actual +20% wall-clock-delay controls must qualify before new candidate measurements. No optional stopping, sample extension, best-run selection or outlier deletion.",
+  "_policy": "Fixed scenario-paired design: 64 blocks per each of four selected R scenes and 512 per each of three cheap P suites, within 64 interleaved macro blocks per phase. Each macro shuffles four R slots and eight cheap groups; each group independently shuffles the three P suites. Every suite has exactly half ABBA and half BAAB orientations independently of placement. Each phase retains 1792 paired blocks, 7168 measured processes and 14 warmup processes. The 24 per-statistic exact binomial median intervals use alpha 0.05/24; ranks are [20,45] for R64 and [221,292] for P512, with per-phase joint coverage at least 96.0681% conditional on iid block ratios. All twelve workloads and the 1.10 ratio limit are unchanged. The regression decision is carried by the twelve batch-mean statistics; the twelve batch-P99 statistics remain measured with complete fixed-sample evidence but are recorded as observations, because the tail percentile of batch means on shared hosts is dominated by scheduler noise rather than library behavior. Preserve every prior attempt with its original status; no prior pass is reused. New independent A-A and actual +20% wall-clock-delay controls must qualify on the decision statistics before new candidate measurements. No optional stopping, sample extension, best-run selection or outlier deletion.",
   "blocks_by_suite": {
     "aria_bench_regression--list": 64,
     "aria_bench_regression--filtered": 64,

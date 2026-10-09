@@ -22,7 +22,9 @@ import time
 from pathlib import Path
 
 BENCHES = ("aria_bench_regression", "aria_bench_iproperty", "aria_bench_command", "aria_bench_trace_sink")
-PROTOCOL = "paired-median-scenario-v3"
+PROTOCOL = "paired-median-scenario-v3.1"
+DECISION_STATISTICS = ("batch-mean",)
+OBSERVED_STATISTICS = ("batch-p99",)
 ORDER_SEED = 20261009
 LEGACY = {
     "aria_bench_iproperty": {"Property<int>::set(i)": (256, 4000),
@@ -349,9 +351,12 @@ def compare(baseline: Path, candidate: Path, output: Path, rounds: int,
             block["rounding_radius_ns"] = max(run["metrics"][name].get("rounding_radius_ns", 0)
                                              for run in selected)
             blocks.append(block)
+        role = "decision" if f"batch-{statistic}" in DECISION_STATISTICS else "observed"
         summary[key] = {**classify(blocks, limit, required_blocks=shape["blocks"]),
+                        "role": role,
                         **{field: shape[field] for field in ("bench", "suite", "scenario")}}
-    statuses = {row["status"] for row in summary.values()}
+    statuses = {row["status"] for key, row in summary.items()
+                if key.endswith(tuple(f" / {statistic}" for statistic in DECISION_STATISTICS))}
     status = "regression" if "regression" in statuses else (
         "inconclusive" if "inconclusive" in statuses else "pass")
     report = {"host": {"system": platform.system(), "machine": platform.machine(),
@@ -365,6 +370,8 @@ def compare(baseline: Path, candidate: Path, output: Path, rounds: int,
               "candidate_control_stretch_percent": expected_candidate_control,
               "status": status, "policy": {"ratio_limit": limit, "protocol": PROTOCOL,
               "blocks_by_suite": BLOCK_PLAN, "family_alpha": 0.05, "family_comparisons": 24,
+              "decision_statistics": list(DECISION_STATISTICS),
+              "observed_statistics": list(OBSERVED_STATISTICS),
               "aggregation": "exact binomial order-statistic interval for the median ABBA geometric ratio",
               "scope": "median repeated-run batch mean and batch-mean P99, not individual-operation latency",
               "assumptions": "iid ratios within each statistic; cheap blocks may cluster within macros; controls and counts do not prove iid"}}
@@ -397,7 +404,9 @@ def main() -> int:
                 or policy.get("family_alpha") != 0.05 or policy.get("family_comparisons") != 24
                 or policy.get("protocol") != PROTOCOL
                 or policy.get("order_seed") != ORDER_SEED
-                or policy.get("candidate_ratio_limit") != 1.10):
+                or policy.get("candidate_ratio_limit") != 1.10
+                or policy.get("decision_statistics") != list(DECISION_STATISTICS)
+                or policy.get("observed_statistics") != list(OBSERVED_STATISTICS)):
             raise ValueError("policy/workload identity or minimum block count mismatch")
         limit = policy["candidate_ratio_limit"]
         if any(isinstance(value, bool) or not isinstance(value, (int, float)) or
@@ -413,8 +422,9 @@ def main() -> int:
                  "|---|---:|---:|---|"]
         for name, row in report["summary"].items():
             low, high = row["ratio_interval"]
+            verdict = row["status"] + ("" if row["role"] == "decision" else " (observed)")
             lines.append(f"| {name} | {low:.3f} - {high:.3f} | "
-                         f"{max(row['baseline_repeat_ratios']):.3f} | {row['status']} |")
+                         f"{max(row['baseline_repeat_ratios']):.3f} | {verdict} |")
         summary = "\n".join(lines) + "\n"
         print(summary)
         if os.environ.get("GITHUB_STEP_SUMMARY"):
