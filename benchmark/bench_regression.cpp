@@ -9,6 +9,7 @@
 
 #include <memory>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 
@@ -37,11 +38,16 @@ int main(int argc, char* argv[]) try {
     using namespace aria_bench;
     std::string_view scenario = "all";
     if (argc != 1) {
-        if (argc != 3 || std::string_view{argv[1]} != "--scenario") {
+        if (argc != 3) {
             std::cerr << "usage: aria_bench_regression [--scenario list|filtered|sorted|async]\n";
             return 2;
         }
-        scenario = argv[2];
+        const auto arguments = std::span<char*, 3>{argv, 3}.subspan<1>();
+        if (std::string_view{arguments.front()} != "--scenario") {
+            std::cerr << "usage: aria_bench_regression [--scenario list|filtered|sorted|async]\n";
+            return 2;
+        }
+        scenario = arguments.back();
         if (scenario != "list" && scenario != "filtered" && scenario != "sorted" &&
             scenario != "async") {
             std::cerr << "unknown fixed-window scenario: " << scenario << '\n';
@@ -78,8 +84,8 @@ int main(int argc, char* argv[]) try {
     if (scenario == "all" || scenario == "sorted") {
         std::shared_ptr<Source> source;
         std::unique_ptr<aria::SortedList<Item>> view;
-        std::mt19937 random{
-            42};  // NOLINT(bugprone-random-generator-seed): reproducible benchmark keys.
+        // NOLINTNEXTLINE(bugprone-random-generator-seed): reproducible benchmark keys.
+        std::mt19937 random{42};
         std::uniform_int_distribution<int> keys{0, 1'000'000};
         auto stats = measure_percentiles_prepared(
             samples,

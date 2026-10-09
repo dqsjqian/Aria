@@ -1,4 +1,5 @@
 """Offline benchmark gate regressions: retain raw evidence and propagate failures."""
+import base64
 import importlib.util
 import contextlib
 import collections
@@ -44,13 +45,38 @@ class CheckBenchTests(unittest.TestCase):
 
     def write_bench(self, name, output, error="", status=0):
         binary = self.bin_dir / name
-        binary.write_text(
+        script = (
             "#!/bin/sh\n"
             f"printf '%s' {shlex.quote(output)}\n"
             f"printf '%s' {shlex.quote(error)} >&2\n"
-            f"exit {status}\n",
-            encoding="utf-8",
+            f"exit {status}\n"
         )
+        if sys.platform in ("cygwin", "msys") and (self.bin_dir / f"{name}.exe").is_file():
+            # MSYS open() aliases a missing bare name to an existing .exe. Native
+            # Windows IO creates the second literal file needed by this fixture.
+            windows_path = subprocess.check_output(["cygpath", "-w", str(binary)], text=True).strip()
+            powershell = shutil.which("powershell.exe")
+            if powershell is None:
+                windows_root = (os.environ.get("SYSTEMROOT") or os.environ.get("SystemRoot")
+                                or os.environ.get("WINDIR"))
+                self.assertTrue(windows_root, "Windows root is required for literal MSYS fixtures")
+                posix_root = subprocess.check_output(["cygpath", "-u", windows_root], text=True).strip()
+                powershell = str(Path(posix_root) / "System32/WindowsPowerShell/v1.0/powershell.exe")
+            encoded_path = base64.b64encode(windows_path.encode("utf-8")).decode("ascii")
+            encoded_script = base64.b64encode(script.encode("utf-8")).decode("ascii")
+            command = (
+                "$ErrorActionPreference = 'Stop'; "
+                "[IO.File]::WriteAllBytes("
+                f"[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded_path}')), "
+                f"[Convert]::FromBase64String('{encoded_script}'))"
+            )
+            subprocess.run(
+                [powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand",
+                 base64.b64encode(command.encode("utf-16le")).decode("ascii")],
+                check=True, capture_output=True, timeout=20,
+            )
+        else:
+            binary.write_text(script, encoding="utf-8")
         binary.chmod(0o755)
 
     def run_bench(self, *args):
@@ -84,7 +110,14 @@ class CheckBenchTests(unittest.TestCase):
         result = self.run_bench()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(self.row, result.stdout)
+        bare = self.bin_dir / BENCHES[0]
+        windows = self.bin_dir / f"{BENCHES[0]}.exe"
+        original = windows.read_bytes()
         self.write_bench(BENCHES[0], "stale competing output\n")
+        names = {entry.name for entry in self.bin_dir.iterdir()}
+        self.assertTrue({bare.name, windows.name}.issubset(names))
+        self.assertFalse(bare.samefile(windows))
+        self.assertEqual(windows.read_bytes(), original)
         result = self.run_bench()
         self.assertEqual(result.returncode, 2)
         self.assertIn("ambiguous benchmark", result.stderr)
