@@ -19,13 +19,15 @@ All notable changes to **aria** are documented here.
 - Calibrate the paired regression gate (protocol v3.1): the twelve batch-mean
   statistics carry the decision; batch-P99 statistics remain fully measured
   with fixed-sample evidence and are recorded as observations.
-- Consolidate the script surface: `build.py` is the single build entry;
-  `build.sh`, `build.ps1`, `build-msvc.ps1`, `init-project.sh`,
-  `init-project.ps1`, `sync-cmake.sh`, the
-  `update_dependencies.py` wrapper (its `update` subcommand lives in
-  `dependencies.py`) and the split `prepare`/`check` docs scripts (merged
-  into `docs-html.py`) are removed; the sqlite/quickjs provider module is
-  folded into `dependencies.py`.
+- Consolidate the script surface into one entry per domain: `build.py`
+  (single build entry), `bench.py` (calibration profile, absolute-budget
+  check, scenario smoke, paired comparison, three-phase qualification and
+  baseline verification) and `docs.py` (Doxygen input filter, HTML
+  prepare/check, docs API check and the pinned Doxygen installer). The
+  per-platform build wrappers, project scaffolding, sync and filter helpers,
+  the dependency-update wrapper and the split benchmark/docs scripts are
+  removed; the sqlite/quickjs provider module is folded into
+  `dependencies.py`. 24 scripts become 7.
 
 ## 3.2.0 — 2026-10-09
 

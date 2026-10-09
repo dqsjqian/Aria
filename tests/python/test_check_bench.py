@@ -16,8 +16,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-bench.sh"
-BASH = shutil.which("bash")
+SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "bench.py"
 BENCHES = (
     "aria_bench_iproperty",
     "aria_bench_command",
@@ -28,7 +27,7 @@ BENCHES = (
 )
 
 
-@unittest.skipUnless(os.name == "posix" and BASH, "Requires POSIX and bash")
+@unittest.skipUnless(os.name == "posix", "Requires POSIX shell fixtures")
 class CheckBenchTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="aria-bench-test-")
@@ -97,7 +96,7 @@ class CheckBenchTests(unittest.TestCase):
             "PATH": str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", ""),
         })
         return subprocess.run(
-            [BASH, str(SCRIPT), str(self.root), *args],
+            [sys.executable, str(SCRIPT), "check", str(self.root), *args],
             env=env, capture_output=True, text=True, encoding="utf-8", timeout=10,
         )
 
@@ -204,7 +203,7 @@ class CheckBenchTests(unittest.TestCase):
 
 class PairedBenchTests(unittest.TestCase):
     def setUp(self):
-        spec = importlib.util.spec_from_file_location("compare_bench", SCRIPT.with_name("compare-bench.py"))
+        spec = importlib.util.spec_from_file_location("compare_bench", SCRIPT)
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
         temporary = tempfile.TemporaryDirectory(prefix="aria-paired-test-")
@@ -250,7 +249,7 @@ class PairedBenchTests(unittest.TestCase):
                 for name in self.module.LEGACY.get(bench, self.original_expected)
                 for statistic in ("mean", "p99")}
             report = {"status": status, "comparison_kind": "candidate", "summary": summary}
-            args = ["compare-bench.py", "--baseline", str(self.root / "old"),
+            args = ["bench.py", "compare", "--baseline", str(self.root / "old"),
                     "--candidate", str(self.root / "new"), "--output", str(output)]
             with self.subTest(status=status), mock.patch.object(sys, "argv", args), \
                  mock.patch.object(self.module, "compare", return_value=report) as compare, \
@@ -532,7 +531,7 @@ class PairedBenchTests(unittest.TestCase):
 
 class HistoricalProfileTests(unittest.TestCase):
     def setUp(self):
-        spec = importlib.util.spec_from_file_location("bench_profile", SCRIPT.with_name("bench-profile.py"))
+        spec = importlib.util.spec_from_file_location("bench_profile", SCRIPT)
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
         self.facts = {"system": "Darwin", "machine": "arm64", "cpu": "Apple M3 Pro",

@@ -20,13 +20,13 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Verify documented API symbols exist
-        run: ./scripts/check-docs-api.sh
+        run: python3 scripts/docs.py api-check
 
       - name: Install documentation tools
         run: brew install ninja graphviz
 
       - name: Install official Doxygen
-        run: ./scripts/install-doxygen.sh "$RUNNER_TEMP/aria-doxygen"
+        run: python3 scripts/docs.py doxygen "$RUNNER_TEMP/aria-doxygen"
 
       - name: Configure API reference
         run: |

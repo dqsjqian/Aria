@@ -27,7 +27,7 @@ USE_MDFILE_AS_MAINPAGE = README.md
 RECURSIVE              = YES
 FILE_PATTERNS          = *.hpp *.inl *.md
 EXTENSION_MAPPING      = inl=C++
-INPUT_FILTER           = "\"@Python3_EXECUTABLE@\" \"@CMAKE_CURRENT_SOURCE_DIR@/scripts/filter-docs.py\" --revision \"@ARIA_DOCS_SOURCE_REVISION@\" --repository \"@ARIA_DOCS_REPOSITORY_URL@\""
+INPUT_FILTER           = "\"@Python3_EXECUTABLE@\" \"@CMAKE_CURRENT_SOURCE_DIR@/scripts/docs.py\" filter --revision \"@ARIA_DOCS_SOURCE_REVISION@\" --repository \"@ARIA_DOCS_REPOSITORY_URL@\""
 
 EXCLUDE_PATTERNS       = */detail/* \
                          */tests/* \

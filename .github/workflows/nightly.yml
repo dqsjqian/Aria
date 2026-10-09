@@ -160,7 +160,7 @@ jobs:
       - name: Build all bench binaries
         id: build-candidate
         # Keep this list in sync with `benches=(...)` in
-        # scripts/check-bench.sh and benchmark/CMakeLists.txt.
+        # scripts/bench.py (check) and benchmark/CMakeLists.txt.
         run: |
           cmake --build build/flavors/bench -j \
             --target \
@@ -179,7 +179,7 @@ jobs:
         run: |
           mkdir -p bench-comparison
           gh release view "$BASELINE_REF" --json tagName,isDraft,isPrerelease > bench-comparison/release-baseline.json
-          python scripts/verify-bench-release.py bench-comparison/release-baseline.json "$BASELINE_REF"
+          python scripts/bench.py verify-release bench-comparison/release-baseline.json "$BASELINE_REF"
 
       - name: Checkout release baseline
         uses: actions/checkout@v7
@@ -250,7 +250,7 @@ jobs:
         run: |
           set -o pipefail
           status=0
-          ./scripts/check-bench.sh build/flavors/bench 2>&1 | tee bench-output.txt || status=$?
+          python3 scripts/bench.py check build/flavors/bench 2>&1 | tee bench-output.txt || status=$?
           echo "Historical absolute-budget exit status: $status" | tee -a bench-output.txt
           if [[ $status -eq 3 ]]; then
             echo "Historical absolute budget unavailable on this profile; see measurements." >> "$GITHUB_STEP_SUMMARY"
@@ -300,7 +300,7 @@ jobs:
           # with the same environment that the single fixed campaign receives.
           "${measurement_command[@]}" -c 'import hashlib,json,math,os,platform,random,shutil,statistics,subprocess,sys; print(json.dumps({"executable":sys.executable,"version":sys.version,"loader_overrides":{k:v for k,v in os.environ.items() if v and (k.startswith("DYLD_") or k in ("LD_LIBRARY_PATH","LD_PRELOAD","LD_AUDIT"))}},sort_keys=True))' \
             > bench-comparison/python-runtime-measurement-environment.json
-          "${measurement_command[@]}" scripts/run-bench-validation.py \
+          "${measurement_command[@]}" scripts/bench.py validate \
             --baseline baseline-source/build/flavors/bench/bin \
             --candidate build/flavors/bench/bin \
             --slow-control baseline-source/build/flavors/control/bin \

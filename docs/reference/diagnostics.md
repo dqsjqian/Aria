@@ -323,7 +323,7 @@ The following subsystems are deliberately out of the unified sink:
 Each diagnostic-protocol invariant has an executable owner. All four
 targets below are implemented and run in the ordinary suites — the
 fuzzers as part of `aria_fuzz` (ctest `fuzz_tests`), the bench as part of
-`scripts/check-bench.sh`.
+`scripts/bench.py check`.
 
 | Invariant | Owner | Where |
 |---|---|---|

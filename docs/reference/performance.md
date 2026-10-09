@@ -23,7 +23,7 @@ The nightly percentile gates measure distributions of **batch-average time per
 operation**, not individual-operation tail latency. For example, the historical AsyncCommand `P` workload uses 64 batches of 50
 executions, so P99 is the largest batch average. The separate fixed-window
 `R` workload uses 1,024 batches to better resolve the upper tail. Run it on an otherwise idle host: competing builds
-affect scheduling measurements. `check-bench.sh --runs N` reports the worst
+affect scheduling measurements. `scripts/bench.py check --runs N` reports the worst
 P99 across N runs and retains every run; retries cannot erase a violation.
 
 ## Reactive graph
@@ -221,7 +221,7 @@ standard or a promise about individual-operation latency.
    [thresholds.json](../../benchmark/thresholds.json) retain every original
    numeric ceiling and every original `P` workload. They describe batch-mean
    percentiles on a physical Apple M3 Pro with AppleClang 21, Release and no
-   sanitizers. `scripts/check-bench.sh <build-dir>` records the machine,
+   sanitizers. `scripts/bench.py check <build-dir>` records the machine,
    compiler, canonical CMake Release flags and 1/5/15-minute load before and after
    measurement. Custom flags, launchers or toolchains cannot claim calibration.
    The operational idle-profile check requires every load average to be at most
@@ -276,7 +276,7 @@ binary identifies itself in its output; mismatched identities fail validation.
 Run the complete qualified gate with:
 
 ```sh
-python3 scripts/run-bench-validation.py --baseline <release-bin-dir> \
+python3 scripts/bench.py validate --baseline <release-bin-dir> \
   --candidate <candidate-bin-dir> --slow-control <delay-control-bin-dir> \
   --output <fresh-evidence-dir>
 ```

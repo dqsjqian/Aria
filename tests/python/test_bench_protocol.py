@@ -14,8 +14,9 @@ def load(name, file):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-compare = load('stratified_compare', 'compare-bench.py')
-validation = load('stratified_validation', 'run-bench-validation.py')
+bench = load('aria_bench_tool', 'bench.py')
+compare = bench
+validation = bench
 
 def report(status, control, p99_status=None):
     p99_status = status if p99_status is None else p99_status
@@ -149,12 +150,12 @@ class ScenarioProtocolTests(unittest.TestCase):
                 validation.verify_controls(aa, report('regression', 20))
 
     def test_partial_attempt_directory_is_rejected_without_any_write(self):
-        for script in ('compare-bench.py', 'run-bench-validation.py'):
+        for command in ('compare', 'validate'):
             with tempfile.TemporaryDirectory() as temp:
                 out = Path(temp)
                 (out / 'protocol-sha256.json').write_text('original evidence')
-                args = [sys.executable, str(ROOT / script), '--baseline', '/missing', '--candidate', '/missing', '--output', str(out), '--policy', str(ROOT.parent / 'benchmark/paired-policy.json')]
-                if script == 'run-bench-validation.py':
+                args = [sys.executable, str(ROOT / 'bench.py'), command, '--baseline', '/missing', '--candidate', '/missing', '--output', str(out), '--policy', str(ROOT.parent / 'benchmark/paired-policy.json')]
+                if command == 'validate':
                     args += ['--slow-control', '/missing']
                 result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 self.assertEqual(result.returncode, 2)

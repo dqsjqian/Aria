@@ -11,7 +11,7 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / "scripts/run-bench-validation.py"
+SCRIPT = ROOT / "scripts/bench.py"
 spec = importlib.util.spec_from_file_location("bench_validation", SCRIPT)
 validation = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(validation)
@@ -171,7 +171,7 @@ class ValidationRunnerTests(unittest.TestCase):
             directory.mkdir(parents=True)
             (directory / "comparison.json").write_text(json.dumps(value))
             if corruption in ("policy", "analysis", "qualification"):
-                frozen = {"policy": "paired-policy.json", "analysis": "compare-bench-protocol.py",
+                frozen = {"policy": "paired-policy.json", "analysis": "bench-protocol.py",
                           "qualification": "qualification-runner-protocol.py"}[corruption]
                 (self.output / frozen).write_text("changed frozen code or policy")
             if corruption == "binary":
@@ -187,7 +187,7 @@ class ValidationRunnerTests(unittest.TestCase):
                 target = "alternate_runtime.dylib" if corruption == "alias-retarget" else "absent_runtime.dylib"
                 self.runtime.symlink_to(target)
             return subprocess.CompletedProcess(command, {"pass": 0, "regression": 1, "inconclusive": 3}[status])
-        args = [str(SCRIPT), "--baseline", str(self.directories["baseline"]),
+        args = [str(SCRIPT), "validate", "--baseline", str(self.directories["baseline"]),
                 "--candidate", str(self.directories["candidate"]), "--slow-control", str(self.directories["slow"]),
                 "--policy", str(ROOT / "benchmark/paired-policy.json"), "--output", str(self.output)]
         with mock.patch.object(sys, "argv", args), mock.patch.object(validation.subprocess, "run", side_effect=phase), \
@@ -338,7 +338,7 @@ class ValidationRunnerTests(unittest.TestCase):
         self.assertEqual(validation.loader_overrides({"DYLD_LIBRARY_PATH": "", "LD_PRELOAD": ""}), [])
         for name in ("DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT"):
             self.assertEqual(validation.loader_overrides({name: "external"}), [name])
-        args = [str(SCRIPT), "--baseline", str(self.directories["baseline"]),
+        args = [str(SCRIPT), "validate", "--baseline", str(self.directories["baseline"]),
                 "--candidate", str(self.directories["candidate"]), "--slow-control", str(self.directories["slow"]),
                 "--output", str(self.output)]
         with mock.patch.object(sys, "argv", args), mock.patch.object(validation.subprocess, "run") as runner, \

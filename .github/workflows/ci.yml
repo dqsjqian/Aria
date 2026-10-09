@@ -47,7 +47,7 @@ jobs:
 
       - name: Real benchmark scenario CLI smoke
         run: |
-          python scripts/check-bench-scenarios.py --bin-dir build/flavors/release/bin \
+          python scripts/bench.py scenarios --bin-dir build/flavors/release/bin \
             --output build/flavors/release/scenario-cli-smoke
 
       - name: Retain scenario CLI smoke diagnostics
@@ -302,7 +302,7 @@ jobs:
 
       - name: Real benchmark scenario CLI smoke
         run: |
-          python scripts/check-bench-scenarios.py --bin-dir build/flavors/release/bin \
+          python scripts/bench.py scenarios --bin-dir build/flavors/release/bin \
             --output build/flavors/release/scenario-cli-smoke
 
       - name: Retain scenario CLI smoke diagnostics
@@ -485,7 +485,7 @@ jobs:
       - name: Real benchmark scenario CLI smoke
         shell: pwsh
         run: |
-          python scripts/check-bench-scenarios.py --bin-dir build/flavors/release/bin/Release `
+          python scripts/bench.py scenarios --bin-dir build/flavors/release/bin/Release `
             --output build/flavors/release/scenario-cli-smoke
 
       - name: Retain scenario CLI smoke diagnostics
@@ -584,13 +584,13 @@ jobs:
       # an audit found four such names shipped in the guides — including one
       # wrong spelling that had been copied into three adapter docs.
       - name: Verify documented API symbols exist
-        run: ./scripts/check-docs-api.sh
+        run: python3 scripts/docs.py api-check
 
       - name: Install ninja + graphviz
         run: brew install ninja graphviz
 
       - name: Install official Doxygen
-        run: ./scripts/install-doxygen.sh "$RUNNER_TEMP/aria-doxygen"
+        run: python3 scripts/docs.py doxygen "$RUNNER_TEMP/aria-doxygen"
 
       - name: Configure (docs)
         run: |
