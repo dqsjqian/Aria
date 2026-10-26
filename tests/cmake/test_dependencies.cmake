@@ -5,10 +5,11 @@ cmake_minimum_required(VERSION 3.20)
 file(REMOVE_RECURSE "${TEST_ROOT}")
 file(MAKE_DIRECTORY "${TEST_ROOT}")
 file(READ "${ARIA_SOURCE_DIR}/dependencies.json" document)
-file(SHA256 "${ARIA_SOURCE_DIR}/dependencies.json" original_hash)
 string(JSON expected_version GET "${document}" dependencies json resolved version)
 string(JSON expected_tag GET "${document}" dependencies json resolved tag)
 file(WRITE "${TEST_ROOT}/dependencies.json" "${document}")
+file(READ "${TEST_ROOT}/dependencies.json" original_content)
+string(REPLACE "\r\n" "\n" original_content "${original_content}")
 
 function(run_case name body expected_error)
     file(MAKE_DIRECTORY "${TEST_ROOT}/${name}")
@@ -77,9 +78,12 @@ set(ForgeDeps_PYTHON_EXECUTABLE "")
 set(CMAKE_DISABLE_FIND_PACKAGE_Python3 TRUE)
 aria_resolve_dependency(NAME json VERSION version)
 ]] "require Python 3.14")
-file(SHA256 "${TEST_ROOT}/dependencies.json" after_hash)
-if(NOT after_hash STREQUAL original_hash)
-    message(FATAL_ERROR "Configure modified source dependency selections")
+# Compare content, not the platform's line endings: the claim under test is
+# that configuration must not rewrite the source selections at all.
+file(READ "${TEST_ROOT}/dependencies.json" after_content)
+string(REPLACE "\r\n" "\n" after_content "${after_content}")
+if(NOT after_content STREQUAL original_content)
+    message(FATAL_ERROR "Configure modified source dependency selections:\nbefore:\n${original_content}\nafter:\n${after_content}")
 endif()
 
 # Two installed SDK candidates under the same search prefix. Natural sorting
