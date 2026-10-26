@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.20)
 # Aria must load its own implementation, including in optional modules.
 file(REMOVE_RECURSE "${TEST_ROOT}")
 file(MAKE_DIRECTORY "${TEST_ROOT}/parent/cmake")
-foreach(module PlatformDetect CompilerWarnings Sanitizers ariaFetchPinned ariaDependencies ariaFindQt BuildOpenSSL PackageRelease)
+foreach(module PlatformDetect CompilerWarnings Sanitizers ariaFetchPinned ariaDependencies ariaFindQt ariaSharedDependencies ariaParentOpenSSL PackageRelease)
     file(WRITE "${TEST_ROOT}/parent/cmake/${module}.cmake"
         "message(FATAL_ERROR \"Host ${module} shadowed Aria's own helper\")\n")
 endforeach()
@@ -24,7 +24,9 @@ execute_process(COMMAND "${CMAKE_COMMAND}"
     -S "${TEST_ROOT}/parent" -B "${TEST_ROOT}/build"
     -G "${TEST_GENERATOR}" ${generator_args}
     "-DCMAKE_CXX_COMPILER=${TEST_CXX_COMPILER}"
-    "-DARIA_DEPS_CACHE_DIR=${TEST_DEPS_CACHE}"
+    "-DFORGEDEPS_CACHE_DIR=${TEST_DEPS_CACHE}"
+    "-DCMAKE_PREFIX_PATH=${TEST_PREFIX_PATH}"
+    "-DARIA_PIN_MIRA_SOURCE_DIR=${TEST_MIRA_SOURCE}"
     "-DARIA_BUILD_HTTP=${TEST_HTTP}" "-DARIA_HTTP_ENABLE_TLS=${TEST_TLS}"
     -DARIA_BUILD_TESTS=OFF -DARIA_BUILD_BENCHMARK=OFF -DARIA_BUILD_DOCS=OFF
     RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)

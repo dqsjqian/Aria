@@ -60,10 +60,7 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
+      - uses: ./.github/actions/setup-deps
 
       - name: Offline benchmark protocol contracts
         working-directory: tests/python

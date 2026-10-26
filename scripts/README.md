@@ -9,7 +9,7 @@ instructions to run or develop the product sample.
 | Script | Platforms | Purpose |
 | --- | --- | --- |
 | [`build.py`](./build.py) | All (Python 3) | Portable configure/build/test entry for native, Qt, web, iOS and Android targets; `--toolchain msvc\|mingw` on Windows, `--dry-run` prints the plan. |
-| [`dependencies.py`](./dependencies.py) | All (Python 3) | Shared dependency resolver (GitHub, sqlite.org, bellard.org providers); `resolve` and `update` subcommands. |
+| [`dependencies.py`](./dependencies.py) | All (Python 3) | Compatibility entry to the pinned ForgeDeps package; `resolve` and `update` subcommands. Install `requirements-build.txt` first. |
 | [`bench.py`](./bench.py) | All (Python 3) | Benchmark toolchain: calibration `profile`, absolute-budget `check`, scenario CLI `scenarios`, paired `compare`, three-phase `validate` and `verify-release`. |
 | [`docs.py`](./docs.py) | All (Python 3) | Documentation toolchain: Doxygen input `filter`, HTML `prepare`/`check`, docs `api-check` and the pinned `doxygen` installer. |
 | [`tidy-gate.sh`](./tidy-gate.sh) | macOS/Linux | clang-tidy baseline gate; fails only on new debt vs `clang-tidy-baseline.txt`. |

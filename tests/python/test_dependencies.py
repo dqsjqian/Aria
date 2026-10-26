@@ -1,9 +1,11 @@
 """Dependency selection and lock safety regressions without network access."""
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "dependencies.py"
 spec = importlib.util.spec_from_file_location("aria_dependencies", SCRIPT)
@@ -74,6 +76,22 @@ class DependencyTests(unittest.TestCase):
     def resolve(self, **kwargs):
         return deps.resolve(self.manifest, context=self.context, **kwargs)
 
+    def test_python_api_without_project_uses_aria_http_context(self):
+        def response(request, timeout):
+            self.assertEqual(request.get_header("User-agent"), "aria-dependencies")
+            path = request.full_url.split("https://api.github.com/", 1)[1]
+            data = io.BytesIO(json.dumps(self.context.github_json(path)).encode())
+            data.url = request.full_url
+            return data
+
+        with mock.patch("forgedeps.deps_build._ACTIVE", None), \
+                mock.patch("forgedeps.deps_build.shutil.which", return_value=None), \
+                mock.patch("forgedeps.deps_build.urllib.request.urlopen", side_effect=response):
+            self.assertEqual(deps.Context(self.root).github_json("repos/example/library/releases?per_page=100"),
+                             self.context.releases)
+            result = deps.resolve(self.manifest, update=True)
+        self.assertEqual(result["dependencies"]["library"]["version"], "1.10.0")
+
     def test_latest_means_highest_stable_release(self):
         record = self.resolve()["dependencies"]["library"]
         self.assertEqual(record["version"], "1.10.0")
@@ -140,11 +158,18 @@ class DependencyTests(unittest.TestCase):
             self.resolve(versions={"typo": "1.0"})
         self.assertNotIn("resolved", json.loads(self.manifest.read_text())["dependencies"]["library"])
 
-    def test_explicit_branch_or_prerelease_is_rejected_before_network(self):
-        for version in ["main", "2.0.0-rc1", "v2.0.0-beta", "../bad"]:
+    def test_explicit_branch_or_invalid_version_is_rejected_before_network(self):
+        for version in ["main", "../bad", " 1.0.0"]:
             with self.subTest(version=version), self.assertRaises(deps.DependencyError):
                 self.resolve(versions={"library": version})
         self.assertEqual(self.context.calls, [])
+
+    def test_explicit_published_suffix_does_not_change_latest_policy(self):
+        self.context.releases += [{"tag_name": "v2.0.0-rc1", "prerelease": True},
+                                  {"tag_name": "v2.0.0-mira.1"}]
+        for version in ["2.0.0-rc1", "2.0.0-mira.1"]:
+            self.assertEqual(self.resolve(versions={"library": version})["dependencies"]["library"]["version"], version)
+        self.assertEqual(self.resolve(update=True)["dependencies"]["library"]["version"], "1.10.0")
 
     def test_override_outside_selection_is_not_silently_ignored(self):
         self.write_manifest({"library": SOURCE, "other": SOURCE})

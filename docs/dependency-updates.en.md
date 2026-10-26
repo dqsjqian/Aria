@@ -1,6 +1,8 @@
 # Updating dependencies
 
-Run these commands from the **Aria repository root**. Use Python 3.10+ with its standard library; substitute `python3` when required on macOS/Linux. Online resolution can use an authenticated `gh` CLI, or the public GitHub API. Install the compiler, CMake and platform SDKs listed in the README separately.
+Install the shared dependency tool first: `python -m pip install -r requirements-build.txt`. Offline resolution and source fetching also require this installed package.
+
+Run these commands from the **Aria repository root**. Use Python 3.10+ with ForgeDeps installed; substitute `python3` when required on macOS/Linux. Online resolution can use an authenticated `gh` CLI, or the public GitHub API. Install the compiler, CMake and platform SDKs listed in the README separately.
 
 `dependencies.json` is the only project dependency file. Each entry contains its source fields, an optional outer `version`, and a script-maintained `resolved` object. Sources are not duplicated. Omit `version`, use an empty string, or use `"latest"` for the stable-release policy. `resolved` stores the selected version, complete commit, download checksum and a `request_hash` tying the result to its declaration. Normal builds reuse matching results; missing/stale results require resolution, and deliberate updates discover new releases. Commit this one file and do not edit generated hashes.
 
@@ -51,3 +53,8 @@ Aria source builds support CMake library overrides such as `-DARIA_DEP_JSON_VERS
 Resolution failures leave the existing lock unchanged. Correct invalid names/versions, network failures or API limits and retry; do not disable integrity checks. A successful resolution followed by a failed build means compatibility still needs work. Restore the dependency file from a known-good Git revision after preserving local changes, then repeat fetch/build/tests. Restoring metadata alone does not restore binaries. Never edit checksums to accept changed bytes.
 
 Additional arguments: `--file PATH`, `--output PATH`, `--cache-dir PATH`, and `--offline`. Normally the updater edits `--file` atomically. `--output` creates an isolated effective file while preserving that input. To select another complete dependency file in CMake, pass `-DARIA_DEPENDENCIES_FILE=...`. CMake version overrides use ignored build-directory effective files; the repository still has only one dependency file to commit. Run `--help` for the complete interface.
+
+Shared artifact builds also use the pinned ForgeRecipes package. After installing
+requirements, initialize the shared workspace with `python -m forgedeps init /path/to/deps`.
+Use `scripts/build.py` for a leased configure/build/test session; changing a lock
+requires rebuilding the shared environment before consuming its new generation.

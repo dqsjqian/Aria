@@ -54,7 +54,10 @@ _aria_install_license("${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.md"
     "${ARIA_LICENSE_INSTALL_DIR}" "Aria THIRD_PARTY_NOTICES.md")
 if(ARIA_BUILD_HTTP)
     _aria_install_dependency_license(json "${_aria_json_license_source}" LICENSE.MIT)
-    if(_aria_json_license_source)
+    if(_aria_json_attributions)
+        _aria_install_license("${_aria_json_attributions}"
+            "${ARIA_LICENSE_INSTALL_DIR}/json" "selected JSON header attributions")
+    elseif(_aria_json_license_source)
         # JSON embeds several independently credited MIT implementations.
         file(GLOB_RECURSE json_headers CONFIGURE_DEPENDS
             "${_aria_json_license_source}/include/nlohmann/*.hpp")
@@ -74,8 +77,7 @@ if(ARIA_BUILD_HTTP)
     endif()
     _aria_install_dependency_license(mira "${_aria_mira_license_source}" LICENSE)
     if(ARIA_HTTP_ENABLE_TLS)
-        set(_aria_openssl_license_source "")
-        if(ARIA_BUNDLED_OPENSSL)
+        if(NOT _aria_openssl_license_source AND ARIA_BUNDLED_OPENSSL)
             set(_aria_openssl_license_source "${OPENSSL_SOURCE_DIR}")
         endif()
         _aria_install_dependency_license(openssl "${_aria_openssl_license_source}" LICENSE.txt)

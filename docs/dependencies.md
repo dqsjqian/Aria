@@ -12,9 +12,23 @@ selective updates, command-line overrides, offline operation and rollback.
 
 ## CLI and selection
 
-Python 3.10+ with its standard library is required only for new resolution.
-CMake can consume valid embedded results without Python or network access.
-The optional authenticated `gh` CLI can supply GitHub API access.
+Dependency resolution, source verification and shared artifact storage use ForgeDeps.
+Build recipes are supplied by the separately versioned ForgeRecipes package.
+Install its pinned version with Python 3.10+ in the environment used to build:
+
+```bash
+python -m pip install -r requirements-build.txt
+python -m forgedeps init /path/to/shared-dependencies
+```
+
+CMake invokes that package for both cold and verified-cache builds; an offline
+build still needs Python and ForgeDeps installed. Core-only builds with tests and
+HTTP disabled do not load them. `scripts/build.py` passes its own interpreter to
+CMake. With direct CMake invocation, select it using
+`-DFORGEDEPS_PYTHON_EXECUTABLE=/path/to/python` when necessary. The optional
+`FORGEDEPS_CMAKE_DIR` points at the package's CMake directory; it is normally
+located with `python -m forgedeps cmake-dir`. The optional authenticated `gh`
+CLI can supply GitHub API access.
 
 ```bash
 python3 scripts/dependencies.py update --file dependencies.json
@@ -52,8 +66,40 @@ aria_fetch_pinned_archive(NAME json)
 `NAME` is case insensitive. `FILE` selects another complete dependency file for
 one lookup. `REVISION` and `TAG` optionally name output variables. Parents must
 include declarations for every dependency used by their selected Aria features.
-Fetch helpers also retain their explicit VERSION/URL/SHA256 interface for
-unrelated dependencies.
+Fetch helpers retain their explicit VERSION/URL/SHA256 interface for
+unrelated dependencies. These wrappers contain Aria policy only; ForgeDeps owns
+resolution, downloads, extraction, locking and cache verification. Cache layouts
+are private to ForgeDeps; an old Aria-only cache may need one online population.
+
+JSON, doctest and OpenSSL are built once by ForgeRecipes into the registered
+shared workspace, then imported from their verified installation prefixes.
+The same actual compiler, SDK, architecture, configuration and ABI flags select
+the same artifact across consumers. Changed inputs replace the stable slot only
+after active readers finish; build directories do not contain a second vendor
+build. `FORGEDEPS_HOME` selects another initialized workspace explicitly.
+
+`scripts/build.py` prepares all dependency environments, then holds their
+complete dependency graph under a reader lease while configuring, building and
+running tests. `forgedeps-environment.json` records the chosen generations.
+Direct CMake prepares and verifies the same environment; to protect a separate
+build/install invocation against concurrent package replacement, run it with:
+
+```bash
+python -m forgedeps run --environment build/flavors/custom/forgedeps-environment.json -- cmake --build build/flavors/custom
+```
+
+For multi-config generators, set `ARIA_DEPENDENCIES_CONFIGURATION` to the
+configuration you will build. The portable driver passes this automatically.
+Mira may still be integrated as the selected release source or an explicit
+`ARIA_PIN_MIRA_SOURCE_DIR`. When a parent supplies a complete Mira SDK through
+its dependency environment, Aria imports it instead. A shared Aria SDK recipe
+must declare its HTTP dependencies in that graph before taking the build lease.
+Complete parent targets and explicit package prefixes retain priority.
+
+When the latest upstream release still has a reproducible defect affecting
+required behavior, follow the shared [maintenance policy](https://github.com/dqsjqian/ForgeDeps/blob/main/docs/DEPENDENCY-MAINTENANCE.md):
+maintain a focused fork, preserve upstream history and licenses, add regression
+coverage, publish immutable tested releases and continue tracking upstream.
 
 Source-library version options: `ARIA_DEP_JSON_VERSION`,
 `ARIA_DEP_DOCTEST_VERSION`, `ARIA_DEP_MIRA_VERSION`, `ARIA_DEP_OPENSSL_VERSION`.
@@ -74,12 +120,16 @@ Use the updater to persist a shared selection instead of editing build caches.
 
 `resolve --offline` requires matching embedded metadata. CMake's
 `-DARIA_DEPENDENCIES_OFFLINE=ON` additionally requires cached source downloads.
-Use `-DARIA_DEPS_CACHE_DIR=/path/to/cache` to select a populated cache.
+The shared workspace must already contain the selected sources and artifacts.
+`FORGEDEPS_CACHE_DIR` continues to select the legacy source cache used for Mira
+source integration and the generic fetch helper; it does not relocate shared
+artifact installations.
 
 `-DARIA_PIN_JSON_SOURCE_DIR=/path/to/json` supplies a source directory directly;
-Mira and OpenSSL have equivalent source overrides. Such explicit directories
-bypass resolver/checksum checks, so the caller owns their contents and
-compatibility. Preexisting dependency targets supplied by a parent also take
+Mira, doctest and OpenSSL have equivalent source overrides. Third-party
+overrides are snapshotted and content-hashed by the shared store; they do not
+mutate the verified download cache. The caller owns their compatibility. Mira
+source integration uses the explicit directory directly. Preexisting dependency targets supplied by a parent also take
 precedence over source-version requests.
 
 ## Installed Qt SDK

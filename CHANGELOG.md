@@ -14,7 +14,19 @@ All notable changes to **aria** are documented here.
 
 ---
 
-## Unreleased
+## 3.2.1 — 2026-10-26
+
+- Use ForgeDeps 0.4.0 for dependency resolution, verified sources and shared
+  artifact environments. ForgeRecipes 0.1.0 supplies JSON, doctest and OpenSSL
+  recipes; Aria imports their packages instead of rebuilding vendor code.
+- Hold the complete dependency graph under a reader lease throughout portable
+  configure/build/test sessions, preserving parent packages and explicit source
+  overrides. Move the OpenSSL platform recipe out of this repository.
+- Pass the selected Python interpreter through build and CI entry points, and
+  validate offline reuse, cache tampering and independent installed consumers.
+- Select Mira 1.2.0 while retaining ABI version 2.
+- Keep parked SSE waiters counted by the Mira event loop until wake or close,
+  preventing shutdown from completing while an SSE coroutine remains suspended.
 
 - Calibrate the paired regression gate (protocol v3.1): the twelve batch-mean
   statistics carry the decision; batch-P99 statistics remain fully measured
@@ -198,7 +210,7 @@ baseline, `HttpAdapter` transport swap, `native_server()` removal.
   (`json.tar.xz`), doctest 2.5.3 (single header), OpenSSL 4.0.2 (release
   asset, TLS builds).
 - Offline overrides: `-DARIA_PIN_<NAME>_SOURCE_DIR` uses a local tree as-is;
-  `-DARIA_DEPS_CACHE_DIR` relocates the cache.
+  `-DFORGEDEPS_CACHE_DIR` relocates the cache.
 - The `third_party/` directory and the OpenSSL submodule are removed.
 
 ---

@@ -1,6 +1,8 @@
 # 依赖更新使用指南
 
-本文的命令均从 **Aria 仓库根目录**执行。需要 Python 3.10+；macOS/Linux 如果没有 `python` 命令，替换为 `python3`。不需要 pip 包。首次解析或主动更新需要联网；GitHub API 可使用已登录的 `gh`，未安装时使用公开 API。构建还需要 README 所列的编译器、CMake 和平台 SDK。
+先安装统一依赖工具：`python -m pip install -r requirements-build.txt`。离线解析与源码获取也需要已安装的 Python 和 ForgeDeps。
+
+本文的命令均从 **Aria 仓库根目录**执行。需要 Python 3.10+ 和已安装的 ForgeDeps；macOS/Linux 如果没有 `python` 命令，替换为 `python3`。首次解析或主动更新需要联网；GitHub API 可使用已登录的 `gh`，未安装时使用公开 API。构建还需要 README 所列的编译器、CMake 和平台 SDK。
 
 ## 只维护一个依赖文件
 
@@ -121,3 +123,7 @@ python scripts/dependencies.py resolve --file dependencies.json --offline
 使用另一份完整依赖文件时，向 CMake 传 `-DARIA_DEPENDENCIES_FILE=/path/to/dependencies.json`。`--output` 通常供构建目录覆盖使用；仅生成它不会自动改变项目默认。CMake 本地版本覆盖也使用构建目录有效文件，根目录仍只有一份需提交的依赖文件。
 
 本体的 CMake API、离线缓存与 SDK 集成细节见 [Dependency versions and reproducible builds](dependencies.md)。
+
+共享构建同时使用固定版本的 ForgeRecipes 配方。安装 requirements 后，运行
+`python -m forgedeps init /path/to/deps` 初始化共享工作区；通过 `scripts/build.py`
+配置、编译和测试可全程持有依赖图读取租约。更新锁文件后，先重建共享环境再使用新代次。

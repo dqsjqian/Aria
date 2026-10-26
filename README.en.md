@@ -302,6 +302,8 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 ```bash
 git clone https://github.com/dqsjqian/Aria.git
 cd Aria
+python -m pip install -r requirements-build.txt
+python -m forgedeps init /path/to/shared-dependencies
 cmake -B build/flavors/release -DCMAKE_BUILD_TYPE=Release
 cmake --build build/flavors/release -j
 ctest --test-dir build/flavors/release --output-on-failure
@@ -312,8 +314,10 @@ ctest --test-dir build/flavors/release --output-on-failure
 > [`CMakeLists.txt`](CMakeLists.txt); `python scripts/build.py` picks an
 > isolated default directory for you.
 
-> Normal builds use the bundled doctest header. CMake fetches the fallback
-> test dependency only if that vendored header is absent.
+> Test and HTTP builds use the pinned ForgeDeps package for verified dependency
+> environments and external ForgeRecipes build recipes. Initialize a shared
+> workspace with `python -m forgedeps init /path/to/deps`; offline builds reuse
+> its verified sources and installed artifacts. No source is vendored.
 
 ### Portable build entry
 
@@ -396,6 +400,8 @@ MSVC release validation uses VS2026.
 
 ```bash
 # In the aria tree:
+python -m pip install -r requirements-build.txt
+python -m forgedeps init /path/to/shared-dependencies
 cmake -S . -B build/flavors/release -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
 cmake --build build/flavors/release -j && sudo cmake --install build/flavors/release
 ```

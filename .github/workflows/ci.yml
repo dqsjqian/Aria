@@ -20,10 +20,7 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
+      - uses: ./.github/actions/setup-deps
 
       - name: Offline benchmark protocol contracts
         working-directory: tests/python
@@ -111,6 +108,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-deps
       - name: Install toolchain
         run: |
           sudo apt-get update
@@ -142,10 +140,12 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-deps
 
       - name: Configure simulator target
         run: |
           cmake -S . -B build/platforms/uikit-test -G Xcode \
+            -DARIA_DEPENDENCIES_CONFIGURATION=Debug \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_SYSROOT=iphonesimulator \
             -DCMAKE_OSX_ARCHITECTURES=$(uname -m) \
@@ -192,6 +192,7 @@ jobs:
       ARIA_NDK_VERSION: 29.0.14206865
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-deps
 
       - name: Install native build tools
         run: |
@@ -265,10 +266,7 @@ jobs:
             standard: 23
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
+      - uses: ./.github/actions/setup-deps
 
       - name: Offline benchmark protocol contracts
         working-directory: tests/python
@@ -372,6 +370,7 @@ jobs:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-deps
 
       - name: Setup MSYS2 UCRT64 + Qt6
         uses: msys2/setup-msys2@v2
@@ -443,10 +442,7 @@ jobs:
     runs-on: windows-2025-vs2026
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
+      - uses: ./.github/actions/setup-deps
 
       - name: Offline benchmark protocol contracts (native Windows Python)
         shell: pwsh
@@ -527,6 +523,7 @@ jobs:
         run: |
           cmake -S . -B build/flavors/asan `
             -G "Visual Studio 18 2026" -A x64 -T v145 `
+            -DARIA_DEPENDENCIES_CONFIGURATION=Debug `
             -DARIA_ENABLE_ASAN=ON `
             -DARIA_ENABLE_UBSAN=OFF `
             -DARIA_ENABLE_TSAN=OFF `
@@ -577,6 +574,7 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-deps
 
       # Cheap and dependency-free, so it runs before anything is built: a
       # guide that names a symbol the headers do not define is a broken
@@ -624,6 +622,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-deps
 
       - name: Install toolchain
         run: |
@@ -665,6 +664,7 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-deps
 
       - name: Install ninja + clang-tidy
         run: |

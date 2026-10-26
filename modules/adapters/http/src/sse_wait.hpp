@@ -1,32 +1,27 @@
 #pragma once
 
-#include <coroutine>
+#include <mira/core/event_loop.hpp>
 #include <mutex>
+#include <stop_token>
 
 namespace aria::adapters::http::detail {
 
-// Kept independent of the socket transport so the check/park race can be
-// exercised deterministically. Client supplies mu, waiter and ready_locked().
+// Register parked SSE consumers with the event loop, so cancelling the server's
+// other I/O cannot make the loop appear idle before close() wakes the consumers.
+// Client supplies mu, wake_source and ready_locked(). The mutex makes checking
+// the outbox and publishing the wake source atomic with push()/close(). A stop
+// requested before sleep registration remains observable, so no wake is lost.
 template<class Client>
-struct SseWait {
-    Client* client;
-
-    bool await_ready() const {
+Mira::Task<void> wait_for_sse(Client* client, Mira::EventLoop& loop) {
+    std::stop_token wake;
+    {
         std::lock_guard lock(client->mu);
-        return client->ready_locked();
+        if (client->ready_locked()) co_return;
+        client->wake_source = std::stop_source{};
+        wake = client->wake_source.get_token();
     }
-
-    bool await_suspend(std::coroutine_handle<> waiting) {
-        std::lock_guard lock(client->mu);
-        // A producer may publish between await_ready and this lock. Returning
-        // false resumes only after the lock is released; inline resume here
-        // would deadlock when the consumer locks the outbox to drain it.
-        if (client->ready_locked()) return false;
-        client->waiter = waiting;
-        return true;
-    }
-
-    void await_resume() const noexcept {}
-};
+    (void)co_await loop.sleep_until(Mira::EventLoop::Clock::time_point::max(),
+                                  {.stop = wake});
+}
 
 }  // namespace aria::adapters::http::detail

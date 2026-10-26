@@ -288,6 +288,8 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
 ```bash
 git clone https://github.com/dqsjqian/Aria.git
 cd Aria
+python -m pip install -r requirements-build.txt
+python -m forgedeps init /path/to/shared-dependencies
 cmake -B build/flavors/release -DCMAKE_BUILD_TYPE=Release
 cmake --build build/flavors/release -j
 ctest --test-dir build/flavors/release --output-on-failure
@@ -296,6 +298,8 @@ ctest --test-dir build/flavors/release --output-on-failure
 > `build/` 是构建树的**容器**，不要直接配置进它。布局约定见 [`CMakeLists.txt`](CMakeLists.txt) 顶部的 build-tree guard。
 
 ### 跨平台统一入口
+
+依赖构建由 ForgeDeps 共享工作区和外部 ForgeRecipes 配方统一管理。安装 `requirements-build.txt` 后运行 `python -m forgedeps init /path/to/deps`；使用 `scripts/build.py` 时，配置、编译与测试全程持有依赖图读取租约。详见 [依赖文档](docs/dependencies.md)。
 
 `python scripts/build.py --test` 统一配置、编译和本机 CTest；`--platform qt|web|ios|android` 选择适配器，`--dry-run` 输出完整计划且不写磁盘。默认按平台、工具链、配置和架构隔离目录；`--build-dir` 可显式复用现有缓存，`--offline` 复用已验证依赖。
 
@@ -354,6 +358,8 @@ python scripts/build.py --toolchain mingw --test
 **方式 A —— 先安装，再用 `find_package`**（生产环境推荐）：
 
 ```bash
+python -m pip install -r requirements-build.txt
+python -m forgedeps init /path/to/shared-dependencies
 cmake -S . -B build/flavors/release -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
 cmake --build build/flavors/release -j && sudo cmake --install build/flavors/release
 ```

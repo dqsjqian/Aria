@@ -79,7 +79,7 @@ def extra_definitions(arguments, flags):
     identity = {"CMAKE_BUILD_TYPE", "CMAKE_TOOLCHAIN_FILE", "CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER",
                 "CMAKE_SYSTEM_NAME", "CMAKE_OSX_SYSROOT", "CMAKE_OSX_ARCHITECTURES", "ANDROID_ABI",
                 "ARIA_DIR", "ARIA_ROOT", "ARIA_SDK_PREFIX", "ARIA_DEP_ARIA_VERSION",
-                "CMAKE_PREFIX_PATH", "ARIA_DEPENDENCIES_OFFLINE", "ARIA_TARGET_QT",
+                "CMAKE_PREFIX_PATH", "ARIA_DEPENDENCIES_OFFLINE", "FORGEDEPS_PYTHON_EXECUTABLE", "ARIA_DEPENDENCIES_CONFIGURATION", "ARIA_TARGET_QT",
                 "ARIA_TUTORIAL_QT6", "ARIA_TUTORIAL_HTTP"}
     generated = dict(definition(flag) for flag in flags)
     for argument in arguments:
@@ -160,7 +160,9 @@ def plan(args, root=ROOT, host=None):
             commands.append([sys.executable, str(root / "scripts/dependencies.py"), "resolve",
                              "--file", str(root / "dependencies.json")] + (["--offline"] if args.offline else []))
         return commands
-    flags = [f"-DCMAKE_BUILD_TYPE={args.config}", f"-DARIA_DEPENDENCIES_OFFLINE={'ON' if args.offline else 'OFF'}"]
+    flags = [f"-DCMAKE_BUILD_TYPE={args.config}", f"-DARIA_DEPENDENCIES_OFFLINE={'ON' if args.offline else 'OFF'}",
+             f"-DFORGEDEPS_PYTHON_EXECUTABLE={sys.executable}",
+             f"-DARIA_DEPENDENCIES_CONFIGURATION={args.config}"]
     if kind == "aria":
         flags += [f"-DARIA_BUILD_TESTS={'ON' if args.test else 'OFF'}",
                   "-DARIA_BUILD_BENCHMARK=OFF", "-DARIA_BUILD_DOCS=OFF",
@@ -243,7 +245,9 @@ def plan(args, root=ROOT, host=None):
                 "CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER", "CMAKE_OSX_ARCHITECTURES"}]
             module_flags = compiler_flags + [
                 f"-DCMAKE_BUILD_TYPE={args.config}", f"-DARIA_DIR={aria}",
-                f"-DARIA_DEPS_CACHE_DIR={source / 'build/_deps'}",
+                f"-DFORGEDEPS_CACHE_DIR={source / 'build/_deps'}",
+                f"-DFORGEDEPS_PYTHON_EXECUTABLE={sys.executable}",
+                f"-DARIA_DEPENDENCIES_CONFIGURATION={args.config}",
                 f"-DARIA_DEPENDENCIES_OFFLINE={'ON' if args.offline else 'OFF'}",
                 "-DWORKBENCH_TARGET_QT=OFF", "-DWORKBENCH_TARGET_IOS=OFF"]
             commands.append(configure_module + module_flags + extra_definitions(args.cmake_arg, module_flags))
@@ -344,9 +348,14 @@ def main(argv=None):
         # Validate every existing cache before fetching dependencies or writing.
         for command in commands:
             validate_cache(command, env)
-        for command in commands:
+        from forgedeps.build_kit.session import run_session
+
+        def execute(command, child_env):
             print("+ " + shlex.join(command), flush=True)
-            subprocess.run(command, cwd=ROOT, env=command_environment(command, env), check=True)
+            subprocess.run(command, cwd=ROOT, env=child_env, check=True)
+
+        run_session(commands, cwd=ROOT, env=env, run_command=execute,
+                    command_environment=command_environment)
         return 0
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         print(f"build: {error}", file=sys.stderr)

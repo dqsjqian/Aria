@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.21)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "")
 
 project(aria
-    VERSION 3.2.0
+    VERSION 3.2.1
     DESCRIPTION "Modern MVVM framework for C++23 — cross-platform, layered, coroutine-first"
     HOMEPAGE_URL "https://github.com/dqsjqian/Aria"
     LANGUAGES CXX
@@ -94,7 +94,7 @@ option(ARIA_BUILD_QT6        "Build Qt6 adapter"        OFF)
 option(ARIA_BUILD_APPKIT     "Build macOS AppKit adapter" OFF)
 option(ARIA_BUILD_UIKIT      "Build iOS UIKit adapter"  OFF)
 option(ARIA_BUILD_HTTP       "Build HTTP/REST/SSE adapter (Web)" OFF)
-option(ARIA_HTTP_ENABLE_TLS  "Enable HTTPS in the HTTP adapter (builds OpenSSL from source)" ON)
+option(ARIA_HTTP_ENABLE_TLS  "Enable HTTPS in the HTTP adapter (uses shared OpenSSL)" ON)
 option(ARIA_BUILD_JNI        "Build Android JNI adapter" OFF)
 if(ARIA_BUILD_WASM)
     message(FATAL_ERROR "The WebAssembly adapter is not implemented; ARIA_BUILD_WASM is unsupported")
@@ -122,48 +122,23 @@ find_package(Threads REQUIRED)
 # ── Hash-pinned dependencies (no vendored source, no submodules) ────────────
 # Managed dependencies resolve the latest stable release once, retain that
 # selection in dependencies.json, and verify cached bytes. See
-# cmake/ariaFetchPinned.cmake. Overrides: -DARIA_DEPS_CACHE_DIR=<dir> and
+# cmake/ariaFetchPinned.cmake. Overrides: -DFORGEDEPS_CACHE_DIR=<dir> and
 # -DARIA_PIN_<NAME>_SOURCE_DIR (archives) for offline development.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ariaFetchPinned.cmake")
 
-# JSON belongs to the HTTP adapter. Core-only builds must not require its
-# download; a parent can also provide its own namespaced target.
-set(_aria_json_license_source "")
-if(ARIA_BUILD_HTTP AND NOT TARGET nlohmann_json::nlohmann_json)
-    aria_fetch_pinned_archive(NAME json)
-    set(_aria_json_license_source "${ARIA_PINNED_JSON_SOURCE_DIR}")
-    add_library(nlohmann_json INTERFACE)
-    target_include_directories(nlohmann_json SYSTEM INTERFACE
-        $<BUILD_INTERFACE:${ARIA_PINNED_JSON_SOURCE_DIR}/include>
-    )
-    add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
-endif()
-
-# ── Tests setup (must come BEFORE modules so subdirs can use doctest target) ──
+# Third-party libraries are prepared in the shared store and imported here.
+# Parent targets and explicitly supplied package prefixes take precedence.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ariaSharedDependencies.cmake")
 if(ARIA_BUILD_TESTS)
     enable_testing()
-    # doctest is a hash-pinned single header (no vendored source, no network
-    # surprises); see cmake/ariaFetchPinned.cmake for the verification rules.
-    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ariaFetchPinned.cmake")
-    aria_fetch_pinned_file(
-        NAME doctest
-        AS doctest/doctest.h
-    )
-    # One upstream quirk, handled without touching the pinned bytes: doctest
-    # suppresses MSVC warning 4865, a number only VS 2026 (19.45+) knows.
-    # Older toolsets report the unknown number as C4619, fatal under the
-    # tests' warning-to-error policy. Suppressing it through the INTERFACE
-    # options of this target keeps the downloaded bytes byte-identical on
-    # every platform — configure-time string surgery would make the file's
-    # hash depend on the line endings of this very CMakeLists.
-    add_library(doctest INTERFACE)
     if(MSVC)
-        target_compile_options(doctest INTERFACE /wd4619)
+        # Upstream suppresses a warning number unknown to older MSVC toolsets.
+        get_target_property(_aria_doctest_target doctest::doctest ALIASED_TARGET)
+        if(NOT _aria_doctest_target)
+            set(_aria_doctest_target doctest::doctest)
+        endif()
+        target_compile_options(${_aria_doctest_target} INTERFACE /wd4619)
     endif()
-    target_include_directories(doctest INTERFACE
-        $<BUILD_INTERFACE:${ARIA_PINNED_DOCTEST_BASE}>
-    )
-    add_library(doctest::doctest ALIAS doctest)
 endif()
 
 # ── Modules ──────────────────────────────────────────────────────────────────
@@ -179,11 +154,6 @@ if(ARIA_BUILD_QT6)
 endif()
 
 if(ARIA_BUILD_HTTP)
-    if(ARIA_HTTP_ENABLE_TLS)
-        # Reuse complete parent targets, otherwise build hash-pinned OpenSSL.
-        # The helper rejects missing source/partial parent configuration.
-        include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildOpenSSL.cmake")
-    endif()
     add_subdirectory(modules/adapters/http)
 endif()
 

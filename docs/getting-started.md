@@ -5,9 +5,9 @@
 Aria 3.0 requires C++23 for every module and consumer. The default build:
 
 ```bash
-cmake -B build/flavors/release -DCMAKE_BUILD_TYPE=Release
-cmake --build build/flavors/release -j
-ctest --test-dir build/flavors/release --output-on-failure
+python -m pip install -r requirements-build.txt
+python -m forgedeps init /path/to/shared-dependencies
+python scripts/build.py --build-dir build/flavors/release --config Release --test
 ```
 
 To select C++23 explicitly, add `-DCMAKE_CXX_STANDARD=23` when configuring:
@@ -18,8 +18,9 @@ cmake --build build/flavors/cxx23 -j
 ctest --test-dir build/flavors/cxx23 --no-tests=error --output-on-failure
 ```
 
-CMake reads the checked-in dependency lock and verifies downloaded and cached
-bytes. Dependencies default to the latest stable release on first resolution,
+CMake delegates the checked-in lock and shared dependency environment to
+ForgeDeps; ForgeRecipes supplies the third-party build recipes. The portable
+build entry holds the selected dependency generations under a reader lease. Dependencies default to the latest stable release on first resolution,
 then retain that selection until explicitly updated. See
 [dependency versions](dependencies.md) for explicit versions, lock updates,
 offline builds and `ARIA_PIN_<NAME>_SOURCE_DIR` archive overrides.

@@ -42,6 +42,21 @@ class BuildEntryTests(unittest.TestCase):
         self.assertIn("--no-tests=error", commands[-1])
         self.assertIn(str(self.root), commands[0])
 
+    def test_complete_plan_uses_shared_environment_session(self):
+        commands = [["cmake", "-S", str(self.root), "-B", str(self.root / "build/test")],
+                    ["cmake", "--build", str(self.root / "build/test")],
+                    ["ctest", "--test-dir", str(self.root / "build/test"), "-C", "Release"]]
+        with mock.patch.object(build, "plan", return_value=commands), \
+             mock.patch("forgedeps.build_kit.session.run_session") as session:
+            self.assertEqual(build.main([]), 0)
+        self.assertEqual(session.call_args.args[0], commands)
+        self.assertIs(session.call_args.kwargs["command_environment"], build.command_environment)
+        runner = session.call_args.kwargs["run_command"]
+        leased_env = {"FORGEDEPS_ENVIRONMENTS": '["shared-receipt.json"]'}
+        with mock.patch.object(build.subprocess, "run") as run:
+            runner(commands[1], leased_env)
+        self.assertIs(run.call_args.kwargs["env"], leased_env)
+
     def test_consumers_reuse_existing_locked_fetch(self):
         self.layout("agent")
         commands = self.plan("--offline")

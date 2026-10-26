@@ -1,18 +1,17 @@
 {
   "dependencies": {
     "doctest": {
-      "artifact": "file",
-      "path": "doctest/doctest.h",
+      "artifact": "archive",
       "provider": "github",
       "repo": "doctest/doctest",
       "resolved": {
         "checksum_source": "downloaded-over-https",
-        "request_hash": "30449623d6b34480b30001f35173e4927ff706adb9a3f6ae20dc3c39f5cbbda5",
+        "request_hash": "a2098fc768774c14784cff1345b833d98026f45b5363bceddde34e7c6a8246f9",
         "requested": "latest",
         "revision": "2d0a9359a60c51affe2a9bebb1be1dca47868151",
-        "sha256": "cfd518a3ef90f67e1f3ba514df23fb3627437de1a2feeba78cf5062a40021421",
+        "sha256": "e64542c4ea68e9f381ccf6eae924cfdd652567c87c142d76fe92644fb4608149",
         "tag": "v2.5.3",
-        "url": "https://raw.githubusercontent.com/doctest/doctest/2d0a9359a60c51affe2a9bebb1be1dca47868151/doctest/doctest.h",
+        "url": "https://codeload.github.com/doctest/doctest/tar.gz/2d0a9359a60c51affe2a9bebb1be1dca47868151",
         "version": "2.5.3"
       },
       "tag_prefix": "v"
@@ -42,12 +41,12 @@
       "resolved": {
         "checksum_source": "github-release-asset",
         "request_hash": "8586774eb848fe437236e66f9f300291a015b405e00aee192b38e0fec53db970",
-        "requested": "1.1.1",
-        "revision": "4c0f9918da5266616ccc5ffa1e39d655e66a8a97",
-        "sha256": "edd1a5e728c2bd6a931d4150a9abf38a20c03cc56edf474e3b0563a9a45d440d",
-        "tag": "v1.1.1",
-        "url": "https://github.com/dqsjqian/Mira/releases/download/v1.1.1/Mira-1.1.1.tar.gz",
-        "version": "1.1.1"
+        "requested": "1.2.0",
+        "revision": "3f89424c157ed46dffae9b6e463f1cfa3886aec6",
+        "sha256": "fc52efd9a73d3d499d77645d666c528888b1cfe0910d5f859fb2dea3568fd60d",
+        "tag": "v1.2.0",
+        "url": "https://github.com/dqsjqian/Mira/releases/download/v1.2.0/Mira-1.2.0.tar.gz",
+        "version": "1.2.0"
       },
       "tag_prefix": "v"
     },

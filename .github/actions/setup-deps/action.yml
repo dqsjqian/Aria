@@ -1,0 +1,16 @@
+name: Set up ForgeDeps
+description: Install the pinned dependency tooling and select its Python for CMake.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+    - run: python -m pip install -r requirements-build.txt
+      shell: bash
+    - run: python -c 'import os, sys; open(os.environ["GITHUB_ENV"], "a", encoding="utf-8").write("FORGEDEPS_PYTHON_EXECUTABLE=" + sys.executable + "\n")'
+      shell: bash
+    - run: |
+        python -m forgedeps init "$RUNNER_TEMP/aria-shared-deps"
+        python -c 'import os; open(os.environ["GITHUB_ENV"], "a", encoding="utf-8").write("FORGEDEPS_HOME=" + os.path.join(os.environ["RUNNER_TEMP"], "aria-shared-deps") + "\n")'
+      shell: bash

@@ -19,6 +19,9 @@ add_test(NAME license_packaging
         -P "${CMAKE_CURRENT_SOURCE_DIR}/test_licenses.cmake")
 set_tests_properties(license_packaging PROPERTIES TIMEOUT 60)
 
+if(FORGEDEPS_PYTHON_EXECUTABLE)
+    set(Python3_EXECUTABLE "${FORGEDEPS_PYTHON_EXECUTABLE}")
+endif()
 find_package(Python3 3.10 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME portable_build_entry
@@ -37,7 +40,7 @@ if(Python3_Interpreter_FOUND)
     endif()
 endif()
 
-_aria_deps_cache_dir(_aria_test_cache)
+_forgedeps_cache_dir(_aria_test_cache)
 add_test(NAME embedded_project_configure
     COMMAND ${CMAKE_COMMAND}
         "-DARIA_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
@@ -47,10 +50,24 @@ add_test(NAME embedded_project_configure
         "-DTEST_GENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}"
         "-DTEST_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
         "-DTEST_DEPS_CACHE=${_aria_test_cache}"
+        "-DTEST_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+        "-DTEST_MIRA_SOURCE=${_aria_mira_test_source}"
         "-DTEST_HTTP=${ARIA_BUILD_HTTP}"
         "-DTEST_TLS=${ARIA_HTTP_ENABLE_TLS}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/test_embedded_project.cmake")
+add_test(NAME shared_parent_dependencies
+    COMMAND ${CMAKE_COMMAND}
+        "-DARIA_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/shared-parent"
+        "-DTEST_GENERATOR=${CMAKE_GENERATOR}"
+        "-DTEST_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+        "-DTEST_GENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+        "-DTEST_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/test_shared_parent.cmake")
+set_tests_properties(shared_parent_dependencies PROPERTIES TIMEOUT 120)
 set_tests_properties(embedded_project_configure PROPERTIES TIMEOUT 120)
+set_tests_properties(pinned_dependency_cache dependency_selection embedded_project_configure PROPERTIES
+    ENVIRONMENT "FORGEDEPS_PYTHON_EXECUTABLE=${FORGEDEPS_PYTHON_EXECUTABLE}")
 unset(_aria_test_cache)
 
 if(PROJECT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)

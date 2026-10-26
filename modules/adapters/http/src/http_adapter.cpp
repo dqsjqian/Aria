@@ -127,8 +127,8 @@ struct PoolState {
 //
 // Any thread (the binding engine, a Property setter, the heartbeat timer on
 // the loop) can enqueue a frame without blocking on the network write. The
-// SSE coroutine parks on the loop between frames and is resumed through
-// `EventLoop::post`, so a parked stream occupies no worker thread.
+// SSE coroutine parks on a cancellable loop timer between frames, so a parked
+// stream occupies no worker thread and remains visible to loop shutdown.
 // ─────────────────────────────────────────────────────────────────────────────
 
 struct SseClient {
@@ -138,13 +138,12 @@ struct SseClient {
     std::size_t queued_bytes = 0;
     const std::size_t max_pending_bytes;
     std::mutex mu;
-    std::coroutine_handle<> waiter{};  // parked SSE coroutine, if any
-    EventLoop* loop = nullptr;         // where the waiter resumes
+    std::stop_source wake_source{std::nostopstate};  // guarded by mu
     std::atomic<bool> closed{false};
     bool overflowed = false;           // slow-client eviction, guarded by mu
 
     void push(std::string_view frame) {
-        std::coroutine_handle<> resume;
+        std::stop_source wake{std::nostopstate};
         {
             std::lock_guard<std::mutex> lock(mu);
             if (closed) return;
@@ -153,31 +152,27 @@ struct SseClient {
                 overflowed = true;
                 queue.clear();
                 queued_bytes = 0;
-                resume = std::exchange(waiter, {});
+                wake = wake_source;
             } else {
                 queue.emplace_back(frame);
                 queued_bytes += frame.size();
-                if (queue.size() == 1) resume = std::exchange(waiter, {});
+                if (queue.size() == 1) wake = wake_source;
             }
         }
-        if (resume && loop) {
-            loop->post([resume] { resume.resume(); });
-        }
+        wake.request_stop();
     }
 
     void close() {
-        std::coroutine_handle<> resume;
+        std::stop_source wake{std::nostopstate};
         {
             std::lock_guard<std::mutex> lock(mu);
             if (closed) return;
             closed = true;
             queue.clear();
             queued_bytes = 0;
-            resume = std::exchange(waiter, {});
+            wake = wake_source;
         }
-        if (resume && loop) {
-            loop->post([resume] { resume.resume(); });
-        }
+        wake.request_stop();
     }
 
     /// True when a frame is ready or the client is gone. Callers hold mu.
@@ -1099,7 +1094,6 @@ Task<Mira::Result<void>> HttpAdapter::Impl::run_sse(
         if (!running || sse_clients.size() >= sse_capacity) {
             return "sse capacity";
         }
-        client->loop = &*loop;
         client->push(sse_frame(json{{"type", "hello"}, {"platform", "http"},
                                     {"protocol", wire::kProtocolVersion}}.dump()));
         for (auto& [id, view] : views) {
@@ -1143,7 +1137,7 @@ Task<Mira::Result<void>> HttpAdapter::Impl::run_sse(
     }
 
     for (;;) {
-        co_await detail::SseWait{client.get()};
+        co_await detail::wait_for_sse(client.get(), *loop);
         std::deque<std::string> pending;
         bool done = false;
         {
