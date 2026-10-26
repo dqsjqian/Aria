@@ -2,7 +2,7 @@
 
 先安装统一依赖工具：`python -m pip install -r requirements-build.txt`。离线解析与源码获取也需要已安装的 Python 和 ForgeDeps。
 
-本文的命令均从 **Aria 仓库根目录**执行。需要 Python 3.10+ 和已安装的 ForgeDeps；macOS/Linux 如果没有 `python` 命令，替换为 `python3`。首次解析或主动更新需要联网；GitHub API 可使用已登录的 `gh`，未安装时使用公开 API。构建还需要 README 所列的编译器、CMake 和平台 SDK。
+本文的命令均从 **Aria 仓库根目录**执行。需要 Python 3.14+ 和已安装的 ForgeDeps；macOS/Linux 如果没有 `python` 命令，替换为 `python3`。首次解析或主动更新需要联网；GitHub API 可使用已登录的 `gh`，未安装时使用公开 API。构建还需要 README 所列的编译器、CMake 和平台 SDK。
 
 ## 只维护一个依赖文件
 

@@ -2,7 +2,7 @@
 
 Install the shared dependency tool first: `python -m pip install -r requirements-build.txt`. Offline resolution and source fetching also require this installed package.
 
-Run these commands from the **Aria repository root**. Use Python 3.10+ with ForgeDeps installed; substitute `python3` when required on macOS/Linux. Online resolution can use an authenticated `gh` CLI, or the public GitHub API. Install the compiler, CMake and platform SDKs listed in the README separately.
+Run these commands from the **Aria repository root**. Use Python 3.14+ with ForgeDeps installed; substitute `python3` when required on macOS/Linux. Online resolution can use an authenticated `gh` CLI, or the public GitHub API. Install the compiler, CMake and platform SDKs listed in the README separately.
 
 `dependencies.json` is the only project dependency file. Each entry contains its source fields, an optional outer `version`, and a script-maintained `resolved` object. Sources are not duplicated. Omit `version`, use an empty string, or use `"latest"` for the stable-release policy. `resolved` stores the selected version, complete commit, download checksum and a `request_hash` tying the result to its declaration. Normal builds reuse matching results; missing/stale results require resolution, and deliberate updates discover new releases. Commit this one file and do not edit generated hashes.
 

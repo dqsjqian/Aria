@@ -14,7 +14,7 @@ selective updates, command-line overrides, offline operation and rollback.
 
 Dependency resolution, source verification and shared artifact storage use ForgeDeps.
 Build recipes are supplied by the separately versioned ForgeRecipes package.
-Install its pinned version with Python 3.10+ in the environment used to build:
+Install its pinned version with Python 3.14+ in the environment used to build:
 
 ```bash
 python -m pip install -r requirements-build.txt
