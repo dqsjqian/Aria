@@ -463,10 +463,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest -v test_check_bench test_bench_validation test_bench_protocol
 
+      # Qt 6.11+ moved its online repository metadata to per-architecture
+      # Updates.xml files, which the newest aqtinstall (3.3.0) cannot read
+      # ("Failed to locate XML data"). 6.10.3 is the newest Qt it installs;
+      # move this forward when aqtinstall supports the new layout.
       - name: Install Qt6 (binary)
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.12.0'
+          version: '6.10.3'
           host: windows
           target: desktop
           arch: win64_msvc2022_64
