@@ -31,3 +31,9 @@ file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/consumer-link-options-$<CONFIG
     CONTENT "$<TARGET_PROPERTY:aria_core_package_consumer,LINK_OPTIONS>")
 enable_testing()
 add_test(NAME core_package_consumer COMMAND aria_core_package_consumer)
+
+# Application tests use this supported header without an Aria source checkout.
+find_package(aria 3.0 CONFIG REQUIRED COMPONENTS binding)
+add_executable(aria_testing_package_consumer testing.cpp)
+target_link_libraries(aria_testing_package_consumer PRIVATE aria::binding)
+add_test(NAME testing_package_consumer COMMAND aria_testing_package_consumer)

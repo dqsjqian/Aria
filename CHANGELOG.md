@@ -24,6 +24,8 @@ All notable changes to **aria** are documented here.
   overrides. Move the OpenSSL platform recipe out of this repository.
 - Pass the selected Python interpreter through build and CI entry points, and
   validate offline reuse, cache tampering and independent installed consumers.
+- Install the reusable `aria/binding/testing/fake_adapter.hpp` helper so downstream
+  tests can consume the SDK without reaching into Aria test sources.
 - Select Mira 1.2.0 while retaining ABI version 2.
 - Keep parked SSE waiters counted by the Mira event loop until wake or close,
   preventing shutdown from completing while an SSE coroutine remains suspended.
