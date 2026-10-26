@@ -1,2 +1,2 @@
-forgedeps @ git+https://github.com/dqsjqian/ForgeDeps.git@78a343f
+forgedeps @ git+https://github.com/dqsjqian/ForgeDeps.git@ac4832b
 forgerecipes @ git+https://github.com/dqsjqian/ForgeRecipes.git@c47a877
