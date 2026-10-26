@@ -14,6 +14,18 @@ All notable changes to **aria** are documented here.
 
 ---
 
+## 3.2.2 — 2026-10-27
+
+- One static-linkage switch for every module macro. A static build defined
+  `ARIA_ABI_STATIC` while `aria_runtime` still compiled with `ARIA_RUNTIME_BUILD`,
+  so `IDispatcher` was exported from a DLL whose base `IDelayedScheduler` was
+  not: MSVC 14.51 reports C4275 and `/WX` turns it into an error. `aria_abi` now
+  publishes `ARIA_STATIC_LINKAGE`, which empties every module macro together.
+  This is what every consumer that builds Aria through ForgeDeps with
+  `ARIA_BUILD_SHARED=OFF` hit on Windows.
+- Documented toolchain floor follows CI: GCC 16+, Clang 23+, Xcode 27+,
+  Visual Studio 2026, NDK r30.
+
 ## 3.2.1 — 2026-10-26
 
 - Use ForgeDeps 0.4.4 for dependency resolution, verified sources and shared
