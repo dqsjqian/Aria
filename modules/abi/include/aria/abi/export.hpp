@@ -11,6 +11,23 @@
 #  define ARIA_IMPORT __attribute__((visibility("default")))
 #endif
 
+// A static Aria build has no DLL boundary, so every module macro must be empty
+// together. If one class is imported while its base is local, MSVC reports
+// C4275 (a dll-interface class deriving from a non-dll class) and /WX makes it
+// an error — which is what a static build that only partly sees ARIA_*_STATIC
+// produced.
+#if defined(ARIA_STATIC_LINKAGE)
+#  define ARIA_ABI_API
+#  define ARIA_RUNTIME_API
+#  define ARIA_CORE_API
+#  define ARIA_BINDING_API
+#  define ARIA_QT6_API
+#  define ARIA_HTTP_API
+#  define ARIA_JNI_API
+#  define ARIA_MODULE_MACROS_DEFINED 1
+#endif
+
+#ifndef ARIA_MODULE_MACROS_DEFINED
 // ABI module
 #if defined(ARIA_ABI_BUILD)
 #  define ARIA_ABI_API ARIA_EXPORT
@@ -74,6 +91,8 @@
 #else
 #  define ARIA_JNI_API ARIA_IMPORT
 #endif
+
+#endif  // ARIA_MODULE_MACROS_DEFINED
 
 // Force-inline
 #if defined(_MSC_VER)

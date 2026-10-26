@@ -24,7 +24,9 @@ target_compile_features(aria_abi PUBLIC cxx_std_23)
 
 target_compile_definitions(aria_abi PRIVATE ARIA_ABI_BUILD)
 if(NOT ARIA_BUILD_SHARED)
-    target_compile_definitions(aria_abi PUBLIC ARIA_ABI_STATIC)
+    # One switch for the whole tree: every module macro must agree, or a class
+    # is imported while its base stays local (MSVC C4275 under /WX).
+    target_compile_definitions(aria_abi PUBLIC ARIA_ABI_STATIC ARIA_STATIC_LINKAGE)
 endif()
 
 # The compiled foundations implement storage declared by the core headers.
