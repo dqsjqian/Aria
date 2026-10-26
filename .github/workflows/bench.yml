@@ -36,16 +36,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: macOS 26, AppleClang
-            os: macos-26
+          # Timing runs on the host (a container would change measurement
+          # conditions), so Linux uses the newest stable LLVM from
+          # apt.llvm.org rather than the GCC 16 image used by CI.
+          - name: macOS 27, AppleClang (newest Xcode)
+            os: xcode-27
             artifact_key: macos
             cc: /usr/bin/clang
             cxx: /usr/bin/clang++
-          - name: Ubuntu 24.04, GCC 14
-            os: ubuntu-24.04
+          - name: Ubuntu 26.04, Clang 23
+            os: ubuntu-26.04
             artifact_key: linux
-            cc: /usr/bin/gcc-14
-            cxx: /usr/bin/g++-14
+            cc: clang-23
+            cxx: clang++-23
           - name: Windows, VS2026 MSVC
             os: windows-2025-vs2026
             artifact_key: windows
@@ -96,10 +99,11 @@ jobs:
         shell: bash
         run: |
           if [[ "$RUNNER_OS" == "macOS" ]]; then
+            .github/scripts/select-xcode.sh
             brew install ninja
           elif [[ "$RUNNER_OS" == "Linux" ]]; then
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends ninja-build g++-14
+            LLVM_VERSION=23 .github/scripts/install-llvm.sh
+            sudo apt-get install -y --no-install-recommends ninja-build
           else
             cmake --version
             ninja --version
@@ -142,7 +146,7 @@ jobs:
               xcodebuild -version
               xcrun --show-sdk-version
             elif [[ "$RUNNER_OS" == "Linux" ]]; then
-              dpkg-query -W -f='${Package} ${Version}\n' gcc-14 g++-14 ninja-build
+              dpkg-query -W -f='${Package} ${Version}\n' clang-23 ninja-build
             fi
           } > bench-comparison/toolchain.txt
 

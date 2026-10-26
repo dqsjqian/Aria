@@ -213,7 +213,7 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 
 | Architectural strength | Engineering design |
 |---|---|
-| **Modern C++ foundation** | C++23 baseline (GCC 14+ / Clang 19+ / AppleClang 21+ / MSVC v145) with full coroutines and concepts. Integrating projects must use C++23 or later. |
+| **Modern C++ foundation** | C++23 baseline (GCC 16+ / Clang 23+ / AppleClang from Xcode 27+ / MSVC v145, i.e. Visual Studio 2026) with full coroutines and concepts. Integrating projects must use C++23 or later. |
 | **Native UI freedom** | Your UI toolkit owns widgets, layout, and animation. Aria unifies one-way and two-way state binding, sharing the business core while preserving native experiences. |
 | **Layered compatibility** | `aria-abi` / `aria-runtime` / `aria-binding` maintain ABI stability within a major version, with matching compiler, standard library, and build options. Rebuild templates such as `Property<T>` and their containing types after updates. |
 | **Open adapter protocol** | Qt6 / AppKit / UIKit / JNI / HTTP ship out of the box. Integrate other UI toolkits by implementing `IViewAdapter` (see the [adapter guides](docs/guide/adapters/)). |
@@ -287,8 +287,8 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 
 - **CMake** >= 3.21
 - **Compiler** with full C++23 support:
-  - GCC >= 14 (the MSYS2 UCRT64 toolchain on Windows)
-  - Clang >= 19 (AppleClang 21+ on macOS)
+  - GCC >= 16 (the MSYS2 UCRT64 toolchain on Windows)
+  - Clang >= 23 (on macOS / iOS, the AppleClang of Xcode 27 or newer)
   - **MSVC v145 / Visual Studio 2026** (current Windows CI toolchain, see below)
 - *(optional)* **Qt6** >= 6.4 (for the Qt6 adapter)
 
@@ -355,7 +355,7 @@ entry, each in its own isolated build tree.
 | Toolchain | Command | Notes |
 |---|---|---|
 | **MSVC** (VS2026; VS2022 discovery retained) | `python scripts/build.py --toolchain msvc` | Default. Selects the Visual Studio generator matching the installation. |
-| **MSYS2 UCRT64** (GCC 14+ / Clang 19+) | `python scripts/build.py --toolchain mingw` | Lightweight (~300 MB). Pre-installed on most CI images. Auto-detected from `C:\msys64\ucrt64\bin` and a few other common paths. |
+| **MSYS2 UCRT64** (GCC 16+ / Clang 23+) | `python scripts/build.py --toolchain mingw` | Lightweight (~300 MB). Pre-installed on most CI images. Auto-detected from `C:\msys64\ucrt64\bin` and a few other common paths. |
 
 You can switch back and forth without cleanup — the trees stay isolated.
 CI validates both toolchains on pushes and pull requests.
@@ -442,7 +442,7 @@ Clone Aria separately outside your project, then pass its absolute path when con
 | `ARIA_BUILD_QT6` | OFF | Build the Qt6 adapter (requires `Qt6Widgets`). |
 | `ARIA_BUILD_APPKIT` | OFF | **(production-grade)** Build the macOS AppKit adapter as a first-class `STATIC` CMake module using Objective-C++; ships `aria::adapters::appkit` and passes the shared `adapter_conformance` battery. Requires `APPLE`. |
 | `ARIA_BUILD_UIKIT` | OFF | **(production-grade)** Build the iOS UIKit adapter as a first-class `STATIC` CMake module using Objective-C++; ships `aria::adapters::uikit` and passes the shared conformance battery. Requires `APPLE`. |
-| `ARIA_BUILD_JNI` | OFF | Build Android JNI adapter as a first-class CMake module — built as `STATIC`, ships `aria::adapters::jni`, implementing the same `IViewAdapter` contract as Qt/AppKit/UIKit via reflective JNI dispatch (text / bool / int / double / visibility / click). Requires an Android NDK toolchain (**NDK r29**, validated in CI for the C++23 core). |
+| `ARIA_BUILD_JNI` | OFF | Build Android JNI adapter as a first-class CMake module — built as `STATIC`, ships `aria::adapters::jni`, implementing the same `IViewAdapter` contract as Qt/AppKit/UIKit via reflective JNI dispatch (text / bool / int / double / visibility / click). Requires an Android NDK toolchain (**NDK r30**, validated in CI for the C++23 core). |
 | `ARIA_ENABLE_ASAN` | OFF | AddressSanitizer. |
 | `ARIA_ENABLE_UBSAN` | OFF | UndefinedBehaviorSanitizer. |
 | `ARIA_ENABLE_TSAN` | OFF | ThreadSanitizer. |
@@ -512,7 +512,7 @@ Task<std::string> fetch_user(int id) {
 | macOS      | AppKit / Qt6   | `aria-qt6` ✅ ready; AppKit ✅ ready |
 | Linux      | Qt6            | `aria-qt6` ✅ ready             |
 | iOS        | UIKit          | `aria-uikit` ✅ ready |
-| Android    | Compose / View | `aria-jni` ✅ ready (NDK r29)   |
+| Android    | Compose / View | `aria-jni` ✅ ready (NDK r30)   |
 | **Web (server-driven)** | **HTML/JS in browser** | **`aria-http` ✅ ready (REST + SSE)** |
 | Web (in-browser C++) | DOM via WASM     | Not implemented; conditional roadmap work             |
 

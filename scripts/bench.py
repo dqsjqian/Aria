@@ -760,7 +760,11 @@ def diagnose(facts: dict) -> list[str]:
 
 def capture(build: Path) -> dict:
     def command(args):
-        result = subprocess.run(args, capture_output=True, timeout=10)
+        # Machine metadata is descriptive; a missing probe tool leaves it empty.
+        try:
+            result = subprocess.run(args, capture_output=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
         return result.stdout.decode("utf-8").strip() if result.returncode == 0 else ""
     cache = {}
     cache_path = build / "CMakeCache.txt"

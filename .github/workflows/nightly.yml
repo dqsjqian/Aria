@@ -22,7 +22,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────
   tsan:
     name: TSan (macOS)
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-deps
@@ -64,7 +64,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────
   fuzz:
     name: Fuzz 1M iters (ASan + UBSan)
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-deps

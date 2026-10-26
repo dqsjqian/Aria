@@ -3,7 +3,10 @@ description: Install the pinned dependency tooling and select its Python for CMa
 runs:
   using: composite
   steps:
-    - uses: actions/setup-python@v5
+    # Container jobs bring their own Python (setup-gcc-container.sh exports
+    # VIRTUAL_ENV); hosted runners use setup-python.
+    - if: env.VIRTUAL_ENV == ''
+      uses: actions/setup-python@v7
       with:
         python-version: '3.14'
     - run: python -m pip install -r requirements-build.txt

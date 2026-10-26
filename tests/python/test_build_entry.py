@@ -2,6 +2,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import os
 import sys
 import tempfile
 import unittest
@@ -19,6 +20,11 @@ spec.loader.exec_module(build)
 
 class BuildEntryTests(unittest.TestCase):
     def setUp(self):
+        # These cases exercise planning and the session around mocked commands;
+        # the tooling bootstrap has its own tests and must not run here.
+        bootstrap = mock.patch.dict(os.environ, {"FORGEDEPS_BOOTSTRAP": "0"})
+        bootstrap.start()
+        self.addCleanup(bootstrap.stop)
         self.temp = tempfile.TemporaryDirectory(prefix="build-entry-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / "project with spaces"

@@ -11,15 +11,30 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Toolchain policy: every compiler is the newest stable release.
+#   GCC 16      official gcc:16 image (release tarball build), Python via uv
+#   LLVM 23     apt.llvm.org (Linux); Homebrew llvm for the clang-tidy gate
+#   MSVC        Visual Studio 2026 (windows-2025-vs2026)
+#   AppleClang  newest released Xcode on the xcode-27 image (macOS 27, iOS 27)
+#   Android     NDK r30 (the newest on the image)
+#   MinGW-w64   MSYS2 UCRT64, packages updated at job start (GCC 16)
+env:
+  GCC_VERSION: "16"
+  LLVM_VERSION: "23"
+  PYTHON_VERSION: "3.14"
+  ARIA_NDK_VERSION: "30.0.16248370"
+
 jobs:
   # ────────────────────────────────────────────────────────────────────
   # macOS — AppleClang + Ninja, with sanitizer pass and Qt6 build
   # ────────────────────────────────────────────────────────────────────
   macos:
     name: macOS (AppleClang)
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v7
+      - name: Select the newest released Xcode
+        run: .github/scripts/select-xcode.sh
       - uses: ./.github/actions/setup-deps
 
       - name: Offline benchmark protocol contracts
@@ -105,18 +120,14 @@ jobs:
   # the ordinary shared-library jobs. Exercise the relocated SDK as a consumer.
   static-tls:
     name: Static HTTP + bundled TLS SDK
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
+    container: gcc:16
     steps:
       - uses: actions/checkout@v7
+      - name: Set up GCC 16 and Python
+        run: .github/scripts/setup-gcc-container.sh perl make
       - uses: ./.github/actions/setup-deps
-      - name: Install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build g++-14
       - name: Configure
-        env:
-          CC: gcc-14
-          CXX: g++-14
         run: |
           cmake -S . -B build/flavors/static-tls -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -137,9 +148,11 @@ jobs:
   # ────────────────────────────────────────────────────────────────────
   uikit:
     name: UIKit conformance + table source (iOS Simulator)
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v7
+      - name: Select the newest released Xcode
+        run: .github/scripts/select-xcode.sh
       - uses: ./.github/actions/setup-deps
 
       - name: Configure simulator target
@@ -149,7 +162,7 @@ jobs:
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_SYSROOT=iphonesimulator \
             -DCMAKE_OSX_ARCHITECTURES=$(uname -m) \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=27.0 \
             -DARIA_BUILD_UIKIT=ON \
             -DARIA_BUILD_TESTS=ON \
             -DARIA_BUILD_BENCHMARK=OFF \
@@ -185,11 +198,9 @@ jobs:
   # Android UI instrumentation suite. Native targets retain minSdk 23.
   # ────────────────────────────────────────────────────────────────────
   android:
-    name: Android (NDK 29, arm64 + x86_64)
-    runs-on: ubuntu-24.04
+    name: Android (NDK r30, arm64 + x86_64)
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
-    env:
-      ARIA_NDK_VERSION: 29.0.14206865
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-deps
@@ -251,42 +262,43 @@ jobs:
   # ────────────────────────────────────────────────────────────────────
   ubuntu:
     name: Ubuntu (${{ matrix.compiler }}, C++${{ matrix.standard }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
+    # GCC 16 runs in the official gcc image; LeakSanitizer needs ptrace there.
+    container:
+      image: ${{ matrix.container || '' }}
+      options: ${{ matrix.container && '--cap-add=SYS_PTRACE' || '' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - compiler: gcc
-            cc: gcc-14
-            cxx: g++-14
+            container: gcc:16
             standard: 23
           - compiler: clang
-            cc: clang-19
-            cxx: clang++-19
             standard: 23
     steps:
       - uses: actions/checkout@v7
+      - name: Set up GCC 16 and Python
+        if: matrix.compiler == 'gcc'
+        run: >-
+          .github/scripts/setup-gcc-container.sh
+          qt6-base-dev libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev nodejs
+      - name: Set up LLVM 23
+        if: matrix.compiler == 'clang'
+        run: |
+          .github/scripts/install-llvm.sh
+          sudo apt-get install -y ninja-build qt6-base-dev libqt6widgets6 \
+            libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev
       - uses: ./.github/actions/setup-deps
 
       - name: Offline benchmark protocol contracts
         working-directory: tests/python
         run: python -m unittest -v test_check_bench test_bench_validation test_bench_protocol
 
-      - name: Install toolchain + Qt6
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            ninja-build ${{ matrix.cc }} ${{ matrix.cxx }} \
-            qt6-base-dev libqt6widgets6 \
-            libgl1-mesa-dev libxkbcommon-dev libfontconfig1-dev
-
       - name: Require Node for HTTP SDK tests
         run: command -v node
 
       - name: Configure
-        env:
-          CC: ${{ matrix.cc }}
-          CXX: ${{ matrix.cxx }}
         run: |
           cmake -S . -B build/flavors/release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -326,7 +338,7 @@ jobs:
           test -n "$aria_config"
           cmake -S tests/package_http -B build/flavors/package-http -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -DCMAKE_CXX_COMPILER="$CXX" \
             -Daria_DIR="$(dirname "$aria_config")" \
             -DARIA_PACKAGE_EXPECT_TLS=OFF
           cmake --build build/flavors/package-http -j
@@ -339,9 +351,6 @@ jobs:
       # under ASan on Linux, so no extra option is needed.
       - name: Configure (ASan + UBSan, leak detection)
         if: matrix.compiler == 'gcc'
-        env:
-          CC: ${{ matrix.cc }}
-          CXX: ${{ matrix.cxx }}
         run: |
           cmake -S . -B build/flavors/asan -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
@@ -364,7 +373,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────
   windows-msys2:
     name: Windows (MSYS2 UCRT64)
-    runs-on: windows-2022
+    runs-on: windows-2025-vs2026
     defaults:
       run:
         shell: msys2 {0}
@@ -457,10 +466,10 @@ jobs:
       - name: Install Qt6 (binary)
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.7.2'
+          version: '6.12.0'
           host: windows
           target: desktop
-          arch: win64_msvc2019_64
+          arch: win64_msvc2022_64
           cache: true
 
       - name: Configure (MSVC, Release)
@@ -571,9 +580,11 @@ jobs:
   # ────────────────────────────────────────────────────────────────────
   docs:
     name: API docs (Doxygen)
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v7
+      - name: Select the newest released Xcode
+        run: .github/scripts/select-xcode.sh
       - uses: ./.github/actions/setup-deps
 
       # Cheap and dependency-free, so it runs before anything is built: a
@@ -619,20 +630,15 @@ jobs:
   # ────────────────────────────────────────────────────────────────────
   abi-smoke:
     name: Cross-dylib ABI smoke
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
+    container: gcc:16
     steps:
       - uses: actions/checkout@v7
+      - name: Set up GCC 16 and Python
+        run: .github/scripts/setup-gcc-container.sh
       - uses: ./.github/actions/setup-deps
 
-      - name: Install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build g++-14
-
       - name: Configure (shared libs + acceptance tests)
-        env:
-          CC: gcc-14
-          CXX: g++-14
         run: |
           cmake -S . -B build/flavors/abi-smoke -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -661,9 +667,11 @@ jobs:
   # ────────────────────────────────────────────────────────────────────
   clang-tidy:
     name: clang-tidy gate
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v7
+      - name: Select the newest released Xcode
+        run: .github/scripts/select-xcode.sh
       - uses: ./.github/actions/setup-deps
 
       - name: Install ninja + clang-tidy

@@ -202,7 +202,7 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
 
 | 架构优势 | 工程设计 |
 |---|---|
-| **现代 C++ 基础** | C++23 基线（GCC 14+ / Clang 19+ / AppleClang 21+ / MSVC v145），使用完整的协程与 concepts 能力；集成项目需采用 C++23 或更高标准。 |
+| **现代 C++ 基础** | C++23 基线（GCC 16+ / Clang 23+ / Xcode 27+ 的 AppleClang / MSVC v145，即 Visual Studio 2026），使用完整的协程与 concepts 能力；集成项目需采用 C++23 或更高标准。 |
 | **原生 UI 自由** | 控件、布局和动画交给所选 UI 工具包，Aria 统一状态与界面之间的单向/双向数据流；共享业务核心，各端保留原生体验。 |
 | **分层兼容策略** | `aria-abi` / `aria-runtime` / `aria-binding` 在主版本号内保持 ABI 稳定，要求编译器、标准库与构建选项一致；`Property<T>` 等模板及其宿主类型更新后需重新编译。 |
 | **开放适配协议** | Qt6 / AppKit / UIKit / JNI / HTTP 开箱可用；其他 UI 工具包通过实现 `IViewAdapter` 接入（见[适配器指南](docs/guide/adapters/)）。 |
@@ -276,8 +276,8 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
 
 - **CMake** >= 3.21
 - **完整支持 C++23 的编译器**：
-  - GCC >= 14（Windows 下可走 MSYS2 UCRT64 工具链）
-  - Clang >= 19（macOS 上 AppleClang 21+ 即可）
+  - GCC >= 16（Windows 下可走 MSYS2 UCRT64 工具链）
+  - Clang >= 23（macOS / iOS 用 Xcode 27 或更新版本自带的 AppleClang）
   - **MSVC v145 / Visual Studio 2026**（当前 Windows CI 工具链，详见下文）
 - *(可选)* **Qt6** >= 6.4（用于 Qt6 适配器）
 
@@ -323,7 +323,7 @@ python3 scripts/build.py --toolchain mingw --test        # Windows MSYS2 UCRT64
 | 工具链 | 命令 | 备注 |
 |---|---|---|
 | **MSVC**（VS2026；保留 VS2022 发现兼容） | `python scripts/build.py --toolchain msvc` | 默认工具链；根据安装版本选择 Visual Studio 生成器。 |
-| **MSYS2 UCRT64**（GCC 14+ / Clang 19+） | `python scripts/build.py --toolchain mingw` | 体积小（≈300 MB），大多数 CI 镜像已预装。 |
+| **MSYS2 UCRT64**（GCC 16+ / Clang 23+） | `python scripts/build.py --toolchain mingw` | 体积小（≈300 MB），大多数 CI 镜像已预装。 |
 
 <details>
 <summary>📖 MSVC 一次性配置</summary>
@@ -398,7 +398,7 @@ target_link_libraries(my_app PRIVATE aria::core aria::async)
 | `ARIA_BUILD_QT6` | OFF | 构建 Qt6 适配器。 |
 | `ARIA_BUILD_APPKIT` | OFF | macOS AppKit 适配器（需 `APPLE`）。 |
 | `ARIA_BUILD_UIKIT` | OFF | iOS UIKit 适配器（需 `APPLE`）。 |
-| `ARIA_BUILD_JNI` | OFF | Android JNI 适配器（需 NDK r29）。 |
+| `ARIA_BUILD_JNI` | OFF | Android JNI 适配器（需 NDK r30）。 |
 | `ARIA_BUILD_HTTP` | OFF | 构建 HTTP/REST/SSE 适配器。 |
 | `ARIA_ENABLE_ASAN` | OFF | AddressSanitizer。 |
 | `ARIA_ENABLE_UBSAN` | OFF | UndefinedBehaviorSanitizer。 |
@@ -465,7 +465,7 @@ Task<std::string> fetch_user(int id) {
 | macOS | AppKit / Qt6 | `aria-qt6` / `aria-appkit` | ✅ 可用 |
 | Linux | Qt6 | `aria-qt6` | ✅ 可用 |
 | iOS | UIKit | `aria-uikit` | ✅ 可用 |
-| Android | Compose / View | `aria-jni` | ✅ 就绪（NDK r29） |
+| Android | Compose / View | `aria-jni` | ✅ 就绪（NDK r30） |
 | **Web（服务端驱动）** | **浏览器 HTML/JS** | **`aria-http`** | **✅ REST + SSE** |
 | Web（浏览器内 C++） | DOM via WASM | `aria-wasm` | 按实际需求评估，未实现 |
 

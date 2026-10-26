@@ -337,6 +337,11 @@ def main(argv=None):
         if args.dry_run:
             print(json.dumps(commands, ensure_ascii=False, indent=2))
             return 0
+        # A fresh clone needs only Python: prepare (once, shared) the pinned
+        # ForgeDeps tooling plus CMake/Ninja when missing, then continue here.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import forgedeps_bootstrap
+        forgedeps_bootstrap.ensure(ROOT / "requirements-build.txt")
         env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
         if os.name == "nt":
             env["VSLANG"] = "1033"
