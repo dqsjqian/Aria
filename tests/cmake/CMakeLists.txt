@@ -22,7 +22,7 @@ set_tests_properties(license_packaging PROPERTIES TIMEOUT 60)
 if(FORGEDEPS_PYTHON_EXECUTABLE)
     set(Python3_EXECUTABLE "${FORGEDEPS_PYTHON_EXECUTABLE}")
 endif()
-find_package(Python3 3.10 QUIET COMPONENTS Interpreter)
+find_package(Python3 3.14 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME portable_build_entry
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/python/test_build_entry.py")

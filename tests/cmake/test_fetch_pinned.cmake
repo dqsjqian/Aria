@@ -8,7 +8,7 @@ set(module "${ARIA_SOURCE_DIR}/cmake/ariaFetchPinned.cmake")
 if(DEFINED ENV{FORGEDEPS_PYTHON_EXECUTABLE} AND NOT "$ENV{FORGEDEPS_PYTHON_EXECUTABLE}" STREQUAL "")
     set(Python3_EXECUTABLE "$ENV{FORGEDEPS_PYTHON_EXECUTABLE}")
 endif()
-find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+find_package(Python3 3.14 REQUIRED COMPONENTS Interpreter)
 execute_process(COMMAND "${Python3_EXECUTABLE}" -c
     "import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve().as_uri())" "${TEST_ROOT}"
     OUTPUT_VARIABLE fixture_uri OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
