@@ -16,9 +16,10 @@ All notable changes to **aria** are documented here.
 
 ## 3.2.1 — 2026-10-26
 
-- Use ForgeDeps 0.4.0 for dependency resolution, verified sources and shared
-  artifact environments. ForgeRecipes 0.1.0 supplies JSON, doctest and OpenSSL
-  recipes; Aria imports their packages instead of rebuilding vendor code.
+- Use ForgeDeps 0.4.4 for dependency resolution, verified sources and shared
+  artifact environments. ForgeRecipes 0.1.4 supplies JSON, doctest and OpenSSL
+  recipes; Aria imports their packages instead of rebuilding vendor code. Both
+  are pinned by release tag, and Python 3.14 is the supported floor.
 - Hold the complete dependency graph under a reader lease throughout portable
   configure/build/test sessions, preserving parent packages and explicit source
   overrides. Move the OpenSSL platform recipe out of this repository.
