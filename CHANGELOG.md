@@ -14,6 +14,15 @@ All notable changes to **aria** are documented here.
 
 ---
 
+## 3.2.3 — 2026-10-27
+
+- `aria_find_qt6` reuses Qt6 components that are already imported. Qt's
+  `Qt6EntryPointPrivateConfig` creates its imported target unconditionally, so a
+  second `find_package(Qt6)` in one configure aborted with "add_library cannot
+  create imported target EntryPointMinGW32 because another target with the same
+  name already exists" — every consumer whose application also finds Qt (all of
+  them) hit it on MSYS2 UCRT64 once the newest Qt arrived there.
+
 ## 3.2.2 — 2026-10-27
 
 - One static-linkage switch for every module macro. A static build defined
