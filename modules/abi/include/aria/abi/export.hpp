@@ -16,7 +16,7 @@
 // C4275 (a dll-interface class deriving from a non-dll class) and /WX makes it
 // an error — which is what a static build that only partly sees ARIA_*_STATIC
 // produced.
-#if defined(ARIA_STATIC_LINKAGE)
+#ifdef ARIA_STATIC_LINKAGE
 #  define ARIA_ABI_API
 #  define ARIA_RUNTIME_API
 #  define ARIA_CORE_API
