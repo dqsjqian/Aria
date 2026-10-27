@@ -14,6 +14,15 @@ All notable changes to **aria** are documented here.
 
 ---
 
+## 3.2.4 — 2026-10-27
+
+- `aria_find_qt6` actually reuses an imported Qt6. The guard collected its
+  component list with `foreach(... IN LISTS ARGN)`, which a macro does not
+  expand as intended: the list came back empty, every call searched again, and
+  Qt 6.10's `Qt6EntryPointPrivateConfig` aborted on the second `add_library` of
+  `EntryPointMinGW32` — exactly the failure the guard was added for. Iterating
+  `${ARGN}` with `IN ITEMS` fixes it; both paths verified locally.
+
 ## 3.2.3 — 2026-10-27
 
 - `aria_find_qt6` reuses Qt6 components that are already imported. Qt's

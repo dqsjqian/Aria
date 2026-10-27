@@ -21,7 +21,7 @@ macro(aria_find_qt6)
     # found the requested components therefore needs no second search.
     set(_aria_qt_components "")
     set(_aria_qt_collect FALSE)
-    foreach(_aria_qt_argument IN LISTS ARGN)
+    foreach(_aria_qt_argument IN ITEMS ${ARGN})
         if(_aria_qt_argument STREQUAL "COMPONENTS")
             set(_aria_qt_collect TRUE)
         elseif(_aria_qt_collect)
