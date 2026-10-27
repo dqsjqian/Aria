@@ -21,6 +21,13 @@ function(_aria_install_license source destination diagnostic)
 endfunction()
 
 function(_aria_install_dependency_license name source_dir license_name)
+    # A prefix from the dependency environment is a native Windows path, and a
+    # backslash inside a CONFIGURE_DEPENDS expression is written verbatim into
+    # CMakeFiles/VerifyGlobs.cmake, where "\f" in "D:\forgedeps\..." parses as
+    # an escape and aborts ZERO_CHECK.
+    if(source_dir)
+        file(TO_CMAKE_PATH "${source_dir}" source_dir)
+    endif()
     string(TOUPPER "${name}" upper)
     set(ARIA_${upper}_LICENSE_FILE "" CACHE FILEPATH
         "Matching license for an externally supplied ${name} dependency")

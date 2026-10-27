@@ -111,7 +111,11 @@ endif()
 
 # Licenses follow the package actually selected, never an arbitrary cache copy.
 # Explicit parent targets may provide ARIA_<NAME>_LICENSE_FILE instead.
-foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
+foreach(_prefix_raw IN LISTS CMAKE_PREFIX_PATH)
+    # The environment passes native Windows prefixes; a backslash in a
+    # CONFIGURE_DEPENDS expression is written verbatim into VerifyGlobs.cmake
+    # and aborts ZERO_CHECK ("Invalid character escape '\\f'").
+    file(TO_CMAKE_PATH "${_prefix_raw}" _prefix)
     if(_aria_json_imported AND nlohmann_json_DIR AND IS_DIRECTORY "${_prefix}/share/licenses/json")
         cmake_path(IS_PREFIX _prefix "${nlohmann_json_DIR}" NORMALIZE _aria_match)
         if(_aria_match)
@@ -126,6 +130,7 @@ foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
             set(OPENSSL_INSTALL_DIR "${_prefix}")
             set(OPENSSL_SOURCE_DIR "${_prefix}/share/licenses/openssl")
             set(_aria_openssl_license_source "${OPENSSL_SOURCE_DIR}")
+            file(TO_CMAKE_PATH "${OPENSSL_SOURCE_DIR}" OPENSSL_SOURCE_DIR)
             get_filename_component(_OPENSSL_SSL_NAME "${OPENSSL_SSL_LIBRARY}" NAME)
             get_filename_component(_OPENSSL_CRYPTO_NAME "${OPENSSL_CRYPTO_LIBRARY}" NAME)
         endif()
