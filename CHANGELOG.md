@@ -14,6 +14,13 @@ All notable changes to **aria** are documented here.
 
 ---
 
+## 3.2.5 — 2026-10-27
+
+- When Qt components are already imported in a consumer's parent scope, report
+  their package/component success from Aria's nested config scope. This keeps
+  the package reusable without a duplicate `find_package(Qt6)` while ensuring
+  CMake does not mark Aria's Qt component unavailable.
+
 ## 3.2.4 — 2026-10-27
 
 - `aria_find_qt6` actually reuses an imported Qt6. The guard collected its

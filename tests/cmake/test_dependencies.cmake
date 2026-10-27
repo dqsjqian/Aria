@@ -127,4 +127,21 @@ run_case(qt_missing_exact "
 set(ARIA_DEP_QT_VERSION 6.8.0)
 aria_find_qt6(REQUIRED CONFIG NO_DEFAULT_PATH PATHS \"${TEST_ROOT}/qt\")
 " "6.8.0")
+set(qt_scope_source "${TEST_ROOT}/qt_imported_targets")
+file(MAKE_DIRECTORY "${qt_scope_source}")
+file(WRITE "${qt_scope_source}/CMakeLists.txt"
+    "cmake_minimum_required(VERSION 3.20)\n"
+    "project(QtImportedTargets NONE)\n"
+    "include(\"${ARIA_SOURCE_DIR}/cmake/ariaFindQt.cmake\")\n"
+    "add_library(Qt6::Core INTERFACE IMPORTED)\n"
+    "add_library(Qt6::Widgets INTERFACE IMPORTED)\n"
+    "aria_find_qt6(QUIET COMPONENTS Core Widgets)\n"
+    "if(NOT Qt6_FOUND OR NOT Qt6_Core_FOUND OR NOT Qt6_Widgets_FOUND)\n"
+    "  message(FATAL_ERROR \"Existing Qt6 component targets did not produce a successful package result\")\n"
+    "endif()\n")
+execute_process(COMMAND "${CMAKE_COMMAND}" -S "${qt_scope_source}" -B "${qt_scope_source}/build"
+    RESULT_VARIABLE qt_scope_result OUTPUT_VARIABLE qt_scope_output ERROR_VARIABLE qt_scope_error)
+if(NOT qt_scope_result EQUAL 0)
+    message(FATAL_ERROR "qt_imported_targets_in_parent_scope failed:\n${qt_scope_output}${qt_scope_error}")
+endif()
 message(STATUS "ForgeDeps bridge selection/override/offline/source override/Qt fixtures passed")
