@@ -91,6 +91,19 @@ function(_aria_resolve_http output)
                 return()
             endif()
         endif()
+        # OpenSSL's own CMake config does not name the Windows system
+        # libraries its static archives reference (select, send, WSASocket…).
+        # The build-side recipe adds them; the installed package must do the
+        # same for targets resolved here, or the final executable link fails
+        # with undefined __imp_ references on MinGW and MSVC.
+        if(WIN32 AND TARGET OpenSSL::Crypto)
+            get_target_property(_aria_crypto_links OpenSSL::Crypto INTERFACE_LINK_LIBRARIES)
+            if(NOT _aria_crypto_links MATCHES "ws2_32")
+                set_property(TARGET OpenSSL::Crypto APPEND PROPERTY
+                    INTERFACE_LINK_LIBRARIES ws2_32 gdi32 advapi32 crypt32 user32)
+            endif()
+            unset(_aria_crypto_links)
+        endif()
     endif()
     # Resolve the bundled OpenSSL first: Mira's own dependency discovery must
     # not bind a static Mira built with OpenSSL 4 to a system OpenSSL 3.

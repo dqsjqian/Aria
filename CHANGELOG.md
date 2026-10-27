@@ -14,6 +14,14 @@ All notable changes to **aria** are documented here.
 
 ---
 
+## 3.2.6 — 2026-10-27
+
+- The installed package config now appends the Windows system libraries
+  (`ws2_32 gdi32 advapi32 crypt32 user32`) to `OpenSSL::Crypto` targets it
+  resolves. OpenSSL's own CMake config omits them while its static archives
+  reference `select`, `send` and the Winsock API, so consumer executables
+  failed to link with undefined `__imp_` references on MinGW and MSVC.
+
 ## 3.2.5 — 2026-10-27
 
 - When Qt components are already imported in a consumer's parent scope, report
