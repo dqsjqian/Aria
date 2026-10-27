@@ -19,6 +19,10 @@ concurrency:
 #   Android     NDK r30 (the newest on the image)
 #   MinGW-w64   MSYS2 UCRT64, packages updated at job start (GCC 16)
 env:
+  # The CI scripts print UTF-8 diagnostics; a Windows console defaults
+  # to cp1252 and raises UnicodeEncodeError on them.
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
   GCC_VERSION: "16"
   LLVM_VERSION: "23"
   PYTHON_VERSION: "3.14"
