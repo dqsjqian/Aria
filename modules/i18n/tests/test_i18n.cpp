@@ -219,7 +219,7 @@ TEST_CASE("i18n XML rejects damaged resources with typed diagnostics instead of 
         auto result = catalog->lookup_exact("zh-CN", "page", "a");
         REQUIRE_FALSE(result);
         CHECK(result.error().code == CatalogErrorCode::parse);
-        CHECK(result.error().path == (resources.root / "page/strings.xml").string());
+        CHECK(fs::path(result.error().path) == resources.root / "page" / "strings.xml");
         CHECK_FALSE(result.error().message.empty());
         CHECK_THROWS_AS((void)context(catalog)->tr("page", "a", "zh-CN"), std::runtime_error);
     }
