@@ -622,6 +622,12 @@ for all scenarios, complexity, remaining regressions, and reproduction details.
 
 ## 📋 Framework contracts
 
+Optional `aria::i18n` and `aria::app` targets provide explicit locale
+contexts, reactive text, module registration, ViewModel factories and caches,
+revocable contributions and slots without UI, JSON or networking dependencies.
+See [Localization and Application Composition](docs/guide/application-composition.md)
+for build options and migration guidance.
+
 Every non-trivial behaviour Aria promises is pinned in a numbered
 contract document. Each contract item carries an ID (e.g. `L-13`,
 `E-22`, `LD-7`, `D-4`, `S-31`) so a failing assertion or PR review

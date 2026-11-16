@@ -136,7 +136,7 @@ unset(_aria_package_prefix)
 unset(_aria_http_error)
 
 include("${CMAKE_CURRENT_LIST_DIR}/ariaTargets.cmake")
-foreach(_aria_adapter qt6 http jni appkit uikit)
+foreach(_aria_adapter i18n app qt6 http jni appkit uikit)
     if(NOT aria_FIND_COMPONENTS OR _aria_adapter IN_LIST aria_FIND_COMPONENTS)
         if((_aria_adapter STREQUAL "qt6" AND NOT _aria_qt6_ready) OR
            (_aria_adapter STREQUAL "http" AND NOT _aria_http_ready))

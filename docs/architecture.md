@@ -44,6 +44,14 @@ This document explains the design principles behind aria.
                   └──────────────────┘
 ```
 
+The diagram above shows the base layers and adapters. Two independent optional
+capabilities sit alongside the adapters: `aria::i18n` links core for catalogs,
+locale state and reactive text bindings; `aria::app` links binding and
+runtime for module registries, ViewModel factories, contributions and slots.
+Neither requires a platform adapter, a JSON package or networking. See
+[Localization and Application Composition](guide/application-composition.md)
+for ownership, lookup, registration and migration contracts.
+
 ### `aria-abi`
 
 The compiled foundation owns type-erased signals, version metadata, the

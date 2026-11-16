@@ -28,6 +28,8 @@ aria::                Top-level public API (core)    yes — preferred      —
 aria::async::         Async + coroutine public API   yes — preferred      —
 aria::binding::       View binding + ViewModels      yes — preferred      —
 aria::runtime::       App runtime services           yes — preferred      —
+aria::i18n::          Optional localization          yes — preferred      —
+aria::app::   Optional app composition       yes — preferred      —
 aria::abi::           ABI boundary type-erasure      ⚠ advanced users    —
 aria::reactive::      Reactive implementation        no — internal        yes
 aria::detail::        Type-erasure signal wrappers   no — internal        yes

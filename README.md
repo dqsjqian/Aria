@@ -537,6 +537,10 @@ ctest --test-dir build/flavors/release --no-tests=error --output-on-failure
 
 ## 📋 框架本体契约
 
+可选的 `aria::i18n` 与 `aria::app` 提供显式语言上下文、响应式文案、模块注册、
+ViewModel 工厂与缓存、可撤销拓展点和插槽；不引入 UI、JSON 或网络依赖。
+构建与迁移方式见 [本地化与应用组合指南](docs/guide/application-composition.md)。
+
 所有非平庸行为都钉在带编号的契约文档里，每条契约有稳定 ID（如 `L-13` / `E-22` / `LD-7`）。
 
 | 文档 | 前缀 | 范围 |

@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.21)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "")
 
 project(aria
-    VERSION 3.2.6
+    VERSION 3.3.0
     DESCRIPTION "Modern MVVM framework for C++23 — cross-platform, layered, coroutine-first"
     HOMEPAGE_URL "https://github.com/dqsjqian/Aria"
     LANGUAGES CXX
@@ -89,6 +89,8 @@ option(ARIA_BUILD_TESTS      "Build tests"              ON)
 option(ARIA_BUILD_BENCHMARK  "Build benchmark"          ON)
 option(ARIA_BUILD_DOCS       "Build Doxygen docs"       OFF)
 option(ARIA_BUILD_SHARED     "Build compiled modules as SHARED" ON)
+option(ARIA_BUILD_I18N        "Build localization catalog and reactive text bindings" OFF)
+option(ARIA_BUILD_APP         "Build module, extension and slot composition" OFF)
 
 option(ARIA_BUILD_QT6        "Build Qt6 adapter"        OFF)
 option(ARIA_BUILD_APPKIT     "Build macOS AppKit adapter" OFF)
@@ -147,6 +149,12 @@ add_subdirectory(modules/core)
 add_subdirectory(modules/async)
 add_subdirectory(modules/runtime)
 add_subdirectory(modules/binding)
+if(ARIA_BUILD_I18N)
+    add_subdirectory(modules/i18n)
+endif()
+if(ARIA_BUILD_APP)
+    add_subdirectory(modules/app)
+endif()
 
 # ── Optional adapters ────────────────────────────────────────────────────────
 if(ARIA_BUILD_QT6)
@@ -253,6 +261,12 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
         aria_binding
     )
     set(ARIA_INSTALL_TARGETS ${ARIA_CORE_INSTALL_TARGETS})
+    if(ARIA_BUILD_I18N)
+        list(APPEND ARIA_INSTALL_TARGETS aria_i18n)
+    endif()
+    if(ARIA_BUILD_APP)
+        list(APPEND ARIA_INSTALL_TARGETS aria_app)
+    endif()
     if(ARIA_BUILD_QT6)
         list(APPEND ARIA_INSTALL_TARGETS aria_qt6)
     endif()
@@ -344,6 +358,12 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
 
     # Headers — every module ships its own include/ tree.
     set(ARIA_HEADER_MODULES abi core async runtime binding)
+    if(ARIA_BUILD_I18N)
+        list(APPEND ARIA_HEADER_MODULES i18n)
+    endif()
+    if(ARIA_BUILD_APP)
+        list(APPEND ARIA_HEADER_MODULES app)
+    endif()
     if(ARIA_BUILD_QT6)
         list(APPEND ARIA_HEADER_MODULES adapters/qt6)
     endif()
@@ -419,6 +439,8 @@ message(STATUS "  Compiler        : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILE
 message(STATUS "  Tests           : ${ARIA_BUILD_TESTS}")
 message(STATUS "  Benchmark       : ${ARIA_BUILD_BENCHMARK}")
 message(STATUS "  Shared libs     : ${ARIA_BUILD_SHARED}")
+message(STATUS "  Localization    : ${ARIA_BUILD_I18N}")
+message(STATUS "  App composition : ${ARIA_BUILD_APP}")
 message(STATUS "  Qt6 adapter     : ${ARIA_BUILD_QT6}")
 message(STATUS "  HTTP adapter    : ${ARIA_BUILD_HTTP}")
 if(ARIA_BUILD_HTTP)

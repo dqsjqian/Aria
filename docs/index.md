@@ -26,6 +26,7 @@ Step-by-step, chapter-style documentation for library users:
 | 7 | [Navigation](guide/navigation.md) | `Navigator`, `push`/`pop`/`clear`, `push_for_result<R>`, `Modal` vs `Push`, deep-link routing |
 | 8 | [Diagnostics & Debugging](guide/diagnostics-guide.md) | `TraceEvent`, `TraceSink`, `GraphInspector`, `ScopedTraceSink`, disabled tracing fast path |
 | 9 | [Adapters](guide/adapters/) | Platform-specific integration guides |
+| 10 | [Localization & Application Composition](guide/application-composition.md) | Optional catalogs, locale contexts, module registries, ViewModel factories, contributions and slots |
 
 ### Adapter Guides
 

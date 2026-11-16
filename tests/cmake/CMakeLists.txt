@@ -91,6 +91,8 @@ if(PROJECT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
             "-DTEST_SANITIZER_LINK_OPTIONS=${_aria_sanitizer_link_options}"
             "-DTEST_HTTP=${ARIA_BUILD_HTTP}"
             "-DTEST_TLS=${ARIA_HTTP_ENABLE_TLS}"
+            "-DTEST_I18N=${ARIA_BUILD_I18N}"
+            "-DTEST_APP=${ARIA_BUILD_APP}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/test_package.cmake")
     set_tests_properties(installed_sdk PROPERTIES TIMEOUT 120)
     unset(_aria_sanitizer_link_options)

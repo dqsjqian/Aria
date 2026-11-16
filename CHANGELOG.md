@@ -14,6 +14,21 @@ All notable changes to **aria** are documented here.
 
 ---
 
+## 3.3.0 — 2026-11-16
+
+- Add optional `aria::i18n` with explicit locale contexts, exact catalog lookup,
+  configurable fallback, XML resources, transactional reload and reactive text
+  bindings. Locale instances do not share a global translation backend.
+- Add optional `aria::app` with module ordering, cached and fresh ViewModel
+  factories, revocable extension points, slots, typed route targets and
+  transactional startup/shutdown. Business interfaces and platform views stay
+  in applications; neither new module requires UI, JSON or networking.
+- Export both components independently in installed SDKs, including relocated
+  package consumption tests. Exercise them in desktop, sanitizer and Android
+  CI configurations.
+- Preserve the existing core ABI version and synchronize the runtime release
+  version with the CMake project version.
+
 ## 3.2.6 — 2026-10-27
 
 - The installed package config now appends the Windows system libraries

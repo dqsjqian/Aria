@@ -53,7 +53,7 @@ jobs:
 
       - name: Configure (Release)
         run: |
-          cmake -S . -B build/flavors/release -G Ninja \
+          cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B build/flavors/release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_HTTP=ON \
             -DARIA_HTTP_ENABLE_TLS=OFF
@@ -79,7 +79,7 @@ jobs:
 
       - name: Configure (ASan + UBSan)
         run: |
-          cmake -S . -B build/flavors/asan -G Ninja \
+          cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B build/flavors/asan -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DARIA_ENABLE_ASAN=ON \
             -DARIA_ENABLE_UBSAN=ON
@@ -95,7 +95,7 @@ jobs:
 
       - name: Configure (Qt6)
         run: |
-          cmake -S . -B build/flavors/qt -G Ninja \
+          cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B build/flavors/qt -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_QT6=ON \
             -DCMAKE_PREFIX_PATH=$(brew --prefix qtbase)
@@ -110,7 +110,7 @@ jobs:
 
       - name: Configure (AppKit)
         run: |
-          cmake -S . -B build/flavors/appkit -G Ninja \
+          cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B build/flavors/appkit -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_APPKIT=ON \
             -DARIA_BUILD_BENCHMARK=OFF
@@ -133,7 +133,7 @@ jobs:
       - uses: ./.github/actions/setup-deps
       - name: Configure
         run: |
-          cmake -S . -B build/flavors/static-tls -G Ninja \
+          cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B build/flavors/static-tls -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_SHARED=OFF \
             -DARIA_BUILD_HTTP=ON \
@@ -161,7 +161,7 @@ jobs:
 
       - name: Configure simulator target
         run: |
-          cmake -S . -B build/platforms/uikit-test -G Xcode \
+          cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B build/platforms/uikit-test -G Xcode \
             -DARIA_DEPENDENCIES_CONFIGURATION=Debug \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_SYSROOT=iphonesimulator \
@@ -218,7 +218,7 @@ jobs:
       - name: Configure and build both Android ABIs
         run: |
           for abi in arm64-v8a x86_64; do
-            cmake -S . -B "build/platforms/android-$abi" -G Ninja \
+            cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B "build/platforms/android-$abi" -G Ninja \
               -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/$ARIA_NDK_VERSION/build/cmake/android.toolchain.cmake" \
               -DCMAKE_BUILD_TYPE=Release \
               -DANDROID_ABI="$abi" \
@@ -304,7 +304,7 @@ jobs:
 
       - name: Configure
         run: |
-          cmake -S . -B build/flavors/release -G Ninja \
+          cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B build/flavors/release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_STANDARD=${{ matrix.standard }} \
             -DARIA_BUILD_QT6=ON \
@@ -356,7 +356,7 @@ jobs:
       - name: Configure (ASan + UBSan, leak detection)
         if: matrix.compiler == 'gcc'
         run: |
-          cmake -S . -B build/flavors/asan -G Ninja \
+          cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B build/flavors/asan -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DARIA_SANITIZE=asan+ubsan \
             -DARIA_BUILD_HTTP=ON \
@@ -414,7 +414,7 @@ jobs:
 
       - name: Configure
         run: |
-          cmake -S . -B build/flavors/release -G Ninja \
+          cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B build/flavors/release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_QT6=ON \
             -DARIA_BUILD_HTTP=ON \
@@ -484,7 +484,7 @@ jobs:
         shell: pwsh
         run: |
           Get-Command node -ErrorAction Stop
-          cmake -S . -B build/flavors/release `
+          cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B build/flavors/release `
             -G "Visual Studio 18 2026" -A x64 -T v145 `
             -DCMAKE_BUILD_TYPE=Release `
             -DARIA_BUILD_QT6=ON `
@@ -538,7 +538,7 @@ jobs:
       - name: Configure (MSVC, Debug ASan)
         shell: pwsh
         run: |
-          cmake -S . -B build/flavors/asan `
+          cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B build/flavors/asan `
             -G "Visual Studio 18 2026" -A x64 -T v145 `
             -DARIA_DEPENDENCIES_CONFIGURATION=Debug `
             -DARIA_ENABLE_ASAN=ON `
@@ -611,7 +611,7 @@ jobs:
 
       - name: Configure (docs)
         run: |
-          cmake -S . -B build/flavors/docs -G Ninja \
+          cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B build/flavors/docs -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_DOCS=ON \
             -DDOXYGEN_EXECUTABLE="$RUNNER_TEMP/aria-doxygen/bin/doxygen" \
@@ -648,7 +648,7 @@ jobs:
 
       - name: Configure (shared libs + acceptance tests)
         run: |
-          cmake -S . -B build/flavors/abi-smoke -G Ninja \
+          cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B build/flavors/abi-smoke -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DARIA_BUILD_SHARED=ON \
             -DARIA_BUILD_TESTS=ON \
@@ -707,7 +707,7 @@ jobs:
 
       - name: Configure (compile_commands.json)
         run: |
-          cmake -S . -B build/flavors/tidy -G Ninja \
+          cmake -S . -DARIA_BUILD_I18N=ON -DARIA_BUILD_APP=ON -B build/flavors/tidy -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
