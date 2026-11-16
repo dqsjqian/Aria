@@ -217,7 +217,7 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
 - ⚡ **C++ 协程** —— `Task<T>`、执行器、`co_await schedule_on(pool)`，异步代码写起来像同步代码。
 - 🖥 **适配器抽象** (`IViewAdapter`) —— Qt6 / AppKit / UIKit / JNI / HTTP，任何 UI 工具包都能用同一套业务逻辑驱动。
 
-## 🏗 架构（10 个模块）
+## 🏗 架构（12 个模块）
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -270,6 +270,8 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
 | `aria-async` | 仅头文件 | core | 协程 `Task<T>`、执行器。仅源码兼容。 |
 | `aria-runtime` | `SHARED` | core, abi | EventBus / Container / Dispatcher / Logger —— 单例统一放在**一个**动态库中。**ABI 稳定**。 |
 | `aria-binding` | `SHARED` | core, runtime | `BindingEngine`、`IViewAdapter`。**ABI 稳定**。 |
+| `aria-i18n` | `SHARED`/`STATIC` | core | 可选：XML/自定义 Catalog、显式语言上下文与响应式文案绑定。 |
+| `aria-app` | 仅头文件 | binding, runtime | 可选：模块生命周期、ViewModel 工厂、拓展点与插槽。 |
 | 适配器 | `SHARED`/`STATIC` | binding | Qt6 / AppKit / UIKit / JNI / HTTP（按需启用）；WASM 按需评估。 |
 
 ## 📋 环境要求
@@ -394,7 +396,9 @@ target_link_libraries(my_app PRIVATE aria::core aria::async)
 |------|--------|------|
 | `ARIA_BUILD_TESTS` | ON | 构建单元测试并注册到 ctest。 |
 | `ARIA_BUILD_BENCHMARK` | ON | 构建微基准测试。 |
-| `ARIA_BUILD_SHARED` | ON | runtime/binding 编译为动态库。 |
+| `ARIA_BUILD_SHARED` | ON | runtime、binding 及启用的 i18n 组件编译为动态库。 |
+| `ARIA_BUILD_I18N` | OFF | 构建本地化目录与响应式文案绑定，导出 `aria::i18n`。 |
+| `ARIA_BUILD_APP` | OFF | 启用模块、拓展点与插槽组合，导出 `aria::app`。 |
 | `ARIA_BUILD_QT6` | OFF | 构建 Qt6 适配器。 |
 | `ARIA_BUILD_APPKIT` | OFF | macOS AppKit 适配器（需 `APPLE`）。 |
 | `ARIA_BUILD_UIKIT` | OFF | iOS UIKit 适配器（需 `APPLE`）。 |
@@ -475,7 +479,7 @@ Task<std::string> fetch_user(int id) {
 
 ![Aria 生态：框架 + 三个真实应用](docs/marketing/images/aria-eco.png)
 
-下面这些是 Aria 框架在真实应用里跑出来的样子 —— 同一份 C++ ViewModel，跨多个平台的原生壳。**[AriaTools](https://github.com/dqsjqian/AriaTools)**（17 个模块的跨端工作台，Qt / iOS / Android / Web 四端）、**[AriaAgent](https://github.com/dqsjqian/AriaAgent)**（Provider 无关的 LLM Agent GUI）、[AriaRead](https://github.com/dqsjqian/AriaRead)（跨平台书源引擎，HTTP/SSE Web 壳）均已在生产形态上使用 Aria 1.x。所有截图均来自稳定版本，一次构建、跨端共用同一份 C++ 业务核心。
+下面展示 Aria 的三个真实应用：**[AriaTools](https://github.com/dqsjqian/AriaTools)**（17 个模块的跨端工作台，Qt / iOS / Android / Web 四端）、**[AriaAgent](https://github.com/dqsjqian/AriaAgent)**（Provider 无关的 LLM Agent GUI）和 [AriaRead](https://github.com/dqsjqian/AriaRead)（跨平台书源引擎，HTTP/SSE Web 壳）。这些历史截图记录了它们使用 Aria 1.x 时的稳定版本，展示原生壳如何共用 C++ 业务核心；各项目当前使用的框架版本以其依赖锁为准。
 
 ### AriaTools —— 跨端工作台（17 模块）
 

@@ -228,7 +228,7 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 - ⚡ **C++ coroutines** — `Task<T>`, executors, `co_await schedule_on(pool)`. Async code reads like sync code.
 - 🖥 **Adapter abstraction** (`IViewAdapter`) — Qt6 / AppKit / UIKit / JNI / HTTP. Any UI toolkit, same business logic.
 
-## 🏗 Architecture (10 modules)
+## 🏗 Architecture (12 modules)
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -281,6 +281,8 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 | `aria-async` | header-only | core | Coroutine `Task<T>`, executors. Source-compatible only. |
 | `aria-runtime` | `SHARED` | core, abi | EventBus / Container / Dispatcher / Logger — singletons live in **one** dylib. **ABI-stable** (non-template exports). |
 | `aria-binding` | `SHARED` | core, runtime | `BindingEngine`, `IViewAdapter`. **ABI-stable** (non-template exports). |
+| `aria-i18n` | `SHARED`/`STATIC` | core | Optional XML/custom catalogs, explicit locale contexts, and reactive text bindings. |
+| `aria-app` | header-only | binding, runtime | Optional module lifecycle, ViewModel factories, extension points, and slots. |
 | Adapters | `SHARED`/`STATIC` | binding | Qt6 / AppKit / UIKit / JNI / HTTP (each opt-in). WASM is conditional roadmap work. |
 
 ## 📋 Requirements
@@ -438,7 +440,9 @@ Clone Aria separately outside your project, then pass its absolute path when con
 |--------|--------|-------------|
 | `ARIA_BUILD_TESTS` | ON | Build unit tests + ctest registration. |
 | `ARIA_BUILD_BENCHMARK` | ON | Build the micro-benchmark suite. |
-| `ARIA_BUILD_SHARED` | ON | Runtime/binding as `.dylib`/`.so`/`.dll` instead of `.a`. |
+| `ARIA_BUILD_SHARED` | ON | Runtime, binding, and enabled i18n components as `.dylib`/`.so`/`.dll` instead of `.a`. |
+| `ARIA_BUILD_I18N` | OFF | Build localization catalogs and reactive text bindings; exports `aria::i18n`. |
+| `ARIA_BUILD_APP` | OFF | Enable module, extension, and slot composition; exports `aria::app`. |
 | `ARIA_BUILD_QT6` | OFF | Build the Qt6 adapter (requires `Qt6Widgets`). |
 | `ARIA_BUILD_APPKIT` | OFF | **(production-grade)** Build the macOS AppKit adapter as a first-class `STATIC` CMake module using Objective-C++; ships `aria::adapters::appkit` and passes the shared `adapter_conformance` battery. Requires `APPLE`. |
 | `ARIA_BUILD_UIKIT` | OFF | **(production-grade)** Build the iOS UIKit adapter as a first-class `STATIC` CMake module using Objective-C++; ships `aria::adapters::uikit` and passes the shared conformance battery. Requires `APPLE`. |
@@ -547,9 +551,9 @@ Below is what Aria looks like in real applications — one C++ ViewModel, native
 platform. **[AriaTools](https://github.com/dqsjqian/AriaTools)** (17-module cross-platform
 workbench on Qt / iOS / Android / Web), **[AriaAgent](https://github.com/dqsjqian/AriaAgent)**
 (provider-agnostic LLM Agent GUI), and [AriaRead](https://github.com/dqsjqian/AriaRead)
-(cross-platform book-source engine, HTTP/SSE web shell) all run Aria 1.x in production
-shape. Every screenshot comes from a stable release: one build, one shared C++ business
-core across platforms.
+(cross-platform book-source engine, HTTP/SSE web shell). These historical screenshots
+document stable releases built with Aria 1.x, showing native shells sharing a C++ business
+core. Each application's dependency lock records its current framework version.
 
 ### AriaTools — cross-platform workbench (17 modules)
 
