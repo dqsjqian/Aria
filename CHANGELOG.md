@@ -14,6 +14,42 @@ All notable changes to **aria** are documented here.
 
 ---
 
+## Unreleased
+
+Fixes from the November 2026 review. Each has a regression test.
+
+- `when_all` no longer resumes its caller from inside `await_suspend` when
+  every child completes synchronously. A loop over ready children used to
+  grow the stack per iteration and overflow it (about 20k iterations).
+- `AsyncCommand`: an invocation cancelled or superseded after its action
+  returned reports Cancelled and writes neither `last_result` nor
+  `last_error`. A slow `LatestOnly` search finishing after a newer one no
+  longer overwrites the newer result.
+- `schedule_on` observes the enclosing `CoroutineScope`'s cancellation. Tasks
+  awaited in a scope inherit its token; a hop still queued when the scope is
+  cancelled resumes at once on the cancelling thread and throws
+  `OperationCancelled`. Destroying a ViewModel on the UI thread no longer
+  blocks for the 5 s join timeout and then resumes into the destroyed object.
+  New overload `schedule_on(executor, token)`; `CancellationToken::none()`
+  keeps a cleanup hop alive after cancellation.
+- A resumption discarded by its executor (closed or destroyed) resumes the
+  coroutine with `OperationCancelled` instead of leaking the frame and
+  stalling scope joins.
+- New `CancellationCallback` (std::stop_callback semantics) withdraws its
+  registration on destruction. Timeouts, retries, child scopes and
+  `co_await token` use it, so bounded waits on a long-lived token no longer
+  accumulate callbacks (and the results they retain) until cancellation, and
+  a destroyed coroutine parked on `co_await token` is never resumed later.
+- `Computed::on_changed`, `bind` and `observe` run the callback untracked:
+  reads inside it no longer become dependencies that re-run the callback.
+- A throwing node no longer strands the rest of its flush round in
+  MaybeDirty; the flush completes and rethrows the first failure (later ones
+  go to the callback-failure sink).
+- `embedded_project_configure` forwards the parent's `CMAKE_BUILD_TYPE` and
+  `CMAKE_OSX_ARCHITECTURES`, so `scripts/build.py --platform web --test` on
+  macOS shares the parent's OpenSSL artifact instead of trying to replace it
+  inside the build lease (and plain CTest no longer rebuilds OpenSSL).
+
 ## 3.3.0 — 2026-11-16
 
 - Add optional `aria::i18n` with explicit locale contexts, exact catalog lookup,
