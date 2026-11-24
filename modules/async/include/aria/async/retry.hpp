@@ -77,13 +77,16 @@ namespace detail {
         std::chrono::milliseconds delay;
         CancellationToken token;
         std::shared_ptr<State> state = std::make_shared<State>();
+        // Withdrawn with the awaiter, so delays on a long-lived token do not
+        // leave a callback behind each time the timer wins.
+        CancellationCallback cancellation{};
 
         bool await_ready() const noexcept { return token.is_cancelled(); }
         bool await_suspend(std::coroutine_handle<> h) {
             auto shared = state;
             shared->handle = h;
             scheduler.post_after(delay, [shared] { shared->signal(false); });
-            token.on_cancel([shared] { shared->signal(true); });
+            cancellation = CancellationCallback{token, [shared] { shared->signal(true); }};
             int expected = 0;
             return shared->phase.compare_exchange_strong(
                 expected, 1, std::memory_order_acq_rel);

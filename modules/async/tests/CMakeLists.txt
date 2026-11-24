@@ -17,6 +17,7 @@ add_executable(test_async
     test_async_validator.cpp
     test_async_diagnostics.cpp
     test_scope.cpp
+    test_review_regressions.cpp
 )
 target_include_directories(test_async PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

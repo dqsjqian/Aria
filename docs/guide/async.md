@@ -108,6 +108,18 @@ aria::async::Task<void> poll_loop(aria::async::CancellationToken tok) {
 
 ---
 
+### Scoped Registration
+
+`token.on_cancel(fn)` keeps `fn` until the token is cancelled. For a wait
+that ends earlier, hold a `CancellationCallback` instead; destroying it
+withdraws the callback (waiting if it is running on another thread), like
+`std::stop_callback`:
+
+```cpp
+aria::async::CancellationCallback link{token, [&] { request.abort(); }};
+co_await request.finished();  // link is withdrawn when it goes out of scope
+```
+
 ## Executor
 
 Executors abstract scheduling — where coroutines run.
@@ -132,6 +144,23 @@ aria::async::Task<UserProfile> load_profile(int uid) {
     co_return data;
 }
 ```
+
+Inside a `CoroutineScope` (or `ViewModelScope`) every hop observes the scope's
+cancellation. A coroutine whose resumption is still queued when the scope is
+cancelled resumes immediately on the cancelling thread, and the `co_await`
+throws `OperationCancelled`. Destroying a ViewModel on the UI thread therefore
+does not wait for, or later resume into, a UI queue entry. Pass a token to
+observe a different cancellation, or `CancellationToken::none()` for a cleanup
+hop that must still happen after cancellation:
+
+```cpp
+co_await aria::async::schedule_on(ui, aria::async::CancellationToken::none());
+loading = false;  // runs even though the scope was cancelled
+```
+
+If an executor discards a queued resumption (it is closed or destroyed), the
+coroutine resumes on the discarding thread with `OperationCancelled` instead
+of leaking its frame.
 
 ---
 

@@ -671,6 +671,11 @@ Implications:
   the time the VM destructor returns, every coroutine spawned by
   the scope has either exited or been recorded as a leak via the
   async error sink — none silently outlive the VM.
+- A coroutine parked in an executor queue (`co_await schedule_on(ui)`)
+  does not need that queue to run: cancellation resumes it at once on
+  the destroying thread and the hop throws `OperationCancelled`. A VM
+  destroyed on the UI thread therefore neither blocks on its own UI
+  queue nor is later resumed into after destruction.
 - The 5-second timeout only fires if the user fails to probe with
   `throw_if_cancelled` / `co_await tok` and uses a non-cancellable
   await. That is a user contract violation; the framework's safety
@@ -715,11 +720,19 @@ Contract:
    source is either alive or explicitly detached when the parent's
    cancel arrives).
 
-`CancellationSource::cancel()`'s own semantics are unchanged:
+6. **Prompt hops**: tasks awaited inside the scope inherit its token;
+   `schedule_on` observes it (see L-37 and the async guide). Pass
+   `CancellationToken::none()` for a cleanup hop after cancellation.
+
+`CancellationSource::cancel()`'s own semantics:
 1. CAS `cancelled_` to true; on a race, only one winner runs the
    callbacks.
-2. Move out the entire `callbacks_` list and fire serially outside
-   the lock.
+2. Fire the registered callbacks serially, in registration order,
+   outside the lock. A `CancellationCallback` withdrawn before its turn
+   is skipped; withdrawing one that is running on another thread waits
+   for it to return. `on_cancel` registrations cannot be withdrawn and
+   live until cancellation, so bounded waits (timeouts, retries, child
+   scopes, `co_await tok`) use `CancellationCallback`.
 3. `~CancellationSource` cancels automatically. Move assignment cancels
    the destination's previous state before transferring ownership, so
    outstanding tokens and waiters are not orphaned. Self-move is a no-op.
@@ -744,6 +757,10 @@ that registers into the state's `invocation_sources` list.
   `cancel_all_in_flight()` to cancel every pending invocation.
 - The coroutine probes `throw_if_cancelled` at two safe points
   (after `schedule_on(ui)` and after `schedule_on(worker)`).
+- After the action returns and the invocation is back on the UI
+  executor, a cancelled or superseded invocation reports Cancelled and
+  writes neither `last_result` nor `last_error`: under `LatestOnly`, an
+  older search that finishes late cannot overwrite the newer result.
 
 Implications:
 - After `AsyncCommand` is destroyed, in-flight coroutines may run
@@ -755,8 +772,10 @@ Implications:
   the VM destructs, the Properties (`is_executing` /
   `last_error` / `last_result`) on `state` are still alive; the
   final `co_await schedule_on(ui)` still tries to post to the
-  original ui executor, and a dead ui executor causes the post to
-  fail or leak (executor-implementation defined).
+  original ui executor. A closed executor that discards the
+  resumption makes the hop resume as cancelled instead of leaking the
+  frame, but posting to an executor object that has already been
+  destroyed is still undefined behaviour.
   > **Strong contract**: **AsyncCommand MUST die before the ui
   > executor it depends on**. The usual pattern is "ui executor
   > as an app singleton, AsyncCommand as a VM member".

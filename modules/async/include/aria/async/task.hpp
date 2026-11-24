@@ -20,10 +20,49 @@ namespace aria::async {
 template<typename T = void>
 class Task;
 
+class CancellationToken;
+
 namespace detail {
 
+/// State shared by every Task promise regardless of its value type.
+struct TaskPromiseContext {
+    /// Cancellation of the structured owner this coroutine runs under (a
+    /// CoroutineScope), or null. Awaiting a Task hands it to the child, and
+    /// `schedule_on` uses it so a hop parked in an executor queue resumes
+    /// promptly with OperationCancelled when the owner is cancelled.
+    ///
+    /// Points into an ancestor frame that outlives every awaited child; it is
+    /// not propagated to detached work that can outlive its starter.
+    const CancellationToken* ambient_cancellation = nullptr;
+};
+
+/// Sets the awaiting coroutine's ambient cancellation; never suspends.
+struct AmbientCancellationBinder {
+    const CancellationToken* token;
+    bool await_ready() const noexcept { return false; }
+    template<typename Promise>
+    bool await_suspend(std::coroutine_handle<Promise> h) const noexcept {
+        if constexpr (std::is_base_of_v<TaskPromiseContext, Promise>) {
+            h.promise().ambient_cancellation = token;
+        }
+        return false;
+    }
+    void await_resume() const noexcept {}
+};
+
+/// The ambient cancellation of the coroutine behind `h`, if it has one.
+template<typename Promise>
+const CancellationToken* ambient_cancellation_of(std::coroutine_handle<Promise> h) noexcept {
+    if constexpr (std::is_base_of_v<TaskPromiseContext, Promise>) {
+        return h.promise().ambient_cancellation;
+    } else {
+        (void)h;
+        return nullptr;
+    }
+}
+
 template<typename T>
-struct TaskPromiseBase {
+struct TaskPromiseBase : TaskPromiseContext {
     std::coroutine_handle<> continuation;
     std::exception_ptr exception;
 
@@ -107,35 +146,45 @@ public:
     /// handle into the awaiter, not copy it.  Otherwise the temporary Task's
     /// destructor calls handle.destroy() while the coroutine is still
     /// executing, causing a use-after-free.
-    auto operator co_await() && noexcept {
-        struct Awaiter {
-            handle_type h;
+    ///
+    /// A named member type rather than a local class: await_suspend is a
+    /// template over the caller's promise.
+    struct Awaiter {
+        handle_type h;
 
-            bool await_ready() const noexcept { return !h || h.done(); }
+        bool await_ready() const noexcept { return !h || h.done(); }
 
-            std::coroutine_handle<> await_suspend(std::coroutine_handle<> caller) noexcept {
-                h.promise().continuation = caller;
-                return h;
+        template<typename CallerPromise>
+        std::coroutine_handle<> await_suspend(
+            std::coroutine_handle<CallerPromise> caller) noexcept {
+            auto& promise = h.promise();
+            if (!promise.ambient_cancellation) {
+                promise.ambient_cancellation = detail::ambient_cancellation_of(caller);
             }
+            promise.continuation = caller;
+            return h;
+        }
 
-            T await_resume() {
-                if (!h) { throw std::runtime_error("Task: empty handle"); }
-                auto& p = h.promise();
-                if (p.exception) std::rethrow_exception(p.exception);
-                if constexpr (!std::is_void_v<T>) {
-                    return std::move(*p.value);
-                }
+        T await_resume() {
+            if (!h) { throw std::runtime_error("Task: empty handle"); }
+            auto& p = h.promise();
+            if (p.exception) std::rethrow_exception(p.exception);
+            if constexpr (!std::is_void_v<T>) {
+                return std::move(*p.value);
             }
+        }
 
-            // Awaiter takes ownership: destroy when done.
-            ~Awaiter() { if (h) h.destroy(); }
+        // Awaiter takes ownership: destroy when done.
+        ~Awaiter() { if (h) h.destroy(); }
 
-            Awaiter(handle_type hh) noexcept : h(hh) {}
-            Awaiter(Awaiter&& o) noexcept : h(std::exchange(o.h, {})) {}
-            Awaiter& operator=(Awaiter&&) = delete;
-            Awaiter(const Awaiter&) = delete;
-            Awaiter& operator=(const Awaiter&) = delete;
-        };
+        Awaiter(handle_type hh) noexcept : h(hh) {}
+        Awaiter(Awaiter&& o) noexcept : h(std::exchange(o.h, {})) {}
+        Awaiter& operator=(Awaiter&&) = delete;
+        Awaiter(const Awaiter&) = delete;
+        Awaiter& operator=(const Awaiter&) = delete;
+    };
+
+    Awaiter operator co_await() && noexcept {
         // Transfer ownership from the temporary `*this` to the Awaiter.
         return Awaiter{std::exchange(handle_, {})};
     }

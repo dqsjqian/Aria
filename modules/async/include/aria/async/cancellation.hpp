@@ -17,12 +17,17 @@
 // Tokens are thread-safe and copyable; cancellation propagates to all copies.
 
 #include <atomic>
+#include <concepts>
+#include <condition_variable>
 #include <coroutine>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -36,10 +41,98 @@ public:
 };
 
 namespace detail {
+/// Shared cancellation state. Callbacks are identified so a scoped
+/// registration (`CancellationCallback`) can withdraw itself; without
+/// that, every bounded wait on a long-lived token would leave its callback
+/// behind until the token is finally cancelled.
 struct CancellationState {
+    using CallbackId = std::uint64_t;
+    struct Entry {
+        CallbackId id;
+        std::function<void()> fn;
+    };
+
     std::atomic<bool> cancelled{false};
     std::mutex m;
-    std::vector<std::function<void()>> callbacks;  // fired on cancel
+    std::condition_variable callback_done;
+    std::vector<Entry> callbacks;  // registered, not yet taken by cancel()
+    std::vector<Entry> firing;     // taken by cancel(); empty fn = withdrawn/ran
+    CallbackId next_id = 0;
+    CallbackId running = 0;        // callback executing now, 0 when none
+    std::thread::id running_thread{};
+
+    /// Registers `fn` unless cancellation already happened. Returns 0 when
+    /// the caller must invoke `fn` itself (already cancelled).
+    CallbackId add(std::function<void()>& fn) {
+        std::lock_guard lk(m);
+        if (cancelled.load(std::memory_order_acquire)) return 0;
+        const auto id = ++next_id;
+        callbacks.push_back(Entry{id, std::move(fn)});
+        return id;
+    }
+
+    /// Withdraws registration `id`. If cancel() is executing that callback on
+    /// another thread, waits for it to return (std::stop_callback semantics):
+    /// afterwards nothing the callback captured is used. A callback that
+    /// withdraws itself on its own thread does not wait.
+    void remove(CallbackId id) noexcept {
+        std::function<void()> withdrawn;  // destroyed outside the mutex
+        std::unique_lock lk(m);
+        // Withdraw a callback that has not started. An entry whose function
+        // was already taken is running or has run; that is handled below.
+        const auto take = [&](std::vector<Entry>& entries) {
+            for (auto& entry : entries) {
+                if (entry.id != id) continue;
+                if (!entry.fn) return false;
+                withdrawn = std::move(entry.fn);
+                entry.fn = nullptr;
+                return true;
+            }
+            return false;
+        };
+        if (take(callbacks)) {
+            std::erase_if(callbacks, [id](const Entry& entry) { return entry.id == id; });
+            return;
+        }
+        if (take(firing)) return;
+        if (running == id && running_thread != std::this_thread::get_id()) {
+            callback_done.wait(lk, [&] { return running != id; });
+        }
+    }
+
+    /// Runs every registered callback once, in registration order, without
+    /// holding the mutex. Each entry is claimed under the mutex so a
+    /// concurrent remove() either withdraws it first or waits for it.
+    void fire() {
+        {
+            std::lock_guard lk(m);
+            firing.swap(callbacks);
+        }
+        for (std::size_t index = 0;; ++index) {
+            std::function<void()> fn;
+            {
+                std::lock_guard lk(m);
+                if (index >= firing.size()) {
+                    firing.clear();
+                    break;
+                }
+                auto& entry = firing[index];
+                if (!entry.fn) continue;
+                fn = std::move(entry.fn);
+                entry.fn = nullptr;
+                running = entry.id;
+                running_thread = std::this_thread::get_id();
+            }
+            try { fn(); } catch (...) {}
+            fn = nullptr;
+            {
+                std::lock_guard lk(m);
+                running = 0;
+                running_thread = {};
+            }
+            callback_done.notify_all();
+        }
+    }
 };
 
 // ---------------------------------------------------------------------
@@ -179,6 +272,8 @@ private:
 };
 }  // namespace detail
 
+class CancellationCallback;
+
 class CancellationToken {
 public:
     CancellationToken() = default;
@@ -189,6 +284,10 @@ public:
         return state_ && state_->cancelled.load(std::memory_order_acquire);
     }
 
+    /// True when a source exists, i.e. cancellation can ever be observed.
+    /// `none()` and default-constructed tokens return false.
+    [[nodiscard]] bool can_be_cancelled() const noexcept { return state_ != nullptr; }
+
     /// Throw OperationCancelled if cancelled. Call at safe await points.
     void throw_if_cancelled() const {
         if (is_cancelled()) throw OperationCancelled{};
@@ -196,26 +295,82 @@ public:
 
     /// Register a callback fired (synchronously) when source is cancelled.
     /// If already cancelled, invoked immediately.
+    ///
+    /// The registration lives until cancellation: there is no way to
+    /// withdraw it. Bounded waits on long-lived tokens must use
+    /// `CancellationCallback` instead, or each wait leaks its callback.
     void on_cancel(std::function<void()> cb) {
         // A synchronous callback may destroy this token and the source. Keep
         // the state alive and never call user code while its mutex is held.
         const auto state = state_;
         if (!state || !cb) return;
-        {
-            std::lock_guard lk(state->m);
-            if (!state->cancelled.load(std::memory_order_acquire)) {
-                state->callbacks.push_back(std::move(cb));
-                return;
-            }
-        }
-        cb();
+        if (state->add(cb) == 0) cb();
     }
 
     /// Always-cancellable empty token (useful as a default).
     [[nodiscard]] static CancellationToken none() noexcept { return {}; }
 
 private:
+    friend class CancellationCallback;
     std::shared_ptr<detail::CancellationState> state_;
+};
+
+/// Scoped cancellation registration, the counterpart of std::stop_callback.
+///
+/// Constructing it registers `fn` on the token (or invokes it immediately
+/// when the token is already cancelled); destroying or `reset()`-ing it
+/// withdraws the registration. If the callback is running on another thread
+/// at that moment, withdrawal waits for it to return, so state captured by
+/// the callback may be released right after. A callback must not withdraw a
+/// registration whose callback is blocked on the withdrawing thread.
+class [[nodiscard]] CancellationCallback {
+public:
+    CancellationCallback() noexcept = default;
+
+    template<typename Fn>
+        requires std::invocable<std::decay_t<Fn>&> &&
+                 (!std::same_as<std::decay_t<Fn>, CancellationCallback>)
+    CancellationCallback(const CancellationToken& token, Fn&& fn) {
+        const auto& state = token.state_;
+        if (!state) return;
+        std::function<void()> callback{std::forward<Fn>(fn)};
+        const auto id = state->add(callback);
+        if (id == 0) {
+            callback();
+            return;
+        }
+        state_ = state;
+        id_ = id;
+    }
+
+    ~CancellationCallback() { reset(); }
+
+    CancellationCallback(const CancellationCallback&) = delete;
+    CancellationCallback& operator=(const CancellationCallback&) = delete;
+    CancellationCallback(CancellationCallback&& other) noexcept
+        : state_(std::move(other.state_)), id_(std::exchange(other.id_, 0)) {}
+    CancellationCallback& operator=(CancellationCallback&& other) noexcept {
+        if (this != &other) {
+            reset();
+            state_ = std::move(other.state_);
+            id_ = std::exchange(other.id_, 0);
+        }
+        return *this;
+    }
+
+    /// Withdraw now; idempotent.
+    void reset() noexcept {
+        if (auto state = std::exchange(state_, nullptr)) {
+            state->remove(std::exchange(id_, 0));
+        }
+    }
+
+    /// True while registered and not yet taken by a cancellation.
+    [[nodiscard]] bool registered() const noexcept { return state_ != nullptr; }
+
+private:
+    std::shared_ptr<detail::CancellationState> state_;
+    detail::CancellationState::CallbackId id_ = 0;
 };
 
 class CancellationSource {
@@ -251,14 +406,9 @@ public:
         // will run pending coroutine resumes on this function's frame
         // — not nested inside any `std::function` invocation.
         detail::DrainScope drain;
-        std::vector<std::function<void()>> cbs;
-        {
-            std::lock_guard lk(state_->m);
-            cbs.swap(state_->callbacks);
-        }
-        for (auto& c : cbs) {
-            try { c(); } catch (...) {}
-        }
+        // A callback may destroy this source; the broadcast owns the state.
+        auto state = state_;
+        state->fire();
         // ~DrainScope here resumes any deferred coroutine handles.
     }
 

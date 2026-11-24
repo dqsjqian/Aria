@@ -7,6 +7,10 @@
 //
 //   * Every coroutine launched into a scope is *owned* by the scope.
 //   * `cancel()` is non-blocking: it requests cancellation, no more.
+//     Launched coroutines observe it at their next probe and at every
+//     `schedule_on` hop: a hop waiting in an executor queue resumes at
+//     once on the cancelling thread and throws OperationCancelled, so a
+//     scope destroyed on its UI thread does not wait for that UI queue.
 //   * `cancel_and_join()` (sync) and `co_await join()` (async) wait until
 //     every in-flight coroutine has exited. Tests, ViewModel teardown,
 //     app shutdown — all use one of these to drain.
@@ -349,7 +353,7 @@ private:
         // the coroutine frame can't be allocated), we must roll back
         // the inflight increment so the scope can still be drained.
         try {
-            spawn_driver_(std::move(task), std::move(st)).start_detached_();
+            spawn_driver_(std::move(task), std::move(st), token()).start_detached_();
         } catch (...) {
             decrement_inflight_(state_);
             throw;
@@ -357,7 +361,8 @@ private:
     }
 
     static Task<void> spawn_driver_(Task<void> body,
-                                    std::shared_ptr<detail::ScopeState> st) {
+                                    std::shared_ptr<detail::ScopeState> st,
+                                    CancellationToken tok) {
         // Local guard: even if the body throws synchronously before its
         // first co_await (which a properly written Task should not, but
         // we don't want to rely on it), the inflight counter still
@@ -367,6 +372,10 @@ private:
             ~InflightGuard() { CoroutineScope::decrement_inflight_(st); }
         };
         InflightGuard guard{std::move(st)};
+        // Every Task awaited below inherits the scope's cancellation, so
+        // executor hops resume promptly when the scope is cancelled (see
+        // schedule_on). `tok` lives in this frame, which outlives them all.
+        co_await detail::AmbientCancellationBinder{&tok};
         try {
             co_await std::move(body);
         } catch (const OperationCancelled&) {
@@ -392,14 +401,18 @@ private:
         // Keep the source alive for the entire broadcast, even if a child
         // cancellation callback destroys the scope. No proxy lock may be held
         // while invoking callbacks supplied by the application.
-        parent.on_cancel([weak = std::weak_ptr<CancellationSource>(src_)] {
-            if (auto source = weak.lock()) source->cancel();
-        });
+        parent_link_ = CancellationCallback{parent,
+            [weak = std::weak_ptr<CancellationSource>(src_)] {
+                if (auto source = weak.lock()) source->cancel();
+            }};
     }
 
     std::shared_ptr<CancellationSource> src_ =
         std::make_shared<CancellationSource>();
     std::shared_ptr<detail::ScopeState> state_;
+    // Declared last so it is withdrawn first: a destroyed child scope leaves
+    // no callback on a long-lived parent token.
+    CancellationCallback parent_link_;
 };
 
 /// Awaitable that suspends the current coroutine until cancellation
@@ -488,6 +501,10 @@ inline auto operator co_await(CancellationToken tok) {
     struct Awaiter {
         CancellationToken tok;
         std::shared_ptr<Latch> latch;
+        // Withdrawn with the awaiter. Destroying a coroutine parked here
+        // therefore cannot leave a callback that later resumes a destroyed
+        // frame, and the token does not retain it until cancellation.
+        CancellationCallback registration{};
 
         bool await_ready() const noexcept { return tok.is_cancelled(); }
 
@@ -498,7 +515,7 @@ inline auto operator co_await(CancellationToken tok) {
             // or asynchronously later from another thread. Synchronous
             // firing while we are still preparing records cancellation
             // without resuming on this stack.
-            tok.on_cancel([h, l]() mutable {
+            registration = CancellationCallback{tok, [h, l]() mutable {
                 int observed = l->state.load(std::memory_order_acquire);
                 for (;;) {
                     if (observed == Latch::preparing) {
@@ -528,7 +545,7 @@ inline auto operator co_await(CancellationToken tok) {
                     }
                     return;
                 }
-            });
+            }};
 
             // Commit to suspension only if no cancellation callback won
             // while we were registering it. If the callback already moved
@@ -547,7 +564,7 @@ inline auto operator co_await(CancellationToken tok) {
         // comment for why we don't throw here).
         void await_resume() noexcept {}
     };
-    return Awaiter{std::move(tok), std::make_shared<Latch>()};
+    return Awaiter{std::move(tok), std::make_shared<Latch>(), {}};
 }
 
 }  // namespace aria::async

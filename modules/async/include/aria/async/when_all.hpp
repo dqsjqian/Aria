@@ -94,7 +94,11 @@ template<typename T>
 Task<void> drive_one(Task<T> task,
                      std::shared_ptr<WhenAllSlot<T>> slot,
                      std::shared_ptr<std::atomic<std::size_t>> remaining,
-                     std::shared_ptr<WhenAllParentHandle> parent) {
+                     std::shared_ptr<WhenAllParentHandle> parent,
+                     const CancellationToken* ambient) {
+    // The parent stays suspended until every child finished, so its ambient
+    // cancellation outlives the child; see TaskPromiseContext.
+    co_await AmbientCancellationBinder{ambient};
     try {
         if constexpr (std::is_void_v<T>) {
             co_await std::move(task);
@@ -123,9 +127,11 @@ Task<void> drive_one(Task<T> task,
 ///   await_suspend publishes `parent_->store(caller)` (release) BEFORE
 ///   spawning any driver coroutine. Drivers read `parent_->load()`
 ///   (acquire) only after the `remaining_` atomic counter hits zero — so
-///   a synchronously-completing task that drives `remaining_` to zero
-///   inside its own `start_detached()` call still observes the published
-///   handle. The handle is held in an atomic (`WhenAllParentHandle`), so
+///   a driver that drives `remaining_` to zero on another thread still
+///   observes the published handle. `remaining_` starts at N + 1 and
+///   await_suspend releases the extra share after starting every driver,
+///   so children that complete synchronously never resume the caller on a
+///   nested stack: await_suspend returns false instead. The handle is held in an atomic (`WhenAllParentHandle`), so
 ///   this is TSan-clean and does not depend on statement ordering for
 ///   correctness; the store-before-spawn ordering is kept only as a
 ///   performance optimisation (avoids a redundant re-check).
@@ -140,27 +146,43 @@ public:
 
     bool await_ready() const noexcept { return sizeof...(Ts) == 0; }
 
-    void await_suspend(std::coroutine_handle<> caller) {
+    template<typename Promise>
+    bool await_suspend(std::coroutine_handle<Promise> caller) {
+        const CancellationToken* ambient = detail::ambient_cancellation_of(caller);
         // Allocate every driver before launching any work. A frame allocation
         // failure must unwind owned, unstarted Tasks instead of leaving a
-        // partially launched operation behind. These local owners also remain
-        // valid if the final child resumes and destroys this awaiter inline.
-        auto drivers = std::apply([this](auto&... task) {
-            return std::apply([this, &task...](auto&... slot) {
+        // partially launched operation behind.
+        auto drivers = std::apply([this, ambient](auto&... task) {
+            return std::apply([this, ambient, &task...](auto&... slot) {
                 return std::make_tuple(detail::drive_one(
-                    std::move(task), slot, remaining_, parent_)...);
+                    std::move(task), slot, remaining_, parent_, ambient)...);
             }, slots_);
         }, tasks_);
         parent_->store(caller);
         detail::publish_race_trace(detail::race_source::kWhenAll,
                                    detail::race_op::kStart,
                                    sizeof...(Ts));
+        // Once the drivers run, another thread may resume the caller and
+        // destroy this awaiter; only locals are touched after that point.
+        auto remaining = remaining_;
         // Spawn drivers as fully-detached coroutines.  Each driver owns its
         // own coroutine frame via Task::start_detached — no need for the
         // awaiter to keep them alive, and no leaks.
         std::apply([](auto&... driver) {
             (std::move(driver).start_detached(), ...);
         }, drivers);
+        // The counter starts at N + 1: this call holds the extra share, so no
+        // driver can resume the caller from inside await_suspend. When every
+        // child completed synchronously, decline to suspend and let the
+        // compiler continue the caller in place. Resuming it from a nested
+        // driver frame instead grows the stack by several frames per
+        // iteration and overflows it in a loop over ready children.
+        if (remaining->fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            detail::publish_race_trace(detail::race_source::kWhenAll,
+                                       detail::race_op::kWon);
+            return false;
+        }
+        return true;
     }
 
     Result await_resume() {
@@ -194,8 +216,9 @@ private:
 
     std::tuple<Task<Ts>...> tasks_;
     std::tuple<std::shared_ptr<detail::WhenAllSlot<Ts>>...> slots_;
+    // N children plus the share held by await_suspend (see above).
     std::shared_ptr<std::atomic<std::size_t>> remaining_ =
-        std::make_shared<std::atomic<std::size_t>>(sizeof...(Ts));
+        std::make_shared<std::atomic<std::size_t>>(sizeof...(Ts) + 1);
     std::shared_ptr<detail::WhenAllParentHandle> parent_ =
         std::make_shared<detail::WhenAllParentHandle>();
 };

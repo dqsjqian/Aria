@@ -634,6 +634,14 @@ private:
         }
 
         co_await schedule_on(*state->ui);
+        // A newer LatestOnly invocation, an explicit cancellation or command
+        // destruction may supersede this invocation after its action returned
+        // or while it was hopping back. A superseded invocation must not
+        // publish its value or error over the newer state.
+        if (inv.cmd_tok().is_cancelled() || inv.inv_tok().is_cancelled()) {
+            co_return AsyncCommandResult<R>::cancelled_(
+                ::aria::Error::cancellation("AsyncCommand"));
+        }
         if (ex) {
             auto cls = detail::classify_async_exception(
                 ex, state->last_error, state->last_error_message);
@@ -777,6 +785,11 @@ private:
         }
 
         co_await schedule_on(*state->ui);
+        // Same supersession rule as the value-returning command.
+        if (inv.cmd_tok().is_cancelled() || inv.inv_tok().is_cancelled()) {
+            co_return AsyncCommandResult<void>::cancelled_(
+                ::aria::Error::cancellation("AsyncCommand"));
+        }
         if (ex) {
             auto cls = detail::classify_async_exception(
                 ex, state->last_error, state->last_error_message);

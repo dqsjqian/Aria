@@ -199,8 +199,10 @@ auto with_timeout_impl_(std::optional<CancellationToken> parent,
     // inner work synchronously. Parent-cancel always wins over the
     // deadline (we re-throw the original OperationCancelled below
     // instead of converting to TimeoutError).
+    // Scoped: a long-lived parent must not accumulate one callback per call.
+    std::optional<CancellationCallback> parent_link;
     if (parent) {
-        parent->on_cancel([inner_src]{ inner_src->cancel(); });
+        parent_link.emplace(*parent, [inner_src]{ inner_src->cancel(); });
     }
 
     auto finish_success = [&] {
@@ -336,8 +338,11 @@ auto with_timeout_fail_impl_(std::optional<CancellationToken> parent,
 
     // Wire parent token (if engaged): parent-cancel beats timeout, same
     // as Cancel mode. Manifest as OperationCancelled in await_resume.
+    // Scoped to this wrapper: withdrawn once it returns, so repeated calls
+    // on a long-lived parent do not accumulate callbacks and race slots.
+    std::optional<CancellationCallback> parent_link;
     if (parent) {
-        parent->on_cancel([slot, inner_src]{
+        parent_link.emplace(*parent, [slot, inner_src]{
             if (slot->try_claim(/*ParentCancel=*/3)) {
                 inner_src->cancel();
                 slot->result.template emplace<2>(
