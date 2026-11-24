@@ -41,6 +41,10 @@ if(Python3_Interpreter_FOUND)
 endif()
 
 _forgedeps_cache_dir(_aria_test_cache)
+# Build identity the parent passed explicitly. Dependency artifacts are keyed
+# by it, so an embedded configure that omits it requests different shared
+# artifacts and must replace (or, inside a build session lease, is refused).
+string(REPLACE ";" "|" _aria_test_osx_architectures "${CMAKE_OSX_ARCHITECTURES}")
 add_test(NAME embedded_project_configure
     COMMAND ${CMAKE_COMMAND}
         "-DARIA_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
@@ -54,6 +58,8 @@ add_test(NAME embedded_project_configure
         "-DTEST_MIRA_SOURCE=${_aria_mira_test_source}"
         "-DTEST_HTTP=${ARIA_BUILD_HTTP}"
         "-DTEST_TLS=${ARIA_HTTP_ENABLE_TLS}"
+        "-DTEST_OSX_ARCHITECTURES=${_aria_test_osx_architectures}"
+        "-DTEST_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/test_embedded_project.cmake")
 add_test(NAME shared_parent_dependencies
     COMMAND ${CMAKE_COMMAND}
@@ -69,6 +75,7 @@ set_tests_properties(embedded_project_configure PROPERTIES TIMEOUT 120)
 set_tests_properties(pinned_dependency_cache dependency_selection embedded_project_configure PROPERTIES
     ENVIRONMENT "FORGEDEPS_PYTHON_EXECUTABLE=${FORGEDEPS_PYTHON_EXECUTABLE}")
 unset(_aria_test_cache)
+unset(_aria_test_osx_architectures)
 
 if(PROJECT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
     get_target_property(_aria_sanitizer_link_options aria_warnings INTERFACE_LINK_OPTIONS)

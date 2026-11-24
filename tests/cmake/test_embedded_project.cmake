@@ -20,9 +20,19 @@ endif()
 if(TEST_GENERATOR_TOOLSET)
     list(APPEND generator_args -T "${TEST_GENERATOR_TOOLSET}")
 endif()
+# Reproduce the parent's explicit build identity, so the embedded project
+# shares (instead of replacing) the parent's dependency artifacts.
+set(identity_args "")
+if(TEST_BUILD_TYPE)
+    list(APPEND identity_args "-DCMAKE_BUILD_TYPE=${TEST_BUILD_TYPE}")
+endif()
+if(TEST_OSX_ARCHITECTURES)
+    string(REPLACE "|" "\\;" architectures "${TEST_OSX_ARCHITECTURES}")
+    list(APPEND identity_args "-DCMAKE_OSX_ARCHITECTURES=${architectures}")
+endif()
 execute_process(COMMAND "${CMAKE_COMMAND}"
     -S "${TEST_ROOT}/parent" -B "${TEST_ROOT}/build"
-    -G "${TEST_GENERATOR}" ${generator_args}
+    -G "${TEST_GENERATOR}" ${generator_args} ${identity_args}
     "-DCMAKE_CXX_COMPILER=${TEST_CXX_COMPILER}"
     "-DFORGEDEPS_CACHE_DIR=${TEST_DEPS_CACHE}"
     "-DCMAKE_PREFIX_PATH=${TEST_PREFIX_PATH}"
