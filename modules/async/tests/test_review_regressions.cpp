@@ -41,8 +41,8 @@ Task<long long> sum_ready_pairs(int iterations) {
 struct Tracked {
     static inline std::atomic<int> live{0};
     Tracked() { ++live; }
-    Tracked(const Tracked&) { ++live; }
-    Tracked(Tracked&&) noexcept { ++live; }
+    Tracked(const Tracked& /*other*/) { ++live; }
+    Tracked(Tracked&& /*other*/) noexcept { ++live; }
     Tracked& operator=(const Tracked&) = default;
     Tracked& operator=(Tracked&&) noexcept = default;
     ~Tracked() { --live; }
@@ -57,7 +57,7 @@ TEST_CASE("when_all over synchronously completed children does not nest the call
     constexpr int iterations = 200'000;
     auto task = sum_ready_pairs(iterations);
     const long long expected =
-        static_cast<long long>(iterations) * (iterations - 1) / 2 + iterations;
+        (static_cast<long long>(iterations) * (iterations - 1) / 2) + iterations;
     CHECK(task.blocking_get() == expected);
 }
 
@@ -87,7 +87,9 @@ TEST_CASE("LatestOnly: a superseded failure does not overwrite last_error") {
     AsyncCommand<int, int> command(executor, executor,
         [&](CancellationToken, int value) -> Task<int> {
             co_await schedule_after(vt, value == 1 ? 100ms : 10ms);
-            if (value == 1) throw std::runtime_error("stale failure");
+            if (value == 1) {
+                throw std::runtime_error("stale failure");
+            }
             co_return value;
         }, AsyncCommandPolicy::LatestOnly);
 
@@ -136,7 +138,7 @@ TEST_CASE("schedule_on observes cancellation only inside a scope or with a token
     SUBCASE("explicit token: cancelled hop throws") {
         CancellationSource source;
         bool cancelled = false;
-        auto task = [&]() -> Task<void> {
+        auto task = [&] -> Task<void> {
             try {
                 co_await schedule_on(ui, source.token());
             } catch (const OperationCancelled&) {
@@ -168,7 +170,7 @@ TEST_CASE("schedule_on observes cancellation only inside a scope or with a token
 
     SUBCASE("no scope, no token: plain hop") {
         bool hopped = false;
-        auto task = [&]() -> Task<void> {
+        auto task = [&] -> Task<void> {
             co_await schedule_on(ui);
             hopped = true;
         };
@@ -213,9 +215,11 @@ TEST_CASE("schedule_on continues on the target executor's thread") {
     const auto caller = std::this_thread::get_id();
     std::atomic<int> on_caller{0};
     std::atomic<int> hopped{0};
-    auto hop_once = [&]() -> Task<void> {
+    auto hop_once = [&] -> Task<void> {
         co_await schedule_on(pool);
-        if (std::this_thread::get_id() == caller) ++on_caller;
+        if (std::this_thread::get_id() == caller) {
+            ++on_caller;
+        }
         ++hopped;
     };
     constexpr int count = 2'000;
@@ -238,10 +242,10 @@ TEST_CASE("schedule_on continues on the target executor's thread") {
 TEST_CASE("schedule_on to an executor that rejects work declines to suspend") {
     // Models a closed executor: the resumption is destroyed inside post().
     struct Discarding final : IExecutor {
-        void post(std::function<void()>) override {}
+        void post(std::function<void()> /*fn*/) override {}
     } discarding;
     bool cancelled = false;
-    auto task = [&]() -> Task<void> {
+    auto task = [&] -> Task<void> {
         try {
             co_await schedule_on(discarding);
         } catch (const OperationCancelled&) {
@@ -281,11 +285,15 @@ TEST_CASE("CancellationCallback withdrawal waits for a callback running elsewher
     std::atomic<bool> finished{false};
     auto registration = std::make_unique<CancellationCallback>(source.token(), [&] {
         entered = true;
-        while (!release) std::this_thread::yield();
+        while (!release) {
+            std::this_thread::yield();
+        }
         finished = true;
     });
     std::thread canceller([&] { source.cancel(); });
-    while (!entered) std::this_thread::yield();
+    while (!entered) {
+        std::this_thread::yield();
+    }
     std::thread releaser([&] {
         std::this_thread::sleep_for(20ms);
         release = true;

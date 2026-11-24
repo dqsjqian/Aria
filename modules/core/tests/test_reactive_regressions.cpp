@@ -48,7 +48,9 @@ TEST_CASE("A throwing effect does not strand the rest of its flush round") {
     bool armed = false;
     Effect failing{[&] {
         (void)positive.get();
-        if (armed) throw std::runtime_error("effect failure");
+        if (armed) {
+            throw std::runtime_error("effect failure");
+        }
     }};
     int shown = -1;
     Effect display{[&] { shown = positive.get() ? 1 : 0; }};
@@ -69,11 +71,15 @@ TEST_CASE("Only the first effect failure of a flush is rethrown") {
     bool armed = false;
     Effect first{[&] {
         (void)p.get();
-        if (armed) throw std::runtime_error("first");
+        if (armed) {
+            throw std::runtime_error("first");
+        }
     }};
     Effect second{[&] {
         (void)p.get();
-        if (armed) throw std::runtime_error("second");
+        if (armed) {
+            throw std::runtime_error("second");
+        }
     }};
     int seen = -1;
     Effect third{[&] { seen = p.get(); }};

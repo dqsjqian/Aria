@@ -84,9 +84,9 @@ public:
     /// Child scope: cancelling `parent` cancels this scope as well.
     /// The child is otherwise independent (cancelling the child does
     /// NOT propagate up to the parent, matching Kotlin semantics).
-    explicit CoroutineScope(CancellationToken parent)
+    explicit CoroutineScope(const CancellationToken& parent)
         : state_(std::make_shared<detail::ScopeState>()) {
-        register_parent_link_(std::move(parent));
+        register_parent_link_(parent);
     }
 
     ~CoroutineScope() {
@@ -360,9 +360,11 @@ private:
         }
     }
 
+    // `tok` is by value on purpose: coroutine parameters are copied into the
+    // frame, which must own the token its children point at.
     static Task<void> spawn_driver_(Task<void> body,
                                     std::shared_ptr<detail::ScopeState> st,
-                                    CancellationToken tok) {
+                                    CancellationToken tok) {  // NOLINT(performance-unnecessary-value-param)
         // Local guard: even if the body throws synchronously before its
         // first co_await (which a properly written Task should not, but
         // we don't want to rely on it), the inflight counter still
@@ -397,7 +399,7 @@ private:
     /// scope's source is cancelled too. We capture a `weak_ptr` to the
     /// scope's state so the callback is a no-op if the child scope was
     /// destroyed first.
-    void register_parent_link_(CancellationToken parent) {
+    void register_parent_link_(const CancellationToken& parent) {
         // Keep the source alive for the entire broadcast, even if a child
         // cancellation callback destroys the scope. No proxy lock may be held
         // while invoking callbacks supplied by the application.

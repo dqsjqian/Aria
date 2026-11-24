@@ -487,6 +487,8 @@ public:
         : handle_(handle), cancelled_(cancelled) {}
     PlainResumption(const PlainResumption& other) noexcept
         : handle_(std::exchange(other.handle_, {})), cancelled_(other.cancelled_) {}
+    PlainResumption(PlainResumption&& other) noexcept
+        : handle_(std::exchange(other.handle_, {})), cancelled_(other.cancelled_) {}
     PlainResumption& operator=(const PlainResumption& other) noexcept {
         if (this != &other) {
             discard();
@@ -495,21 +497,29 @@ public:
         }
         return *this;
     }
+    PlainResumption& operator=(PlainResumption&& other) noexcept {
+        return *this = static_cast<const PlainResumption&>(other);
+    }
     ~PlainResumption() { discard(); }
 
     void operator()() {
-        if (auto handle = std::exchange(handle_, {})) handle.resume();
+        if (auto handle = std::exchange(handle_, {})) {
+            handle.resume();
+        }
     }
 
 private:
     void discard() noexcept {
         auto handle = std::exchange(handle_, {});
-        if (!handle) return;
+        if (!handle) {
+            return;
+        }
         *cancelled_ = true;  // the frame is alive until this resume
         try {
             handle.resume();
         } catch (...) {
-            // Only foreign promise types can throw here; nothing to report to.
+            // Only a foreign promise type can throw out of resume().
+            ::aria::report_callback_failure("executor.discarded_hop", std::current_exception());
         }
     }
 
@@ -529,37 +539,37 @@ private:
 /// A remote executor may resume at once: after posting, await_suspend only
 /// touches this shared state, never the coroutine frame.
 struct CancellableHop {
-    enum Phase : int {
-        preparing,
-        suspended,
-        resumed,           // by the executor
-        cancelled,         // by cancellation or a discarding executor
-        inline_resumed,    // continue in place
-        inline_cancelled,  // continue in place, then throw
-        deferred_cancel,   // remote cancellation while preparing; in place
+    enum class Phase : std::uint8_t {
+        Preparing,
+        Suspended,
+        Resumed,          // by the executor
+        Cancelled,        // by cancellation or a discarding executor
+        InlineResumed,    // continue in place
+        InlineCancelled,  // continue in place, then throw
+        DeferredCancel,   // remote cancellation while preparing; in place
     };
 
-    std::atomic<int> phase{preparing};
+    std::atomic<Phase> phase{Phase::Preparing};
     std::coroutine_handle<> handle;
     std::thread::id preparer = std::this_thread::get_id();
 
     /// Returns true when the caller must resume `handle` now.
     bool claim(bool from_executor, bool cancel) noexcept {
-        int observed = phase.load(std::memory_order_acquire);
+        Phase observed = phase.load(std::memory_order_acquire);
         for (;;) {
-            int next = preparing;
+            Phase next = Phase::Preparing;
             bool resume_now = false;
-            if (observed == preparing) {
+            if (observed == Phase::Preparing) {
                 if (std::this_thread::get_id() == preparer) {
-                    next = cancel ? inline_cancelled : inline_resumed;
+                    next = cancel ? Phase::InlineCancelled : Phase::InlineResumed;
                 } else if (from_executor) {
-                    next = cancel ? cancelled : resumed;
+                    next = cancel ? Phase::Cancelled : Phase::Resumed;
                     resume_now = true;
                 } else {
-                    next = deferred_cancel;
+                    next = Phase::DeferredCancel;
                 }
-            } else if (observed == suspended) {
-                next = cancel ? cancelled : resumed;
+            } else if (observed == Phase::Suspended) {
+                next = cancel ? Phase::Cancelled : Phase::Resumed;
                 resume_now = true;
             } else {
                 return false;
@@ -575,19 +585,19 @@ struct CancellableHop {
     /// await_suspend's result: true keeps the coroutine suspended (or it was
     /// already resumed elsewhere), false continues it in place.
     bool commit() noexcept {
-        int observed = preparing;
-        if (phase.compare_exchange_strong(observed, suspended,
+        Phase observed = Phase::Preparing;
+        if (phase.compare_exchange_strong(observed, Phase::Suspended,
                                           std::memory_order_acq_rel,
                                           std::memory_order_acquire)) {
             return true;
         }
-        return observed == resumed || observed == cancelled;
+        return observed == Phase::Resumed || observed == Phase::Cancelled;
     }
 
     [[nodiscard]] bool was_cancelled() const noexcept {
-        const int observed = phase.load(std::memory_order_acquire);
-        return observed == cancelled || observed == inline_cancelled ||
-               observed == deferred_cancel;
+        const Phase observed = phase.load(std::memory_order_acquire);
+        return observed == Phase::Cancelled || observed == Phase::InlineCancelled ||
+               observed == Phase::DeferredCancel;
     }
 };
 
@@ -599,28 +609,38 @@ public:
         : hop_(std::move(hop)) {}
     CancellableResumption(const CancellableResumption& other) noexcept
         : hop_(std::exchange(other.hop_, nullptr)) {}
+    CancellableResumption(CancellableResumption&& other) noexcept
+        : hop_(std::exchange(other.hop_, nullptr)) {}
     CancellableResumption& operator=(const CancellableResumption& other) noexcept {
         if (this != &other) {
-            finish(true);
+            discard();
             hop_ = std::exchange(other.hop_, nullptr);
         }
         return *this;
     }
-    ~CancellableResumption() { finish(true); }
+    CancellableResumption& operator=(CancellableResumption&& other) noexcept {
+        return *this = static_cast<const CancellableResumption&>(other);
+    }
+    ~CancellableResumption() { discard(); }
 
     void operator()() {
         auto hop = std::exchange(hop_, nullptr);
-        if (hop && hop->claim(true, false)) hop->handle.resume();
+        if (hop && hop->claim(true, false)) {
+            hop->handle.resume();
+        }
     }
 
 private:
-    void finish(bool cancel) noexcept {
+    void discard() noexcept {
         auto hop = std::exchange(hop_, nullptr);
-        if (!hop || !hop->claim(true, cancel)) return;
+        if (!hop || !hop->claim(true, true)) {
+            return;
+        }
         try {
             hop->handle.resume();
         } catch (...) {
-            // Only foreign promise types can throw here; nothing to report to.
+            // Only a foreign promise type can throw out of resume().
+            ::aria::report_callback_failure("executor.discarded_hop", std::current_exception());
         }
     }
 
@@ -632,21 +652,23 @@ public:
     ScheduleAwaiter(IExecutor& exec, std::optional<CancellationToken> token) noexcept
         : exec_(exec), explicit_token_(std::move(token)) {}
 
-    bool await_ready() const noexcept { return false; }
+    // NOLINTNEXTLINE(readability-convert-member-functions-to-static): awaiter protocol
+    [[nodiscard]] bool await_ready() const noexcept { return false; }
 
     template<typename Promise>
     bool await_suspend(std::coroutine_handle<Promise> h) {
         const CancellationToken* token =
             explicit_token_ ? &*explicit_token_ : ambient_cancellation_of(h);
-        if (!token || !token->can_be_cancelled()) {
+        if (token == nullptr || !token->can_be_cancelled()) {
             // The resumption may run (or be discarded) before post() returns,
             // on this or another thread, so nothing here is touched after it.
             try {
                 exec_.post(PlainResumption{h, &plain_cancelled_});
             } catch (...) {
-                // A failed post destroyed the resumption, which already
-                // resumed the coroutine as cancelled. Propagating would
+                // The failed post destroyed the resumption, which already
+                // resumed the coroutine as cancelled; propagating would
                 // resume it a second time.
+                ::aria::report_callback_failure("executor.post", std::current_exception());
             }
             return true;
         }
@@ -657,9 +679,11 @@ public:
         auto hop = std::make_shared<CancellableHop>();
         hop->handle = h;
         shared_ = hop;
-        cancellation_ = CancellationCallback{*token, [hop] {
-            if (hop->claim(false, true)) schedule_deferred_resume(hop->handle);
-        }};
+        cancellation_ = CancellationCallback(*token, [hop] {
+            if (hop->claim(false, true)) {
+                schedule_deferred_resume(hop->handle);
+            }
+        });
         // From here on only `hop` is used: a remote executor may resume and
         // destroy the frame as soon as the resumption is queued.
         exec_.post(CancellableResumption{hop});

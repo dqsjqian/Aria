@@ -39,20 +39,21 @@ struct TaskPromiseContext {
 /// Sets the awaiting coroutine's ambient cancellation; never suspends.
 struct AmbientCancellationBinder {
     const CancellationToken* token;
-    bool await_ready() const noexcept { return false; }
+    // NOLINTNEXTLINE(readability-convert-member-functions-to-static): awaiter protocol
+    [[nodiscard]] bool await_ready() const noexcept { return false; }
     template<typename Promise>
-    bool await_suspend(std::coroutine_handle<Promise> h) const noexcept {
+    [[nodiscard]] bool await_suspend(std::coroutine_handle<Promise> h) const noexcept {
         if constexpr (std::is_base_of_v<TaskPromiseContext, Promise>) {
             h.promise().ambient_cancellation = token;
         }
         return false;
     }
-    void await_resume() const noexcept {}
+    void await_resume() const noexcept {}  // NOLINT(readability-convert-member-functions-to-static)
 };
 
 /// The ambient cancellation of the coroutine behind `h`, if it has one.
 template<typename Promise>
-const CancellationToken* ambient_cancellation_of(std::coroutine_handle<Promise> h) noexcept {
+[[nodiscard]] const CancellationToken* ambient_cancellation_of(std::coroutine_handle<Promise> h) noexcept {
     if constexpr (std::is_base_of_v<TaskPromiseContext, Promise>) {
         return h.promise().ambient_cancellation;
     } else {
@@ -152,7 +153,7 @@ public:
     struct Awaiter {
         handle_type h;
 
-        bool await_ready() const noexcept { return !h || h.done(); }
+        [[nodiscard]] bool await_ready() const noexcept { return !h || h.done(); }
 
         template<typename CallerPromise>
         std::coroutine_handle<> await_suspend(

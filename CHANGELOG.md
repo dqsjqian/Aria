@@ -40,6 +40,10 @@ Fixes from the November 2026 review. Each has a regression test.
   `co_await token` use it, so bounded waits on a long-lived token no longer
   accumulate callbacks (and the results they retain) until cancellation, and
   a destroyed coroutine parked on `co_await token` is never resumed later.
+  A throwing cancellation callback is now reported through the
+  callback-failure sink instead of being silently dropped.
+- `CoroutineScope(const CancellationToken&)`: the parent token is taken by
+  reference (source compatible).
 - `Computed::on_changed`, `bind` and `observe` run the callback untracked:
   reads inside it no longer become dependencies that re-run the callback.
 - A throwing node no longer strands the rest of its flush round in

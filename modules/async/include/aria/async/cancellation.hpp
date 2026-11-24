@@ -16,6 +16,8 @@
 //
 // Tokens are thread-safe and copyable; cancellation propagates to all copies.
 
+#include "aria/callback_boundary.hpp"
+
 #include <atomic>
 #include <concepts>
 #include <condition_variable>
@@ -64,10 +66,12 @@ struct CancellationState {
     /// Registers `fn` unless cancellation already happened. Returns 0 when
     /// the caller must invoke `fn` itself (already cancelled).
     CallbackId add(std::function<void()>& fn) {
-        std::lock_guard lk(m);
-        if (cancelled.load(std::memory_order_acquire)) return 0;
+        const std::scoped_lock lock(m);
+        if (cancelled.load(std::memory_order_acquire)) {
+            return 0;
+        }
         const auto id = ++next_id;
-        callbacks.push_back(Entry{id, std::move(fn)});
+        callbacks.push_back(Entry{.id = id, .fn = std::move(fn)});
         return id;
     }
 
@@ -82,8 +86,12 @@ struct CancellationState {
         // was already taken is running or has run; that is handled below.
         const auto take = [&](std::vector<Entry>& entries) {
             for (auto& entry : entries) {
-                if (entry.id != id) continue;
-                if (!entry.fn) return false;
+                if (entry.id != id) {
+                    continue;
+                }
+                if (!entry.fn) {
+                    return false;
+                }
                 withdrawn = std::move(entry.fn);
                 entry.fn = nullptr;
                 return true;
@@ -94,7 +102,9 @@ struct CancellationState {
             std::erase_if(callbacks, [id](const Entry& entry) { return entry.id == id; });
             return;
         }
-        if (take(firing)) return;
+        if (take(firing)) {
+            return;
+        }
         if (running == id && running_thread != std::this_thread::get_id()) {
             callback_done.wait(lk, [&] { return running != id; });
         }
@@ -105,28 +115,36 @@ struct CancellationState {
     /// concurrent remove() either withdraws it first or waits for it.
     void fire() {
         {
-            std::lock_guard lk(m);
+            const std::scoped_lock lock(m);
             firing.swap(callbacks);
         }
         for (std::size_t index = 0;; ++index) {
             std::function<void()> fn;
             {
-                std::lock_guard lk(m);
+                const std::scoped_lock lock(m);
                 if (index >= firing.size()) {
                     firing.clear();
                     break;
                 }
-                auto& entry = firing[index];
-                if (!entry.fn) continue;
+                auto& entry = *(firing.begin() + static_cast<std::ptrdiff_t>(index));
+                if (!entry.fn) {
+                    continue;
+                }
                 fn = std::move(entry.fn);
                 entry.fn = nullptr;
                 running = entry.id;
                 running_thread = std::this_thread::get_id();
             }
-            try { fn(); } catch (...) {}
+            try {
+                fn();
+            } catch (...) {
+                // Same policy as before scoped registrations: a throwing
+                // callback must not stop the broadcast to the others.
+                ::aria::report_callback_failure("cancellation.callback", std::current_exception());
+            }
             fn = nullptr;
             {
-                std::lock_guard lk(m);
+                const std::scoped_lock lock(m);
                 running = 0;
                 running_thread = {};
             }
@@ -303,8 +321,12 @@ public:
         // A synchronous callback may destroy this token and the source. Keep
         // the state alive and never call user code while its mutex is held.
         const auto state = state_;
-        if (!state || !cb) return;
-        if (state->add(cb) == 0) cb();
+        if (!state || !cb) {
+            return;
+        }
+        if (state->add(cb) == 0) {
+            cb();
+        }
     }
 
     /// Always-cancellable empty token (useful as a default).
@@ -332,7 +354,9 @@ public:
                  (!std::same_as<std::decay_t<Fn>, CancellationCallback>)
     CancellationCallback(const CancellationToken& token, Fn&& fn) {
         const auto& state = token.state_;
-        if (!state) return;
+        if (!state) {
+            return;
+        }
         std::function<void()> callback{std::forward<Fn>(fn)};
         const auto id = state->add(callback);
         if (id == 0) {
