@@ -248,6 +248,12 @@ inline void Graph::flush() {
         if (node) publish_phase(category, node.get(), rounds, changed);
     };
 
+    // A throwing node must not strand the rest of its round: entries after
+    // it would stay MaybeDirty without being queued, and an upstream whose
+    // value then stops changing never re-enqueues them. Finish the flush,
+    // then rethrow the first failure to the writer; report any later ones.
+    std::exception_ptr first_failure;
+
     while (!pending_.empty()) {
         if (++rounds > kMaxFlushRounds) {
             // Capture a representative cycle path: the remaining pending
@@ -298,7 +304,20 @@ inline void Graph::flush() {
             }
             trace_node(2, ::aria::trace::ReactivePhase::Pull, n, false);
             if (!n) continue;
-            const bool changed = pull(*n);
+            bool changed = false;
+            try {
+                changed = pull(*n);
+            } catch (const CircularDependencyError&) {
+                throw;  // structural: the graph cannot settle
+            } catch (...) {
+                if (!first_failure) {
+                    first_failure = std::current_exception();
+                } else {
+                    ::aria::report_callback_failure("reactive.flush",
+                                                    std::current_exception());
+                }
+                continue;
+            }
             trace_node(4, ::aria::trace::ReactivePhase::Recomputed, n, changed);
         }
 
@@ -309,6 +328,7 @@ inline void Graph::flush() {
 
     trace_phase(6 /*FlushEnd*/, nullptr, rounds, false);
     publish_phase(::aria::trace::ReactivePhase::FlushEnd, nullptr, rounds, false);
+    if (first_failure) std::rethrow_exception(first_failure);
 }
 
 // ---------------------------------------------------------------------------

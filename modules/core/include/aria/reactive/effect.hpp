@@ -169,6 +169,9 @@ template<PropertyValue T>
         [this, fn = std::move(fn), primed] {
             const auto& v = this->get();
             if (!*primed) { *primed = true; return; }
+            // Only the Computed is a dependency. Reads inside the callback
+            // must not re-run it, matching Property::on_changed.
+            UntrackedScope untracked_callback;
             fn(v);
         });
     reaction->set_debug_name("Computed::on_changed");
@@ -181,7 +184,11 @@ template<PropertyValue T>
     // its body eagerly in the constructor, which is exactly that
     // semantics -- no extra first-call guard needed.
     auto reaction = std::make_shared<detail::AutoReactionNode>(
-        [this, fn = std::move(fn)] { fn(this->get()); });
+        [this, fn = std::move(fn)] {
+            const auto& v = this->get();
+            UntrackedScope untracked_callback;  // see on_changed
+            fn(v);
+        });
     reaction->set_debug_name("Computed::bind");
     return ::aria::Subscription{std::move(reaction)};
 }
@@ -196,7 +203,10 @@ template<PropertyValue T>
             *last     = new_val;
             // Suppress the initial edge (old == new on first run) so
             // `observe` only fires on actual changes.
-            if (!(old == new_val)) fn(old, new_val);
+            if (!(old == new_val)) {
+                UntrackedScope untracked_callback;  // see on_changed
+                fn(old, new_val);
+            }
         });
     reaction->set_debug_name("Computed::observe");
     return ::aria::Subscription{std::move(reaction)};

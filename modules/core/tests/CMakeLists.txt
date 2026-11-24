@@ -30,6 +30,7 @@ add_executable(test_core
     test_function_ref.cpp
     test_inplace_function.cpp
     test_callback_boundary.cpp
+    test_reactive_regressions.cpp
 )
 target_link_libraries(test_core PRIVATE
     aria::core
