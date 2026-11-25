@@ -185,7 +185,7 @@ aria::reactive::batch([&] {
 还有一条省心的默认行为：**如果最终结果和当前值相同，一次通知都不会发。**
 比如上面之后再 `batch` 里设 `bill=600, people=4`（仍是 150），label 不会被打扰。
 
-整个架构一张图看全——上半是纯 C++ 的 ViewModel，中间是 `BindingEngine`（只认 `IViewAdapter` 接口），下半是五个原生适配器：
+整个架构一张图看全——上半是纯 C++ 的 ViewModel，中间是 `BindingEngine`（只认 `IViewAdapter` 接口），下半是五个原生适配器；ViewModel 与引擎之间是可选的 `aria-i18n` 与 `aria-app` 能力层：
 
 ![Aria 架构总览](docs/marketing/images/aria-arch.png)
 
@@ -206,6 +206,7 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
 | **原生 UI 自由** | 控件、布局和动画交给所选 UI 工具包，Aria 统一状态与界面之间的单向/双向数据流；共享业务核心，各端保留原生体验。 |
 | **分层兼容策略** | `aria-abi` / `aria-runtime` / `aria-binding` 在主版本号内保持 ABI 稳定，要求编译器、标准库与构建选项一致；`Property<T>` 等模板及其宿主类型更新后需重新编译。 |
 | **开放适配协议** | Qt6 / AppKit / UIKit / JNI / HTTP 开箱可用；其他 UI 工具包通过实现 `IViewAdapter` 接入（见[适配器指南](docs/guide/adapters/)）。 |
+| **应用组合与多语言** | `aria-i18n`（`LocaleContext`、`XmlCatalog`、响应式文案绑定）与 `aria-app`（模块注册、ViewModel 工厂、拓展点、插槽）按需启用；不引入 UI、JSON 或网络依赖（见[本地化与应用组合指南](docs/guide/application-composition.md)）。 |
 | **应用实践与开发资料** | AriaTools、AriaAgent 与 AriaRead 展示跨端工作台、Agent GUI 和阅读引擎中的应用实践；[指南](docs/index.md)、[Cookbook](docs/cookbook/README.md) 与工程契约覆盖从入门到扩展的开发路径。 |
 
 **为共享 C++ 业务核心、原生多端 UI 和长期维护而设计。** Aria 负责业务与状态层，控件渲染与界面复用由所选 UI 工具包负责；两层通过明确的适配协议协作。
@@ -216,6 +217,8 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
 - 🔌 **共享基础库与 ABI 层** —— `aria::core` 自动链接 `aria::abi`，统一跨动态库的响应式图、诊断和信号存储。ABI 要求一致的编译器、标准库、构建选项和主版本；模板及其宿主类型在更新后需要重新编译。
 - ⚡ **C++ 协程** —— `Task<T>`、执行器、`co_await schedule_on(pool)`，异步代码写起来像同步代码。
 - 🖥 **适配器抽象** (`IViewAdapter`) —— Qt6 / AppKit / UIKit / JNI / HTTP，任何 UI 工具包都能用同一套业务逻辑驱动。
+- 🌍 **多语言** (`aria::i18n`，可选） —— `LocaleContext` 显式语言上下文、`XmlCatalog`/自定义 Catalog、响应式文案绑定 `TextBindings`；切换语言自动重算，不引入 UI、JSON 或网络依赖。
+- 🧩 **应用组合** (`aria::app`，可选） —— 模块注册、ViewModel 工厂与缓存、可撤销拓展点与插槽、类型化导航；按需启用。
 
 ## 🏗 架构（12 个模块）
 
@@ -261,6 +264,13 @@ UI 通过 `IViewAdapter` 接入。Qt6 / AppKit / UIKit / JNI / HTTP 五个适配
               │ 类型擦除 Signal/Slot         │
               │ ABI 稳定，无模板              │
               └─────────────────────────────┘
+
+可选能力（与适配器并列，按需启用；不进绑定主路径）：
+┌───────────────────────────────┐   ┌───────────────────────────────┐
+│ aria-i18n · 多语言            │   │ aria-app · 应用组合           │
+│ LocaleContext / XmlCatalog /  │   │ ModuleRegistry / ViewModel    │
+│ TextBindings 响应式文案绑定   │   │ 拓展点 / 插槽 / 类型化导航    │
+└───────────────────────────────┘   └───────────────────────────────┘
 ```
 
 | 模块 | 类型 | 依赖 | 说明 |
@@ -524,7 +534,7 @@ ctest --test-dir build/flavors/release --no-tests=error --output-on-failure
 
 ## 📊 性能基准
 
-2026-09-13，Apple M3 Pro / Apple Clang 21 / C++20 Release（`-O3 -DNDEBUG`）。
+2026-09-13，Apple M3 Pro / Apple Clang 21 / C++23 Release（`-O3 -DNDEBUG`）。
 下面是五次配对运行中，各次平均耗时的中位数；原版为 `aa039f6`，新版测量快照为 2.0 改造提交 `2f22e17`。
 
 | 操作 | 原版 | 新版 |

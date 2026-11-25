@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2160" height="3020" viewBox="0 0 2160 3020">
+<defs>
+  <linearGradient id="gHead" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#4f46e5"/><stop offset="1" stop-color="#06b6d4"/>
+  </linearGradient>
+  <linearGradient id="gBottom" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#4f46e5"/><stop offset="1" stop-color="#a855f7"/>
+  </linearGradient>
+  <filter id="cardShadow" x="-5%" y="-5%" width="110%" height="115%">
+    <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#1a1d29" flood-opacity="0.10"/>
+  </filter>
+</defs>
+<rect width="2160" height="3020" fill="#f7f8fa"/>
+<text x="1080" y="122" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="72" fill="#161a26" text-anchor="middle" font-weight="700">一份 C++ 核心，五端原生界面</text>
+<rect x="807.6" y="193.0" width="544.8" height="70" rx="35.0" fill="#e0e7ff"/>
+<text x="1080" y="240.24" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="34" fill="#4f46e5" text-anchor="middle" font-weight="700">Aria · C++23 响应式 MVVM 框架</text>
+<rect x="110" y="320" width="1940" height="470" rx="28" fill="#ffffff" filter="url(#cardShadow)"/>
+<clipPath id="clipVM"><rect x="110" y="320" width="1940" height="470" rx="28"/></clipPath>
+<g clip-path="url(#clipVM)"><rect x="110" y="320" width="1940" height="95" fill="url(#gHead)"/></g>
+<text x="170" y="382" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="40" fill="#ffffff" text-anchor="start" font-weight="700">你的业务代码 · 纯 C++ ViewModel</text>
+<text x="1990" y="380" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="30" fill="#ffffff" text-anchor="end">不认识任何 UI 库</text>
+<rect x="542.6" y="473.0" width="244.7" height="64" rx="32.0" fill="#e0e7ff"/>
+<text x="664.90625" y="515.8" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#4f46e5" text-anchor="middle">Property&lt;T&gt;</text>
+<rect x="807.2" y="473.0" width="244.7" height="64" rx="32.0" fill="#d1fae5"/>
+<text x="929.59375" y="515.8" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#059669" text-anchor="middle">Computed&lt;T&gt;</text>
+<rect x="1071.9" y="473.0" width="172.4" height="64" rx="32.0" fill="#fef3c7"/>
+<text x="1158.15625" y="515.8" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#b45309" text-anchor="middle">Command</text>
+<rect x="1264.4" y="473.0" width="353.1" height="64" rx="32.0" fill="#fee2e2"/>
+<text x="1440.90625" y="515.8" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#dc2626" text-anchor="middle">ObservableList&lt;T&gt;</text>
+<rect x="530.9" y="553.0" width="172.4" height="64" rx="32.0" fill="#e0f2fe"/>
+<text x="617.15625" y="595.8" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#0284c7" text-anchor="middle">Task&lt;T&gt;</text>
+<rect x="723.4" y="553.0" width="316.9" height="64" rx="32.0" fill="#ede9fe"/>
+<text x="881.84375" y="595.8" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#7c3aed" text-anchor="middle">reactive::batch</text>
+<rect x="1060.3" y="553.0" width="208.6" height="64" rx="32.0" fill="#ccfbf1"/>
+<text x="1164.59375" y="595.8" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#0f766e" text-anchor="middle">Validator</text>
+<rect x="1288.9" y="553.0" width="340.2" height="64" rx="32.0" fill="#fce7f3"/>
+<text x="1458.96875" y="595.8" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#be185d" text-anchor="middle">协程 / 依赖自动追踪</text>
+<text x="1080" y="705" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#6b7280" text-anchor="middle">依赖不用手写：Computed 首次求值读到了谁，就自动记下谁 · 命令行下即可单元测试</text>
+<line x1="1080" y1="800" x2="1080" y2="841" stroke="#94a3b8" stroke-width="3"/>
+<polygon points="1080,855 1067,833 1093,833" fill="#94a3b8"/>
+<text x="1080" y="900" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="30" fill="#374151" text-anchor="middle" font-weight="700">可选能力 · 应用组合与多语言（按需启用，不依赖任何 UI 库）</text>
+<rect x="110" y="940" width="1940" height="380" rx="28" fill="#ffffff" filter="url(#cardShadow)"/>
+<line x1="1080" y1="968" x2="1080" y2="1292" stroke="#e5e7eb" stroke-width="2"/>
+<text x="595" y="1012" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="36" fill="#4f46e5" text-anchor="middle" font-weight="700">aria-i18n · 多语言</text>
+<text x="595" y="1058" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="26" fill="#6b7280" text-anchor="middle">ARIA_BUILD_I18N=ON · SHARED / STATIC</text>
+<text x="595" y="1130" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#4b5563" text-anchor="middle">LocaleContext 显式语言上下文 · 无全局后端</text>
+<text x="595" y="1178" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#4b5563" text-anchor="middle">XmlCatalog / 自定义 Catalog · 域优先回退</text>
+<text x="595" y="1226" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#4b5563" text-anchor="middle">TextBindings 响应式文案绑定 · 切语言自动重算</text>
+<text x="1565" y="1012" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="36" fill="#0d9488" text-anchor="middle" font-weight="700">aria-app · 应用组合</text>
+<text x="1565" y="1058" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="26" fill="#6b7280" text-anchor="middle">ARIA_BUILD_APP=ON · 仅头文件</text>
+<text x="1565" y="1130" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#4b5563" text-anchor="middle">ModuleRegistry 模块注册 · ViewModel 工厂与缓存</text>
+<text x="1565" y="1178" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#4b5563" text-anchor="middle">ExtensionRegistry 可撤销拓展点 · MountRegistry 插槽</text>
+<text x="1565" y="1226" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#4b5563" text-anchor="middle">TypedRouteRegistry 类型化导航 · 启动编排</text>
+<line x1="1080" y1="1330" x2="1080" y2="1371" stroke="#94a3b8" stroke-width="3"/>
+<polygon points="1080,1385 1067,1363 1093,1363" fill="#94a3b8"/>
+<rect x="210" y="1395" width="1740" height="170" rx="24" fill="#0f172a" filter="url(#cardShadow)"/>
+<text x="1080" y="1467" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="44" fill="#ffffff" text-anchor="middle" font-weight="700">BindingEngine · 统一绑定引擎</text>
+<text x="1080" y="1523" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="30" fill="#94a3b8" text-anchor="middle">只认 <tspan fill="#22d3ee" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace">IViewAdapter</tspan> 这一个接口 —— 换平台 = 换适配器，ViewModel 零改动</text>
+<line x1="1080" y1="1573" x2="1080" y2="1630" stroke="#94a3b8" stroke-width="3"/>
+<line x1="420.0" y1="1630" x2="1740.0" y2="1630" stroke="#94a3b8" stroke-width="3"/>
+<line x1="420.0" y1="1630" x2="420.0" y2="1666" stroke="#94a3b8" stroke-width="3"/>
+<polygon points="420.0,1680 407.0,1658 433.0,1658" fill="#94a3b8"/>
+<line x1="1080.0" y1="1630" x2="1080.0" y2="1666" stroke="#94a3b8" stroke-width="3"/>
+<polygon points="1080.0,1680 1067.0,1658 1093.0,1658" fill="#94a3b8"/>
+<line x1="1740.0" y1="1630" x2="1740.0" y2="1666" stroke="#94a3b8" stroke-width="3"/>
+<polygon points="1740.0,1680 1727.0,1658 1753.0,1658" fill="#94a3b8"/>
+<rect x="110" y="1700" width="620" height="400" rx="24" fill="#ffffff" filter="url(#cardShadow)"/>
+<clipPath id="clip00"><rect x="110" y="1700" width="620" height="400" rx="24"/></clipPath>
+<g clip-path="url(#clip00)"><rect x="110" y="1700" width="620" height="10" fill="#4f46e5"/></g>
+<text x="420.0" y="1792" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="40" fill="#161a26" text-anchor="middle" font-weight="700">桌面</text>
+<text x="420.0" y="1845" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#4f46e5" text-anchor="middle" font-weight="700">aria-qt6</text>
+<text x="420.0" y="1905" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="27" fill="#6b7280" text-anchor="middle">Windows / macOS / Linux</text>
+<text x="420.0" y="1950" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="27" fill="#6b7280" text-anchor="middle">纯 C++ · Qt Designer 拖界面</text>
+<rect x="770" y="1700" width="620" height="400" rx="24" fill="#ffffff" filter="url(#cardShadow)"/>
+<clipPath id="clip01"><rect x="770" y="1700" width="620" height="400" rx="24"/></clipPath>
+<g clip-path="url(#clip01)"><rect x="770" y="1700" width="620" height="10" fill="#0d9488"/></g>
+<text x="1080.0" y="1792" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="40" fill="#161a26" text-anchor="middle" font-weight="700">iOS</text>
+<text x="1080.0" y="1845" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#0d9488" text-anchor="middle" font-weight="700">aria-uikit</text>
+<text x="1080.0" y="1905" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="27" fill="#6b7280" text-anchor="middle">Storyboard / SwiftUI 桥接</text>
+<text x="1080.0" y="1950" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="27" fill="#6b7280" text-anchor="middle">ARC 安全 · 不会回调已释放控件</text>
+<rect x="1430" y="1700" width="620" height="400" rx="24" fill="#ffffff" filter="url(#cardShadow)"/>
+<clipPath id="clip02"><rect x="1430" y="1700" width="620" height="400" rx="24"/></clipPath>
+<g clip-path="url(#clip02)"><rect x="1430" y="1700" width="620" height="10" fill="#059669"/></g>
+<text x="1740.0" y="1792" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="40" fill="#161a26" text-anchor="middle" font-weight="700">Android</text>
+<text x="1740.0" y="1845" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#059669" text-anchor="middle" font-weight="700">aria-jni</text>
+<text x="1740.0" y="1905" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="27" fill="#6b7280" text-anchor="middle">Compose side-channel</text>
+<text x="1740.0" y="1950" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="27" fill="#6b7280" text-anchor="middle">typed JniAdapter 双路径</text>
+<rect x="110" y="2140" width="620" height="400" rx="24" fill="#ffffff" filter="url(#cardShadow)"/>
+<clipPath id="clip10"><rect x="110" y="2140" width="620" height="400" rx="24"/></clipPath>
+<g clip-path="url(#clip10)"><rect x="110" y="2140" width="620" height="10" fill="#d97706"/></g>
+<text x="420.0" y="2232" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="40" fill="#161a26" text-anchor="middle" font-weight="700">Web</text>
+<text x="420.0" y="2285" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#b45309" text-anchor="middle" font-weight="700">aria-http</text>
+<text x="420.0" y="2345" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="27" fill="#6b7280" text-anchor="middle">浏览器是 HTML/JS 薄客户端</text>
+<text x="420.0" y="2390" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="27" fill="#6b7280" text-anchor="middle">C++ 跑服务端 · REST + SSE</text>
+<rect x="770" y="2140" width="620" height="400" rx="24" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="10 8"/>
+<text x="1080.0" y="2232" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="40" fill="#9ca3af" text-anchor="middle" font-weight="700">WASM</text>
+<text x="1080.0" y="2285" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#9ca3af" text-anchor="middle" font-weight="700">aria-wasm</text>
+<text x="1080.0" y="2345" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="27" fill="#9ca3af" text-anchor="middle">浏览器内直接跑 C++</text>
+<text x="1080.0" y="2390" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="27" fill="#9ca3af" text-anchor="middle">路线图中 · 敬请期待</text>
+<rect x="1430" y="2140" width="620" height="400" rx="24" fill="#ffffff" filter="url(#cardShadow)"/>
+<clipPath id="clip12"><rect x="1430" y="2140" width="620" height="400" rx="24"/></clipPath>
+<g clip-path="url(#clip12)"><rect x="1430" y="2140" width="620" height="10" fill="#7c3aed"/></g>
+<text x="1740.0" y="2232" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="40" fill="#161a26" text-anchor="middle" font-weight="700">任何工具包</text>
+<text x="1740.0" y="2285" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#7c3aed" text-anchor="middle" font-weight="700">IViewAdapter</text>
+<text x="1740.0" y="2345" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="27" fill="#6b7280" text-anchor="middle">接新 UI 库 = 实现一个适配器</text>
+<text x="1740.0" y="2390" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="27" fill="#6b7280" text-anchor="middle">不绑定任何厂商技术栈</text>
+<rect x="110" y="2610" width="1940" height="210" rx="28" fill="url(#gBottom)" filter="url(#cardShadow)"/>
+<text x="1080" y="2698" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="44" fill="#ffffff" text-anchor="middle" font-weight="700">业务逻辑写一份，换平台只换十几行接线代码</text>
+<text x="1080" y="2758" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#ffffff" text-anchor="middle" opacity="0.88">界面照旧用各平台原生方式写：Qt Designer / Storyboard / Compose / HTML</text>
+<text x="1080" y="2900" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="30" fill="#374151" text-anchor="middle" font-weight="700">已驱动 3 个真实开源应用：AriaTools（17 模块×4 端）· AriaAgent（LLM Agent GUI）· AriaRead（书源引擎）</text>
+<text x="1080" y="2952" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#6b7280" text-anchor="middle">75+ 测试用例钉死生命周期契约 · 主版本内 ABI 稳定 · MIT License</text>
+</svg>

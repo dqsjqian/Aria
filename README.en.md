@@ -196,7 +196,8 @@ notified at all.** Following on from above, a batch setting `bill=600, people=4`
 
 The whole architecture in one picture — upper half is the pure C++ ViewModel, the middle
 is `BindingEngine` (which only knows the `IViewAdapter` interface), and the bottom row is
-the five native adapters:
+the five native adapters. Between the ViewModel and the engine sit the optional
+`aria-i18n` and `aria-app` capability layers:
 
 ![Aria architecture overview](docs/marketing/images/aria-arch.png)
 
@@ -217,6 +218,7 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 | **Native UI freedom** | Your UI toolkit owns widgets, layout, and animation. Aria unifies one-way and two-way state binding, sharing the business core while preserving native experiences. |
 | **Layered compatibility** | `aria-abi` / `aria-runtime` / `aria-binding` maintain ABI stability within a major version, with matching compiler, standard library, and build options. Rebuild templates such as `Property<T>` and their containing types after updates. |
 | **Open adapter protocol** | Qt6 / AppKit / UIKit / JNI / HTTP ship out of the box. Integrate other UI toolkits by implementing `IViewAdapter` (see the [adapter guides](docs/guide/adapters/)). |
+| **App composition and i18n** | `aria-i18n` (`LocaleContext`, `XmlCatalog`, reactive text bindings) and `aria-app` (module registries, ViewModel factories, extension points, slots) are opt-in; they add no UI, JSON, or networking dependency (see the [localization and application composition guide](docs/guide/application-composition.md)). |
 | **Applications and learning resources** | AriaTools, AriaAgent, and AriaRead demonstrate cross-platform workbenches, agent GUIs, and reading engines. [Guides](docs/index.md), the [Cookbook](docs/cookbook/README.md), and engineering contracts cover the path from first integration to custom extensions. |
 
 **Designed for shared C++ business logic, native multi-platform UIs, and long-term maintenance.** Aria owns business state and binding; the chosen UI toolkit owns rendering and UI reuse. An explicit adapter protocol connects the two.
@@ -227,6 +229,8 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
 - 🔌 **Shared foundation and ABI layer** — `aria::core` automatically links `aria::abi` for shared graph, diagnostics and signal storage. Binary compatibility requires matching compiler, standard library, build options and major version. Rebuild template code and its containing types after updates.
 - ⚡ **C++ coroutines** — `Task<T>`, executors, `co_await schedule_on(pool)`. Async code reads like sync code.
 - 🖥 **Adapter abstraction** (`IViewAdapter`) — Qt6 / AppKit / UIKit / JNI / HTTP. Any UI toolkit, same business logic.
+- 🌍 **Localization** (`aria::i18n`, optional) — explicit `LocaleContext`, `XmlCatalog`/custom catalogs, reactive text bindings via `TextBindings`; switching languages re-resolves text, with no UI, JSON, or networking dependency.
+- 🧩 **Application composition** (`aria::app`, optional) — module registries, ViewModel factories with caching, revocable extension points and slots, typed navigation; opt-in.
 
 ## 🏗 Architecture (12 modules)
 
@@ -272,6 +276,14 @@ UI layers connect through `IViewAdapter`. Qt6 / AppKit / UIKit / JNI / HTTP shar
               │ Type-erased Signal/Slot     │
               │ ABI-stable, no templates    │
               └─────────────────────────────┘
+
+Optional capabilities (alongside the adapters; opt-in; not on the binding path):
+┌───────────────────────────────┐   ┌───────────────────────────────┐
+│ aria-i18n · localization      │   │ aria-app · composition        │
+│ LocaleContext / XmlCatalog    │   │ ModuleRegistry / ViewModel    │
+│ TextBindings reactive text    │   │ extension points / slots      │
+│ explicit locale contexts      │   │ typed navigation              │
+└───────────────────────────────┘   └───────────────────────────────┘
 ```
 
 | Module | Type | Depends on | Notes |
@@ -607,7 +619,7 @@ build options. See [CI results](https://github.com/dqsjqian/Aria/actions/workflo
 
 ## 📊 Benchmarks
 
-Measured on 2026-09-13: Apple M3 Pro / Apple Clang 21 / C++20 Release
+Measured on 2026-09-13: Apple M3 Pro / Apple Clang 21 / C++23 Release
 (`-O3 -DNDEBUG`). Each entry is the median of five paired runs' mean operation
 times, comparing original revision `aa039f6` with 2.0 snapshot `2f22e17`.
 

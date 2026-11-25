@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1500" viewBox="0 0 2400 1500">
+<defs>
+  <linearGradient id="gTools" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#f59e0b"/><stop offset="1" stop-color="#ef4444"/>
+  </linearGradient>
+  <linearGradient id="gAgent" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#06b6d4"/>
+  </linearGradient>
+  <linearGradient id="gRead" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#7c3aed"/><stop offset="1" stop-color="#a855f7"/>
+  </linearGradient>
+  <linearGradient id="gBase" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#4f46e5"/><stop offset="1" stop-color="#06b6d4"/>
+  </linearGradient>
+  <filter id="cardShadow" x="-5%" y="-5%" width="110%" height="115%">
+    <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#1a1d29" flood-opacity="0.10"/>
+  </filter>
+</defs>
+<rect width="2400" height="1500" fill="#f7f8fa"/>
+<text x="1200" y="108" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="66" fill="#161a26" text-anchor="middle" font-weight="700">从一个框架，长出一个应用生态</text>
+<text x="1200" y="188" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="34" fill="#6b7280" text-anchor="middle">一个 C++23 响应式 MVVM 框架，三个跨领域、跨平台的开源产品</text>
+<rect x="60" y="270" width="700" height="580" rx="28" fill="#ffffff" filter="url(#cardShadow)"/>
+<clipPath id="clip0"><rect x="60" y="270" width="700" height="580" rx="28"/></clipPath>
+<g clip-path="url(#clip0)"><rect x="60" y="270" width="700" height="110" fill="url(#gTools)"/></g>
+<text x="410.0" y="342" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="46" fill="#ffffff" text-anchor="middle" font-weight="700">AriaTools</text>
+<text x="410.0" y="448" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="34" fill="#c2410c" text-anchor="middle" font-weight="700">跨端工作台</text>
+<text x="410.0" y="500" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#6b7280" text-anchor="middle">17 个业务模块 × 4 个原生平台</text>
+<rect x="210.8" y="540.0" width="174.0" height="56" rx="28.0" fill="#e0e7ff"/>
+<text x="297.75" y="577.72" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="27" fill="#4f46e5" text-anchor="middle">aria-qt6</text>
+<rect x="402.8" y="540.0" width="206.5" height="56" rx="28.0" fill="#d1fae5"/>
+<text x="506.0" y="577.72" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="27" fill="#059669" text-anchor="middle">aria-uikit</text>
+<rect x="218.9" y="612.0" width="174.0" height="56" rx="28.0" fill="#fee2e2"/>
+<text x="305.875" y="649.72" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="27" fill="#dc2626" text-anchor="middle">aria-jni</text>
+<rect x="410.9" y="612.0" width="190.2" height="56" rx="28.0" fill="#fef3c7"/>
+<text x="506.0" y="649.72" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="27" fill="#b45309" text-anchor="middle">aria-http</text>
+<text x="410.0" y="725" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#6b7280" text-anchor="middle">ObservableList · Computed · reactive::batch</text>
+<text x="410.0" y="770" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#6b7280" text-anchor="middle">热插拔 · MountRegistry · i18n</text>
+<rect x="850" y="270" width="700" height="580" rx="28" fill="#ffffff" filter="url(#cardShadow)"/>
+<clipPath id="clip1"><rect x="850" y="270" width="700" height="580" rx="28"/></clipPath>
+<g clip-path="url(#clip1)"><rect x="850" y="270" width="700" height="110" fill="url(#gAgent)"/></g>
+<text x="1200.0" y="342" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="46" fill="#ffffff" text-anchor="middle" font-weight="700">AriaAgent</text>
+<text x="1200.0" y="448" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="34" fill="#0f766e" text-anchor="middle" font-weight="700">LLM Agent GUI</text>
+<text x="1200.0" y="500" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#6b7280" text-anchor="middle">Provider 无关 · 真流式 · 工具可视化</text>
+<rect x="902.1" y="572.0" width="174.0" height="56" rx="28.0" fill="#e0e7ff"/>
+<text x="989.125" y="609.72" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="27" fill="#4f46e5" text-anchor="middle">aria-qt6</text>
+<rect x="1094.1" y="572.0" width="190.2" height="56" rx="28.0" fill="#e0e7ff"/>
+<text x="1189.25" y="609.72" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="27" fill="#0284c7" text-anchor="middle">aria-http</text>
+<rect x="1302.4" y="572.0" width="195.5" height="56" rx="28.0" fill="#fef3c7"/>
+<text x="1400.125" y="609.72" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="27" fill="#b45309" text-anchor="middle">C++23 协程</text>
+<text x="1200.0" y="725" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#6b7280" text-anchor="middle">DeepSeek / OpenAI / Kimi / Qwen / GLM</text>
+<text x="1200.0" y="770" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#6b7280" text-anchor="middle">切换模型只需改一行环境变量</text>
+<text x="1200.0" y="815" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#6b7280" text-anchor="middle">工具注册即插即用 · 权限默认拒绝</text>
+<rect x="1640" y="270" width="700" height="580" rx="28" fill="#ffffff" filter="url(#cardShadow)"/>
+<clipPath id="clip2"><rect x="1640" y="270" width="700" height="580" rx="28"/></clipPath>
+<g clip-path="url(#clip2)"><rect x="1640" y="270" width="700" height="110" fill="url(#gRead)"/></g>
+<text x="1990.0" y="342" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="46" fill="#ffffff" text-anchor="middle" font-weight="700">AriaRead</text>
+<text x="1990.0" y="448" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="34" fill="#7c3aed" text-anchor="middle" font-weight="700">跨平台书源引擎</text>
+<text x="1990.0" y="500" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#6b7280" text-anchor="middle">REST+SSE 与 SSR 双 Web 形态同源</text>
+<rect x="1713.8" y="572.0" width="190.2" height="56" rx="28.0" fill="#fef3c7"/>
+<text x="1808.875" y="609.72" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="27" fill="#b45309" text-anchor="middle">aria-http</text>
+<rect x="1922.0" y="572.0" width="201.0" height="56" rx="28.0" fill="#ccfbf1"/>
+<text x="2022.5" y="609.72" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="27" fill="#0f766e" text-anchor="middle">QuickJS 桥</text>
+<rect x="2141.0" y="572.0" width="125.2" height="56" rx="28.0" fill="#fce7f3"/>
+<text x="2203.625" y="609.72" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="27" fill="#be185d" text-anchor="middle">C++23</text>
+<text x="1990.0" y="725" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#6b7280" text-anchor="middle">CSS3 / XPath / JSONPath / Regex</text>
+<text x="1990.0" y="770" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#6b7280" text-anchor="middle">Gumbo HTML5 · nlohmann_json</text>
+<text x="1990.0" y="815" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#6b7280" text-anchor="middle">109 测试 · 39 REST 路由 · 零 Python</text>
+<line x1="410.0" y1="862" x2="410.0" y2="1005" stroke="#94a3b8" stroke-width="3"/>
+<polygon points="410.0,1022 397.0,995 423.0,995" fill="#94a3b8"/>
+<line x1="1200.0" y1="862" x2="1200.0" y2="1005" stroke="#94a3b8" stroke-width="3"/>
+<polygon points="1200.0,1022 1187.0,995 1213.0,995" fill="#94a3b8"/>
+<line x1="1990.0" y1="862" x2="1990.0" y2="1005" stroke="#94a3b8" stroke-width="3"/>
+<polygon points="1990.0,1022 1977.0,995 2003.0,995" fill="#94a3b8"/>
+<rect x="60" y="1030" width="2280" height="320" rx="36" fill="url(#gBase)" filter="url(#cardShadow)"/>
+<text x="1200" y="1118" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="56" fill="#ffffff" text-anchor="middle" font-weight="700">Aria · C++23 响应式 MVVM 框架</text>
+<text x="1200" y="1182" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="32" fill="#ffffff" text-anchor="middle">一个框架 · 五个原生适配器 · 六个平台落地</text>
+<text x="1200" y="1245" font-family="DejaVu Sans Mono, Noto Sans Mono, monospace" font-size="30" fill="#ffffff" text-anchor="middle">Property · Computed · ObservableList · Command · Task&lt;T&gt; · reactive::batch</text>
+<text x="1200" y="1302" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#ffffff" text-anchor="middle" opacity="0.92">可选能力：i18n 多语言 · 模块化 · 拓展点 · 插槽 ｜ 75+ 测试 · 主版本 ABI 稳定 · MIT License</text>
+<text x="1200" y="1432" font-family="Noto Sans CJK SC, Noto Sans CJK, sans-serif" font-size="28" fill="#9ca3af" text-anchor="middle">一个框架 · 三个应用 · 一段手写 C++ 业务核心</text>
+</svg>
