@@ -5,7 +5,10 @@
 
 #include "aria/reactive/reactive.hpp"
 
+#include <deque>
+#include <optional>
 #include <stdexcept>
+#include <vector>
 
 using namespace aria::reactive;
 
@@ -64,6 +67,41 @@ TEST_CASE("A throwing effect does not strand the rest of its flush round") {
     q = 6;  // positive does not change again
     CHECK(shown == 1);
     CHECK(positive.get());
+}
+
+TEST_CASE("Large tracking contexts keep first-read order and distinct live nodes") {
+    TrackingContext ctx;
+    std::deque<Node> sources;
+    for (int i = 0; i < 192; ++i) {
+        auto& n = sources.emplace_back(NodeKind::Source);
+        ctx.record_read(n);
+        ctx.record_read(n);
+    }
+    const bool ordered = std::ranges::equal(ctx.reads(), sources,
+        [](const auto& handle, const Node& node) { return handle.get() == &node; });
+    REQUIRE(ordered);
+    // A new node can occupy the same storage mid-evaluation.
+    std::optional<Node> ephemeral{std::in_place, NodeKind::Source};
+    ctx.record_read(*ephemeral);
+    ephemeral.emplace(NodeKind::Source);
+    ctx.record_read(*ephemeral);
+    CHECK(ctx.reads().size() == sources.size() + 2);
+    CHECK(ctx.reads().back().get() == &*ephemeral);
+    ctx.clear();
+    ctx.record_read(sources.front());
+    CHECK(ctx.reads().size() == 1);
+}
+
+TEST_CASE("A long acyclic chain of property notifications settles") {
+    constexpr std::size_t length = 256;
+    std::deque<Property<int>> values(length + 1);
+    std::vector<aria::Subscription> edges;
+    edges.reserve(length);
+    for (std::size_t i = 0; i < length; ++i) {
+        edges.push_back(values.at(i).on_changed([&, i](int v) { values.at(i + 1) = v; }));
+    }
+    values.front() = 42;
+    CHECK(values.back().get() == 42);
 }
 
 TEST_CASE("Only the first effect failure of a flush is rethrown") {

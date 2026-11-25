@@ -74,6 +74,7 @@ namespace aria::adapters::http {
 class ARIA_HTTP_API HttpAdapter final : public binding::IViewAdapter {
 public:
     explicit HttpAdapter(HttpAdapterConfig config = {});
+    HttpAdapter(HttpAdapterConfig config, StaticFileOptions static_files);
     ~HttpAdapter() override;
 
     HttpAdapter(const HttpAdapter&) = delete;

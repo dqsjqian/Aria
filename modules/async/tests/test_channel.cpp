@@ -246,6 +246,25 @@ TEST_CASE("Channel: close releases all senders and drains only accepted values")
     ch.close();
 }
 
+TEST_CASE("Channel: checked sends distinguish acceptance from close") {
+    Channel<int> channel{1};
+    const auto send = [](Channel<int>* target, int value) -> Task<bool> {
+        co_return co_await target->send_checked(value);
+    };
+    CHECK(send(&channel, 1).blocking_get());
+    auto delivered = send(&channel, 2);
+    delivered.start();
+    CHECK_FALSE(delivered.done());
+    CHECK(receive_one(channel).blocking_get() == 1);
+    CHECK(delivered.blocking_get());
+    auto dropped = send(&channel, 3);
+    dropped.start();
+    channel.close();
+    CHECK_FALSE(dropped.blocking_get());
+    CHECK_FALSE(send(&channel, 4).blocking_get());
+    CHECK(receive_one(channel).blocking_get() == 2);
+}
+
 TEST_CASE("Channel: close releases every unassigned receiver") {
     Channel<int> ch{2};
     std::vector<Task<std::optional<int>>> receivers;

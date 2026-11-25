@@ -24,7 +24,9 @@
 // `std::nullopt` (end of stream), and parked senders are released with their
 // pending value dropped. Buffered and already assigned values remain readable.
 //
-// All resumes happen *outside* the internal mutex to avoid recursive locks.
+// co_await send_checked(value) returns true once the channel accepts the value,
+// or false if close wins first. send(value) keeps its void result. Waiters resume inline
+// on the sending, receiving or closing thread, outside the internal mutex.
 // Multiple producers and consumers may use the channel concurrently. The
 // channel must outlive concurrent method calls, and parked coroutine frames
 // must remain alive until resumed. Destroying a suspended Task is not a
@@ -75,44 +77,45 @@ public:
     }
 
     // ── send ──────────────────────────────────────────────────
-    auto send(T value) {
-        struct Awaiter {
-            Channel* self;
-            T value;
+private:
+    template<bool Checked>
+    struct SendAwaiter {
+        Channel* self;
+        T value;
+        bool accepted = false;
 
-            bool await_ready() const noexcept { return false; }
-
-            // Reserve delivery for a waiting receiver before considering
-            // the buffer. Publish its value before resuming outside the lock.
-            bool await_suspend(std::coroutine_handle<> h) {
-                std::coroutine_handle<> wake;
-                bool suspend = false;
-                {
-                    std::lock_guard lk(self->mu_);
-                    if (self->closed_) {
-                        // Drop the value; just continue.
-                        return false;
-                    }
-                    if (!self->recv_waiters_.empty()) {
-                        auto receiver = self->recv_waiters_.front();
-                        receiver.value->emplace(std::move(value));
-                        self->recv_waiters_.pop_front();
-                        wake = receiver.handle;
-                    } else if (self->buffer_.size() < self->cap_) {
-                        self->buffer_.push_back(std::move(value));
-                    } else {
-                        self->send_waiters_.push_back({h, &value});
-                        suspend = true;
-                    }
+        [[nodiscard]] bool await_ready() const noexcept { return false; }
+        bool await_suspend(std::coroutine_handle<> h) {
+            std::coroutine_handle<> wake;
+            {
+                const std::scoped_lock lock(self->mu_);
+                if (self->closed_) { return false; }
+                if (!self->recv_waiters_.empty()) {
+                    const auto receiver = self->recv_waiters_.front();
+                    receiver.value->emplace(std::move(value));
+                    self->recv_waiters_.pop_front();
+                    wake = receiver.handle;
+                } else if (self->buffer_.size() < self->cap_) {
+                    self->buffer_.push_back(std::move(value));
+                } else {
+                    self->send_waiters_.push_back({h, &value, &accepted});
+                    return true;
                 }
-                if (wake) wake.resume();  // outside the lock
-                return suspend;
+                accepted = true;
             }
+            if (wake) { wake.resume(); }
+            return false;
+        }
 
-            void await_resume() noexcept {}
-        };
-        return Awaiter{this, std::move(value)};
-    }
+        auto await_resume() const noexcept {
+            if constexpr (Checked) { return accepted; }
+        }
+    };
+
+public:
+    auto send(T value) { return SendAwaiter<false>{this, std::move(value)}; }
+    /// Same backpressure as send(); false means close won before acceptance.
+    auto send_checked(T value) { return SendAwaiter<true>{this, std::move(value)}; }
 
     // ── recv ──────────────────────────────────────────────────
     //
@@ -157,6 +160,7 @@ public:
                         if (!self->send_waiters_.empty()) {
                             const auto w = self->send_waiters_.front();
                             self->buffer_.push_back(std::move(*w.value));
+                            *w.accepted = true;
                             self->send_waiters_.pop_front();
                             wake = w.handle;
                         }
@@ -165,6 +169,7 @@ public:
                         // Direct rendezvous, including capacity zero.
                         const auto sender = self->send_waiters_.front();
                         value.emplace(std::move(*sender.value));
+                        *sender.accepted = true;
                         self->send_waiters_.pop_front();
                         wake = sender.handle;
                         suspend = false;
@@ -235,6 +240,7 @@ private:
     struct PendingSend {
         std::coroutine_handle<> handle;
         T* value;
+        bool* accepted = nullptr;
     };
 
     mutable std::mutex mu_;

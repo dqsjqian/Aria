@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -26,7 +27,9 @@ namespace aria {
 /// writers serialize mutation and event publication with a separate recursive
 /// lock. Callbacks execute without the structural lock. Event payloads own the
 /// affected objects and are replayed in order even when the source has already
-/// committed the final state of a batch (see ListChange).
+/// committed the final state of a batch (see ListChange). Removal predicates
+/// and reconcile keys may read the list. A structural write to the same list
+/// from a selector throws std::logic_error before modifying it.
 ///
 /// Reentrant writes commit immediately, then notify after the current complete
 /// event/batch fan-out. Shared backing state keeps an in-flight operation safe
@@ -49,6 +52,7 @@ class ObservableList : public detail::ListSignalMixin<ObservableList<T>, T> {
     struct SharedState {
         mutable std::shared_mutex mutex;
         std::recursive_mutex writer;
+        bool evaluating_selection = false;  // guarded by writer
         std::vector<std::shared_ptr<T>> items;
         std::unordered_map<const T*, Record> records;
         std::shared_ptr<detail::ListSignal<T>> signal = std::make_shared<detail::ListSignal<T>>();
@@ -102,7 +106,7 @@ public:
 
     void push_back(std::shared_ptr<T> item) {
         auto state = state_;
-        std::lock_guard sequence(state->writer);
+        const auto sequence = lock_for_edit(*state);
         std::size_t index;
         {
             std::unique_lock lock(state->mutex);
@@ -125,7 +129,7 @@ public:
 
     void insert(std::size_t index, std::shared_ptr<T> item) {
         auto state = state_;
-        std::lock_guard sequence(state->writer);
+        const auto sequence = lock_for_edit(*state);
         {
             std::unique_lock lock(state->mutex);
             index = std::min(index, state->items.size());
@@ -141,7 +145,7 @@ public:
     template<typename InputIt>
     void insert_range(std::size_t index, InputIt first, InputIt last) {
         auto state = state_;
-        std::lock_guard sequence(state->writer);
+        const auto sequence = lock_for_edit(*state);
         std::vector<std::shared_ptr<T>> pending(first, last);
         if (pending.empty()) return;
         std::vector<Event> events;
@@ -164,7 +168,7 @@ public:
 
     void remove_at(std::size_t index) {
         auto state = state_;
-        std::lock_guard sequence(state->writer);
+        const auto sequence = lock_for_edit(*state);
         std::shared_ptr<T> removed;
         Subscription detached;
         {
@@ -181,7 +185,7 @@ public:
     /// Removes in forward event order, each at the same replay pivot.
     void remove_range(std::size_t index, std::size_t count) {
         auto state = state_;
-        std::lock_guard sequence(state->writer);
+        const auto sequence = lock_for_edit(*state);
         std::vector<Event> events;
         std::vector<Subscription> detached;
         {
@@ -220,11 +224,10 @@ public:
     template<std::predicate<const T&> Pred>
     bool remove_first(Pred&& predicate) {
         auto state = state_;
-        std::lock_guard sequence(state->writer);
-        std::size_t index;
+        const auto sequence = lock_for_edit(*state);
+        std::size_t index = 0;
         {
-            std::shared_lock lock(state->mutex);
-            index = 0;
+            const SelectionScope selecting{*state};
             while (index < state->items.size() && !predicate(*state->items[index])) ++index;
             if (index == state->items.size()) return false;
         }
@@ -236,17 +239,17 @@ public:
     template<std::predicate<const T&> Pred>
     std::size_t remove_all(Pred&& predicate) {
         auto state = state_;
-        std::lock_guard sequence(state->writer);
+        const auto sequence = lock_for_edit(*state);
         std::vector<Event> events;
         std::vector<Subscription> detached;
+        std::vector<bool> remove;
+        remove.reserve(state->items.size());
+        std::size_t removed_count = 0;
+        std::size_t subscriptions = 0;
         {
-            std::unique_lock lock(state->mutex);
-            std::vector<bool> remove;
-            remove.reserve(state->items.size());
-            // User code completes before any item/map is moved. A throwing
-            // predicate leaves the sequence and all subscriptions untouched.
-            std::size_t removed_count = 0;
-            std::size_t subscriptions = 0;
+            // The writer token keeps indices stable. Readers, including the
+            // predicate itself, never have to reacquire a structural lock here.
+            const SelectionScope selecting{*state};
             for (const auto& item : state->items) {
                 const bool selected = predicate(*item);
                 remove.push_back(selected);
@@ -257,6 +260,9 @@ public:
                     }
                 }
             }
+        }
+        {
+            std::unique_lock lock(state->mutex);
             // Allocate event/detachment storage before changing any rows.
             events.reserve(removed_count);
             detached.reserve(subscriptions);
@@ -284,7 +290,7 @@ public:
 
     void replace_at(std::size_t index, std::shared_ptr<T> item) {
         auto state = state_;
-        std::lock_guard sequence(state->writer);
+        const auto sequence = lock_for_edit(*state);
         std::shared_ptr<T> previous;
         Subscription detached;
         {
@@ -304,7 +310,7 @@ public:
 
     void move(std::size_t from, std::size_t to) {
         auto state = state_;
-        std::lock_guard sequence(state->writer);
+        const auto sequence = lock_for_edit(*state);
         std::shared_ptr<T> item;
         {
             std::unique_lock lock(state->mutex);
@@ -321,7 +327,7 @@ public:
 
     void clear() {
         auto state = state_;
-        std::lock_guard sequence(state->writer);
+        const auto sequence = lock_for_edit(*state);
         std::vector<std::shared_ptr<T>> removed;
         std::unordered_map<const T*, Record> detached;
         {
@@ -344,14 +350,17 @@ public:
     std::size_t reconcile(std::vector<std::shared_ptr<T>> next, KeyFn key_of = {}) {
         using Key = std::decay_t<std::invoke_result_t<KeyFn, const T&>>;
         auto state = state_;
-        std::lock_guard sequence(state->writer);
+        const auto sequence = lock_for_edit(*state);
         ObservableList current{state};
         std::erase(next, std::shared_ptr<T>{});
         std::unordered_map<Key, std::size_t> wanted;
         wanted.reserve(next.size());
         bool duplicates = false;
-        for (std::size_t i = 0; i < next.size(); ++i) {
-            if (!wanted.emplace(key_of(*next[i]), i).second) duplicates = true;
+        {
+            const SelectionScope selecting{*state};
+            for (std::size_t i = 0; i < next.size(); ++i) {
+                if (!wanted.emplace(key_of(*next[i]), i).second) duplicates = true;
+            }
         }
         std::size_t count = 0;
         state->signal->batch([&] {
@@ -362,15 +371,19 @@ public:
             } else {
                 const auto before = current.snapshot();
                 for (std::size_t i = before.size(); i-- > 0;) {
-                    if (!wanted.contains(key_of(*before[i]))) { current.remove_at(i); ++count; }
+                    const bool keep = [&] {
+                        const SelectionScope selecting{*state};
+                        return wanted.contains(key_of(*before[i]));
+                    }();
+                    if (!keep) { current.remove_at(i); ++count; }
                 }
                 for (std::size_t target = 0; target < next.size(); ++target) {
-                    const auto key = key_of(*next[target]);
                     std::size_t found;
                     std::size_t length;
                     std::shared_ptr<T> item;
                     {
-                        std::shared_lock lock(state->mutex);
+                        const SelectionScope selecting{*state};
+                        const auto key = key_of(*next[target]);
                         length = state->items.size();
                         found = target;
                         while (found < length && key_of(*state->items[found]) != key) ++found;
@@ -404,6 +417,24 @@ private:
     explicit ObservableList(std::shared_ptr<SharedState> state)
         : state_(std::move(state)), signal_(state_->signal) {}
 
+    class SelectionScope {
+    public:
+        explicit SelectionScope(SharedState& owner) noexcept : state_(&owner) { state_->evaluating_selection = true; }
+        ~SelectionScope() { state_->evaluating_selection = false; }
+        SelectionScope(const SelectionScope&) = delete;
+        SelectionScope& operator=(const SelectionScope&) = delete;
+        SelectionScope(SelectionScope&&) = delete;
+        SelectionScope& operator=(SelectionScope&&) = delete;
+    private:
+        SharedState* state_;
+    };
+    static std::unique_lock<std::recursive_mutex> lock_for_edit(SharedState& state) {
+        std::unique_lock lock(state.writer);
+        if (state.evaluating_selection) {
+            throw std::logic_error("ObservableList: a selection callback cannot edit the same list");
+        }
+        return lock;
+    }
     static std::size_t size_(const std::shared_ptr<SharedState>& state) {
         std::shared_lock lock(state->mutex);
         return state->items.size();

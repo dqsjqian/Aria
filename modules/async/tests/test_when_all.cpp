@@ -370,21 +370,17 @@ TEST_CASE("when_any_cancellable: winner cancels remaining factories") {
 }
 
 TEST_CASE("when_any_cancellable: synchronous winner short-circuits losers") {
-    // Factory 0 returns synchronously; factory 1 hasn't even started
-    // yet. Once the winner CAS succeeds, factory 1's token is fired
-    // BEFORE factory 1's body actually runs — its first probe must
-    // see is_cancelled() == true.
-    static std::atomic<bool> loser_saw_cancel{false};
-    loser_saw_cancel = false;
+    // A published synchronous result makes starting later factories needless.
+    static std::atomic<bool> loser_started{false};
+    loser_started = false;
     struct Helper {
         static Task<int> body() {
             std::vector<std::function<Task<int>(CancellationToken)>> fs;
             fs.push_back([](CancellationToken) -> Task<int> {
                 co_return 7;
             });
-            fs.push_back([](CancellationToken tok) -> Task<int> {
-                // Even if we run, we should see cancellation.
-                if (tok.is_cancelled()) loser_saw_cancel = true;
+            fs.push_back([](CancellationToken) -> Task<int> {
+                loser_started = true;
                 co_return 0;
             });
             auto r = co_await when_any_cancellable(std::move(fs));
@@ -394,15 +390,7 @@ TEST_CASE("when_any_cancellable: synchronous winner short-circuits losers") {
     };
     auto t = Helper::body();
     CHECK(t.blocking_get() == 7);
-    // Loser may or may not run depending on scheduling; if it ran, it
-    // must have seen cancellation. We don't make absence-of-run a
-    // failure — that is platform/scheduler dependent.
-    SUBCASE("loser observation may be either cancelled or not-run") {
-        // Either is fine; the contract is "resolved value must be 7"
-        // (already checked above). This subcase exists for clarity.
-        CHECK(true);
-    }
-    (void)loser_saw_cancel;
+    CHECK_FALSE(loser_started.load());
 }
 
 TEST_CASE("when_any_cancellable: throwing factory still surfaces error correctly") {

@@ -74,6 +74,39 @@ TEST_CASE("ObservableList: remove_all by predicate") {
     CHECK(list.at(1)->id == 3);
 }
 
+TEST_CASE("ObservableList: selection callbacks may read the list") {
+    ObservableList<int> list;
+    auto first = list.emplace_back(1);
+    list.emplace_back(2);
+    list.push_back(first);
+    const auto select = [&](const int& item) { return list.contains(&item) && list.size() > 1 && item == 1; };
+    CHECK(list.remove_first(select));
+    CHECK(list.remove_all(select) == 1);
+    CHECK(list.size() == 1);
+    CHECK(*list.at(0) == 2);
+}
+
+TEST_CASE("ObservableList: a selector cannot invalidate its own indices") {
+    ObservableList<int> list;
+    list.emplace_back(2);
+    CHECK_THROWS_AS(list.remove_all([&](int) { list.clear(); return true; }), std::logic_error);
+    CHECK(list.size() == 1);
+}
+
+TEST_CASE("ObservableList: reconcile key may inspect list state") {
+    ObservableList<int> list;
+    list.emplace_back(2);
+    auto first = list.emplace_back(1);
+    bool read_empty = false;
+    const auto edits = list.reconcile({first}, [&](const int& item) {
+        read_empty |= list.empty();
+        return item;
+    });
+    CHECK_FALSE(read_empty);
+    CHECK(edits == 1);
+    CHECK(list.at(0) == first);
+}
+
 TEST_CASE("ObservableList: snapshot is independent") {
     ObservableList<Item> list;
     list.emplace_back(1);

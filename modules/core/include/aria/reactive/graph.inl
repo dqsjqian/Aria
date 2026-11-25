@@ -189,7 +189,7 @@ inline void Graph::on_source_changed(Node& src) {
 //    2. Pull each node in that order. If the recompute produces a changed
 //       value, its downstream is re-colored and enqueued for the next round.
 //    3. Repeat until `pending_` is empty.
-//    4. If the round count exceeds `kMaxFlushRounds`, declare a cycle.
+//    4. Bound repeated rounds with no new nodes, and total runaway work.
 // ---------------------------------------------------------------------------
 inline void Graph::flush() {
     assert_on_graph_thread();
@@ -253,17 +253,28 @@ inline void Graph::flush() {
     // value then stops changing never re-enqueues them. Finish the flush,
     // then rethrow the first failure to the writer; report any later ones.
     std::exception_ptr first_failure;
-
+    // Most flushes take one round. Only a long cascade pays to distinguish
+    // new work from the same nodes being scheduled over and over.
+    std::optional<std::unordered_set<std::uint64_t>> seen;
+    int stalled_rounds = 0;
     while (!pending_.empty()) {
-        if (++rounds > kMaxFlushRounds) {
+        ++rounds;
+        if (rounds > kMaxFlushRounds) {
+            if (!seen) { seen.emplace(); }
+            const auto before = seen->size();
+            for (const auto& n : pending_) {
+                if (n) { seen->insert(n->node_id_); }
+            }
+            stalled_rounds = seen->size() == before ? stalled_rounds + 1 : 0;
+        }
+        if (stalled_rounds >= kMaxFlushRounds || rounds > absolute_flush_limit) {
             // Capture a representative cycle path: the remaining pending
             // nodes sorted by depth form a superset of any ongoing cycle.
             // We list their debug names (or addresses as a fallback) so
             // the caller can pinpoint the loop with no inspector needed.
-            std::string detail = "reactive::Graph::flush exceeded "
-                                 + std::to_string(kMaxFlushRounds)
-                                 + " rounds -- likely a circular dependency. "
-                                 + "Pending nodes still dirty:";
+            std::string detail = "reactive::Graph::flush did not settle after "
+                                 + std::to_string(rounds - 1)
+                                 + " rounds. Pending nodes still dirty:";
             int printed = 0;
             for (const auto& n : pending_) {
                 if (!n) continue;

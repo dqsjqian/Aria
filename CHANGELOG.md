@@ -16,7 +16,17 @@ All notable changes to **aria** are documented here.
 
 ## Unreleased
 
-Fixes from the November 2026 review. Each has a regression test.
+- List removal predicates and reconcile keys can read the same list; structural
+  edits from a selector are rejected before they can invalidate its indices.
+- Large reactive read sets use an identity index. Long acyclic cascades can
+  settle without weakening the runaway-feedback guard.
+- `Channel::send_checked` distinguishes acceptance from close without changing
+  `send`. Cancellable races skip factories not yet started after a winner.
+- HTTP static mounts accept volume roots and bound buffered files with
+  `StaticFileOptions::max_bytes` (default 16 MiB); the original constructor
+  and configuration layout are unchanged.
+
+Earlier fixes from the November 2026 review:
 
 - `when_all` no longer resumes its caller from inside `await_suspend` when
   every child completes synchronously. A loop over ready children used to

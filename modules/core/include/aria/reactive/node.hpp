@@ -138,6 +138,7 @@ class Node {
     // therefore needs privileged access to Node's intrusive lists and
     // lifecycle state. All other code must go through the public surface.
     friend class Graph;
+    friend class TrackingContext;
     friend class detail::NodeHandle;
 
 public:

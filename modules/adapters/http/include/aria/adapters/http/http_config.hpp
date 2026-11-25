@@ -100,4 +100,10 @@ struct ARIA_HTTP_API HttpAdapterConfig {
     std::string tls_min_version{"1.2"};
 };
 
+/// Static assets are buffered on a worker. Configure their bound separately
+/// so the by-value HttpAdapterConfig constructor keeps its original ABI.
+struct StaticFileOptions {
+    std::size_t max_bytes{16 * 1024 * 1024};
+};
+
 }  // namespace aria::adapters::http

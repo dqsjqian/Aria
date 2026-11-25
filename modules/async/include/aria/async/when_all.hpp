@@ -431,6 +431,9 @@ auto when_any(std::vector<Task<T>> tasks) {
 /// token is fired so cooperative inner work unwinds promptly instead
 /// of running to completion in the background.
 ///
+/// A factory not yet started when a winner is observed is skipped. Already
+/// started factories still receive cancellation; the basic when_any overload
+/// intentionally starts every submitted task (including side effects).
 /// Note: cancellation is best-effort. Inner work that ignores its
 /// token still runs to completion off-stage; only its result and
 /// exception are dropped.
@@ -458,6 +461,7 @@ public:
                                    detail::race_op::kStart,
                                    factories_.size());
         for (std::size_t i = 0; i < factories_.size(); ++i) {
+            if (slot_->winner.load(std::memory_order_acquire) != 0) { break; }
             detail::drive_any_cancellable_<T, Factory>(
                 std::move(factories_[i]), i, slot_, (*sources_)[i], sources_)
                 .start_detached();

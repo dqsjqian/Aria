@@ -19,6 +19,9 @@ regressions for its public APIs, adapters, HTTP protocol, and browser SDK.
 
 These capabilities already exist and should not be scheduled again:
 
+- Read-safe list selection (L-30.1), large fan-in tracking, and checked
+  asynchronous channel sends.
+
 - Read-only reactive sources in one-way bindings; two-way bindings take
   `Property<T>`. See the [binding guide](guide/binding.md).
 - `BindingEngine::adopt`, native adapter `view_for` helpers, and

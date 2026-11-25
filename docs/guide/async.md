@@ -307,16 +307,14 @@ aria::async::Task<void> load_all() {
 
 ### when_any
 
-Complete when the first task finishes (others are cancelled):
+`when_any(std::vector<Task<T>>)` starts every submitted task and returns the first
+result (including its index and exception, if any). It does **not** cancel the
+others. Use `when_any_cancellable` with token-taking factories to cancel started
+losers and skip factories not yet started after a winner is observed.
 
-```cpp
-aria::async::Task<Response> race_servers() {
-    co_return co_await aria::async::when_any(
-        fetch_from_primary(),
-        fetch_from_backup()
-    );
-}
-```
+For queue hand-offs, `co_await channel.send_checked(value)` returns `false` if
+the channel closed before accepting the value. `send(value)` retains its void
+result. Channel waiters resume inline on the thread that unblocks them.
 
 ### with_timeout
 

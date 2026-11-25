@@ -48,6 +48,7 @@
 #include <cassert>
 #include <exception>
 #include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -120,17 +121,37 @@ public:
     /// Records one upstream read. Called by `Property`/`Computed` getters
     /// during tracked evaluation, and by `dep(prop)`.
     void record_read(Node& src) {
-        // Small read sets -- linear de-dup is more than fast enough.
-        for (const auto& n : reads_) {
-            if (n.get() == &src) return;
+        // Small read sets stay allocation-free apart from the reusable buffer.
+        // For large fan-in, index stable identities, not recyclable addresses:
+        // a source may be retired and replaced during the same evaluation.
+        constexpr std::size_t linear_limit = 96;
+        if (reads_.size() < linear_limit) {
+            for (const auto& n : reads_) {
+                if (n.get() == &src) return;
+            }
+        } else {
+            if (!index_) {
+                auto index = std::make_unique<std::unordered_set<std::uint64_t>>();
+                index->reserve(reads_.capacity());
+                for (const auto& n : reads_) {
+                    if (n) { index->insert(n->node_id_); }
+                }
+                index_ = std::move(index);
+            }
+            if (index_->contains(src.node_id_)) { return; }
+            reads_.emplace_back(&src);
+            try { index_->insert(src.node_id_); }
+            catch (...) { reads_.pop_back(); throw; }
+            return;
         }
         reads_.emplace_back(&src);
     }
 
     [[nodiscard]] const std::vector<detail::NodeHandle>& reads() const noexcept { return reads_; }
-    void                                     clear() noexcept      { reads_.clear(); }
+    void clear() noexcept { reads_.clear(); index_.reset(); }
 
 private:
+    std::unique_ptr<std::unordered_set<std::uint64_t>> index_;
     Buffer reads_;
     Buffer* reusable_ = nullptr;
 };
@@ -212,8 +233,8 @@ public:
 
     /// Evaluate every dirty node in topological order. Nodes whose
     /// recompute() changes the cached value seed a new round by
-    /// re-coloring their downstream. The loop runs at most
-    /// `kMaxFlushRounds` rounds before declaring a cycle.
+    /// re-coloring their downstream. Repeated non-progress and an absolute
+    /// resource ceiling bound runaway effects, not the depth of common DAGs.
     void flush();
 
     /// Force-evaluate a single node if it is Dirty / MaybeDirty.
@@ -288,7 +309,8 @@ private:
 
     // Safety fuse against runaway propagation (which should only happen
     // when there is a bug in a user-supplied recompute function).
-    static constexpr int kMaxFlushRounds = 100;
+    static constexpr int kMaxFlushRounds = 100; // no new node identities in successive rounds
+    static constexpr int absolute_flush_limit = 65'536; // bounds callbacks creating fresh nodes forever
 };
 
 // ------------------------------------------------------------------

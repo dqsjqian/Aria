@@ -30,6 +30,7 @@
 #include "aria/binding/view_adapter.hpp"
 #include "aria/callback_boundary.hpp"
 #include "sse_wait.hpp"
+#include "static_mount.hpp"
 
 #include <mira/core/event_loop.hpp>
 #include <mira/core/executor.hpp>
@@ -324,6 +325,7 @@ struct HttpAdapter::Impl : std::enable_shared_from_this<HttpAdapter::Impl> {
     };
 
     HttpAdapterConfig config;
+    StaticFileOptions static_files;
     std::size_t pool_size = 0;
     std::shared_ptr<PoolState> pool;
     std::vector<std::thread> workers;
@@ -383,7 +385,7 @@ struct HttpAdapter::Impl : std::enable_shared_from_this<HttpAdapter::Impl> {
     // whole story now (0 = a sane default).
     std::size_t sse_capacity = 0;
 
-    explicit Impl(HttpAdapterConfig c) : config(std::move(c)) {
+    Impl(HttpAdapterConfig c, StaticFileOptions files) : config(std::move(c)), static_files(files) {
         pool_size = make_pool_size(config);
         pool = std::make_shared<PoolState>();
         auto created = EventLoop::create();
@@ -918,22 +920,28 @@ HttpAdapter::Impl::RouteOutcome HttpAdapter::Impl::handle_static(
     const std::filesystem::path resolved =
         std::filesystem::weakly_canonical(root / relative, fs_error);
     if (fs_error) return error_outcome(404, "not found");
-    const auto root_text = root.generic_string();
-    const auto resolved_text = resolved.generic_string();
-    if (resolved_text != root_text &&
-        resolved_text.rfind(root_text + '/', 0) != 0) {
+    if (!detail::within_static_mount(root, resolved)) {
         return error_outcome(404, "not found");
     }
     if (!std::filesystem::is_regular_file(resolved, fs_error) || fs_error) {
         return error_outcome(404, "not found");
     }
 
-    std::ifstream file(resolved, std::ios::binary);
+    std::ifstream file(resolved, std::ios::binary | std::ios::ate);
     if (!file) return error_outcome(404, "not found");
-    std::string content((std::istreambuf_iterator<char>(file)),
-                        std::istreambuf_iterator<char>());
+    const std::streamoff length = file.tellg();
+    if (length < 0) return error_outcome(500, "cannot determine file size");
+    if (static_cast<std::uintmax_t>(length) > static_files.max_bytes ||
+        length > (std::numeric_limits<std::streamsize>::max)()) {
+        return error_outcome(413, "static asset exceeds size limit");
+    }
+    std::string content(static_cast<std::size_t>(length), '\0');
+    file.seekg(0);
+    if (!file.read(content.data(), static_cast<std::streamsize>(length))) {
+        return error_outcome(500, "static asset changed during read");
+    }
     RouteOutcome out;
-    out.content_type = std::string(static_content_type(resolved_text));
+    out.content_type = std::string(static_content_type(resolved.generic_string()));
     out.body = std::move(content);
     return out;
 }
@@ -1409,7 +1417,10 @@ void HttpAdapter::Impl::shutdown() noexcept {
 // ─────────────────────────────────────────────────────────────────────────────
 
 HttpAdapter::HttpAdapter(HttpAdapterConfig config)
-    : p_(std::make_shared<Impl>(std::move(config))) {}
+    : HttpAdapter(std::move(config), StaticFileOptions{}) {}
+
+HttpAdapter::HttpAdapter(HttpAdapterConfig config, StaticFileOptions static_files)
+    : p_(std::make_shared<Impl>(std::move(config), static_files)) {}
 
 HttpAdapter::~HttpAdapter() { p_->shutdown(); }
 

@@ -27,8 +27,9 @@ open build/docs/html/index.html
 
 - Code uses the public `aria::` surface (never an implementation
   namespace — see `docs/reference/api-style.md`, S-1).
-- All graph writes (`Property::set`, `Computed`, `Effect`,
-  `ObservableList` mutations) happen on the graph thread; see
-  `docs/reference/lifecycle.md` L-1.
+- `Property`, `Computed` and `Effect` belong to the graph thread. A list of
+  plain values serializes structural writes across threads. If item subscriptions
+  or observers touch the graph, mutate that list on the graph thread too;
+  see `docs/reference/lifecycle.md` L-1.
 - Each recipe pins the relevant contract IDs (`L-N`, `E-N`, `V-N`,
   `SE-N`, `LD-N`, `PG-N`) so you can trace the guarantee to its source.

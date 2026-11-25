@@ -37,7 +37,7 @@ What a "best-in-class C++ MVVM framework" requires of its error model:
 | `Cancellation` | Coroutine exited via `OperationCancelled` (**diagnostic surfaces only** — `last_error` never carries this kind) | "AsyncCommand" |
 | `Timeout` | `with_timeout` deadline hit (Race / Fail modes both map here) | "AsyncCommand", "with_timeout" |
 | `BindingFailure` | Reserved for a future explicit binding error surface; current binding failures are reported through `aria::CallbackFailure` / `callback_failure_sink` (see E-30) | "BindingEngine", "<adapter>" |
-| `GraphCycle` | Reactive graph reached `kMaxFlushRounds`, `CircularDependencyError` promotion | "Graph" |
+| `GraphCycle` | Reactive graph hit its non-progress or total-work limit, `CircularDependencyError` promotion | "Graph" |
 | `InvariantViolation` | The framework's own contract was breached (stress / fuzz reports only) | "Validator", "Graph", ... |
 
 ### E-2: enum order is stable

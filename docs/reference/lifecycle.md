@@ -387,7 +387,9 @@ Implications:
   dependencies are reconciled to the versions seen when the body finishes.
   Previous edges remain attached until a successful body completes, so
   throwing callbacks do not orphan their subscriptions.
-- If flush exceeds `kMaxFlushRounds = 100` without converging →
+- Long forward cascades may exceed 100 rounds. After the first 100 rounds,
+  100 consecutive rounds with no new node identity, or the absolute ceiling
+  of 65,536 rounds, cause a
   `CircularDependencyError` with the names of the still-pending
   nodes (up to 16). This safety net targets **real multi-node
   cycles** (A writes B, B writes C, C writes A) — not self-set.
@@ -444,6 +446,15 @@ lock.
 **This is the load-bearing invariant for list-reactive interop.**
 Any future change to `ObservableList` MUST preserve the rule
 "install subscriptions outside the write lock".
+
+### L-30.1: list selectors and the graph thread
+
+Removal predicates and reconcile key callbacks run with writers serialized but
+without the structural mutex. They may call `at`, `size` or `index_of`. They
+must not structurally edit the same list; such a call throws `std::logic_error`.
+Observer callbacks still support reentrant edits. Plain-value structural edits
+are thread-safe; item subscription and observer code run on the caller's thread.
+If they interact with the reactive graph, use its owner thread.
 
 ### L-31: ObservableList emit ordering
 
@@ -970,7 +981,7 @@ mis-ordering.
 |---|---|---|---|
 | A1 | `prop.set(x)` from a worker thread | Debug trips `assert_on_graph_thread`; Release is undefined | First `co_await schedule_on(ui)` |
 | A2 | Reactive `Subscription` destructed off the graph thread | Node detach happens on the wrong thread, can race graph internals | Destruct on the graph thread (e.g. destroy the VM there) |
-| A3 | Multi-node cycle: Effects/Computeds writing each other's read source (A→B→C→A) | After 100 rounds: `CircularDependencyError` | Redesign the dependency direction; use `peek` to read prior frame |
+| A3 | Multi-node cycle: Effects/Computeds writing each other's read source (A→B→C→A) | After repeated rounds with no new nodes: `CircularDependencyError` | Redesign the dependency direction; use `peek` to read prior frame |
 | A3b | An Effect body does `prop.set(prop.get()+condition)` writing its own read source | Does NOT trigger a cycle (the clear_sources pattern dodges it), but every external write makes `fn` run twice — once from the external write, once from the Effect's own set in the next round. Can violate user expectations | Use `peek()`, or an explicit idempotent guard, or redesign |
 | A4 | Touching derived-class members in an `IView::~IView` handler | Derived has already destructed → UAF | Call `fire_destroy_()` early in the native destructor |
 | A5 | The ui executor dies right after AsyncCommand | The write-back post fails or leaks | AsyncCommand MUST die before the ui executor (see L-37) |

@@ -3,6 +3,7 @@
 #include "aria/binding/binding_engine.hpp"
 #include "aria/runtime/dispatcher.hpp"
 #include "test_http_client.hpp"
+#include "../src/static_mount.hpp"
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <condition_variable>
@@ -288,6 +289,13 @@ TEST_CASE("HEAD and CORS preflight behave on the wire") {
     http.stop();
 }
 
+TEST_CASE("Static mount containment accepts a volume root") {
+    const auto volume = std::filesystem::temp_directory_path().root_path();
+    REQUIRE(!volume.empty());
+    CHECK(aria::adapters::http::detail::within_static_mount(volume, volume / "assets" / "index.html"));
+    CHECK_FALSE(aria::adapters::http::detail::within_static_mount(volume / "assets", volume / "assets-old"));
+}
+
 TEST_CASE("Static mount serves files, defaults to index.html and refuses traversal") {
     const auto root = std::filesystem::temp_directory_path() /
                       ("aria-http-static-" +
@@ -304,10 +312,12 @@ TEST_CASE("Static mount serves files, defaults to index.html and refuses travers
     }
     auto cfg = config();
     cfg.static_root = root.string();
-    HttpAdapter http(cfg);
+    std::ofstream(root / "too-large.txt") << std::string(27, 'x');
+    HttpAdapter http(cfg, StaticFileOptions{.max_bytes = 26});
     REQUIRE(http.start());
     test_http::Client c(http.actual_port());
     REQUIRE(c.connected());
+    CHECK(c.get("/too-large.txt").status == 413);
     auto home = c.get("/index.html");
     CHECK(home.status == 200);
     CHECK(home.body == "<html>home</html>");
