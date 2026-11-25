@@ -41,9 +41,9 @@
       "resolved": {
         "checksum_source": "github-release-asset",
         "request_hash": "8586774eb848fe437236e66f9f300291a015b405e00aee192b38e0fec53db970",
-        "requested": "1.3.0",
-        "revision": "9c9be4992d9c2be99960a9a959241e0413217e1a",
-        "sha256": "1b1225353ec25b11ed604742b775083c9ab069828d3e93fc077e373b25d9914b",
+        "requested": "latest",
+        "revision": "f9596c88191866975be605e3e3bdb8588d49848c",
+        "sha256": "bede308e739e06ae4b02f13765fcddb929ea8032f52a9db0c290c36e963b142f",
         "tag": "v1.3.0",
         "url": "https://github.com/dqsjqian/Mira/releases/download/v1.3.0/Mira-1.3.0.tar.gz",
         "version": "1.3.0"
