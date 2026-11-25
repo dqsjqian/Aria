@@ -41,12 +41,12 @@
       "resolved": {
         "checksum_source": "github-release-asset",
         "request_hash": "8586774eb848fe437236e66f9f300291a015b405e00aee192b38e0fec53db970",
-        "requested": "1.2.1",
-        "revision": "cd123e45a99d40cf183273eabec0215a01e8ee88",
-        "sha256": "d7a9f850fa7780ba43fcb6ddba48905ebc16de03482bcf91e7f584f5ace654cd",
-        "tag": "v1.2.1",
-        "url": "https://github.com/dqsjqian/Mira/releases/download/v1.2.1/Mira-1.2.1.tar.gz",
-        "version": "1.2.1"
+        "requested": "1.3.0",
+        "revision": "9c9be4992d9c2be99960a9a959241e0413217e1a",
+        "sha256": "1b1225353ec25b11ed604742b775083c9ab069828d3e93fc077e373b25d9914b",
+        "tag": "v1.3.0",
+        "url": "https://github.com/dqsjqian/Mira/releases/download/v1.3.0/Mira-1.3.0.tar.gz",
+        "version": "1.3.0"
       },
       "tag_prefix": "v"
     },
