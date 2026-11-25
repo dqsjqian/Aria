@@ -18,6 +18,7 @@
 
 #include "aria/callback_boundary.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <concepts>
 #include <condition_variable>
@@ -25,6 +26,8 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <iterator>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -43,25 +46,50 @@ public:
 };
 
 namespace detail {
+
+/// An executor hop that only its executor's own thread may resume early.
+///
+/// A hop queued on a thread-affine executor (a UI thread, say) resumes on
+/// that thread when its cancellation is requested there. Cancellation that
+/// arrives on any other thread must not resume it in place, so the hop parks
+/// itself on the token instead: the executor either runs it normally later,
+/// or the executor's thread, blocked in `CoroutineScope::cancel_and_join` and
+/// therefore unable to run its queue, resumes it from the parked list.
+struct AffineWaiter {
+    AffineWaiter() = default;
+    AffineWaiter(const AffineWaiter&) = delete;
+    AffineWaiter& operator=(const AffineWaiter&) = delete;
+    AffineWaiter(AffineWaiter&&) = delete;
+    AffineWaiter& operator=(AffineWaiter&&) = delete;
+    virtual ~AffineWaiter() = default;
+
+    /// Resume the hop as cancelled if the calling thread is its executor's
+    /// thread and it is still queued. Returns true once the entry needs no
+    /// further attention (resumed here, or already resumed elsewhere).
+    virtual bool resume_if_on_target_thread() noexcept = 0;
+};
+
 /// Shared cancellation state. Callbacks are identified so a scoped
 /// registration (`CancellationCallback`) can withdraw itself; without
 /// that, every bounded wait on a long-lived token would leave its callback
 /// behind until the token is finally cancelled.
 struct CancellationState {
     using CallbackId = std::uint64_t;
-    struct Entry {
-        CallbackId id;
-        std::function<void()> fn;
-    };
+    // Keyed by registration order: withdrawal is O(log n) even with many
+    // concurrent waits, and cancel() still fires in registration order.
+    using Callbacks = std::map<CallbackId, std::function<void()>>;
 
     std::atomic<bool> cancelled{false};
     std::mutex m;
     std::condition_variable callback_done;
-    std::vector<Entry> callbacks;  // registered, not yet taken by cancel()
-    std::vector<Entry> firing;     // taken by cancel(); empty fn = withdrawn/ran
+    Callbacks callbacks;  // registered, not yet taken by cancel()
+    Callbacks firing;     // taken by cancel(), not yet started
     CallbackId next_id = 0;
     CallbackId running = 0;        // callback executing now, 0 when none
     std::thread::id running_thread{};
+    // Hops waiting for their executor's thread; see AffineWaiter.
+    std::vector<std::weak_ptr<AffineWaiter>> parked;
+    std::size_t parked_compact_at = 16;
 
     /// Registers `fn` unless cancellation already happened. Returns 0 when
     /// the caller must invoke `fn` itself (already cancelled).
@@ -71,7 +99,7 @@ struct CancellationState {
             return 0;
         }
         const auto id = ++next_id;
-        callbacks.push_back(Entry{.id = id, .fn = std::move(fn)});
+        callbacks.emplace_hint(callbacks.end(), id, std::move(fn));
         return id;
     }
 
@@ -80,30 +108,16 @@ struct CancellationState {
     /// afterwards nothing the callback captured is used. A callback that
     /// withdraws itself on its own thread does not wait.
     void remove(CallbackId id) noexcept {
-        std::function<void()> withdrawn;  // destroyed outside the mutex
+        std::function<void()> withdrawn;  // destroyed after the lock below
         std::unique_lock lk(m);
-        // Withdraw a callback that has not started. An entry whose function
-        // was already taken is running or has run; that is handled below.
-        const auto take = [&](std::vector<Entry>& entries) {
-            for (auto& entry : entries) {
-                if (entry.id != id) {
-                    continue;
-                }
-                if (!entry.fn) {
-                    return false;
-                }
-                withdrawn = std::move(entry.fn);
-                entry.fn = nullptr;
-                return true;
+        // A callback that has not started is withdrawn. One that is no
+        // longer listed is running or has run; that is handled below.
+        for (Callbacks* entries : {&callbacks, &firing}) {
+            if (const auto found = entries->find(id); found != entries->end()) {
+                withdrawn.swap(found->second);
+                entries->erase(found);
+                return;
             }
-            return false;
-        };
-        if (take(callbacks)) {
-            std::erase_if(callbacks, [id](const Entry& entry) { return entry.id == id; });
-            return;
-        }
-        if (take(firing)) {
-            return;
         }
         if (running == id && running_thread != std::this_thread::get_id()) {
             callback_done.wait(lk, [&] { return running != id; });
@@ -118,22 +132,18 @@ struct CancellationState {
             const std::scoped_lock lock(m);
             firing.swap(callbacks);
         }
-        for (std::size_t index = 0;; ++index) {
+        for (;;) {
             std::function<void()> fn;
             {
                 const std::scoped_lock lock(m);
-                if (index >= firing.size()) {
-                    firing.clear();
+                if (firing.empty()) {
                     break;
                 }
-                auto& entry = *(firing.begin() + static_cast<std::ptrdiff_t>(index));
-                if (!entry.fn) {
-                    continue;
-                }
-                fn = std::move(entry.fn);
-                entry.fn = nullptr;
-                running = entry.id;
+                const auto next = firing.begin();
+                fn.swap(next->second);
+                running = next->first;
                 running_thread = std::this_thread::get_id();
+                firing.erase(next);
             }
             try {
                 fn();
@@ -151,6 +161,23 @@ struct CancellationState {
             callback_done.notify_all();
         }
     }
+
+    /// Records a hop that only its executor's thread may resume early.
+    /// Entries of hops that resumed normally expire and are compacted here.
+    void park(std::weak_ptr<AffineWaiter> waiter) {
+        const std::scoped_lock lock(m);
+        if (parked.size() >= parked_compact_at) {
+            std::erase_if(parked, [](const std::weak_ptr<AffineWaiter>& entry) {
+                return entry.expired();
+            });
+            parked_compact_at = (std::max)(std::size_t{16}, parked.size() * 2);
+        }
+        parked.push_back(std::move(waiter));
+    }
+
+    /// Resumes, as cancelled, every parked hop whose executor runs on the
+    /// calling thread. Defined after DrainScope.
+    void resume_parked_here() noexcept;
 };
 
 // ---------------------------------------------------------------------
@@ -288,9 +315,40 @@ public:
 private:
     bool is_owner_ = false;
 };
+
+inline void CancellationState::resume_parked_here() noexcept {
+    // Resumptions are deferred to the end of `drain`: they run after the
+    // lock is released, outside the loop below and its lambda.
+    const DrainScope drain;
+    std::vector<std::weak_ptr<AffineWaiter>> pending;
+    {
+        const std::scoped_lock lock(m);
+        pending.swap(parked);
+    }
+    std::erase_if(pending, [](const std::weak_ptr<AffineWaiter>& entry) {
+        const auto waiter = entry.lock();
+        return !waiter || waiter->resume_if_on_target_thread();
+    });
+    if (pending.empty()) {
+        return;
+    }
+    try {
+        const std::scoped_lock lock(m);
+        parked.insert(parked.end(), std::make_move_iterator(pending.begin()),
+                      std::make_move_iterator(pending.end()));
+    } catch (...) {
+        // Only the early resumption is lost; each executor still runs its hop.
+        ::aria::report_callback_failure("cancellation.park", std::current_exception());
+    }
+}
 }  // namespace detail
 
 class CancellationCallback;
+class CancellationToken;
+
+namespace detail {
+struct CancellationTokenAccess;
+}  // namespace detail
 
 class CancellationToken {
 public:
@@ -334,8 +392,19 @@ public:
 
 private:
     friend class CancellationCallback;
+    friend struct detail::CancellationTokenAccess;
     std::shared_ptr<detail::CancellationState> state_;
 };
+
+namespace detail {
+/// Framework access to a token's shared state (executor hops and scopes).
+struct CancellationTokenAccess {
+    [[nodiscard]] static const std::shared_ptr<CancellationState>& state(
+        const CancellationToken& token) noexcept {
+        return token.state_;
+    }
+};
+}  // namespace detail
 
 /// Scoped cancellation registration, the counterpart of std::stop_callback.
 ///
@@ -345,6 +414,13 @@ private:
 /// at that moment, withdrawal waits for it to return, so state captured by
 /// the callback may be released right after. A callback must not withdraw a
 /// registration whose callback is blocked on the withdrawing thread.
+///
+/// Because withdrawal can block, never destroy or reset() a registration
+/// while holding a lock that its callback acquires: the cancelling thread
+/// waits for the lock inside the callback while the withdrawing thread waits
+/// for the callback, and neither returns. Keep callbacks short; if one must
+/// take a lock, release that lock before withdrawing (std::stop_callback has
+/// the same rule).
 class [[nodiscard]] CancellationCallback {
 public:
     CancellationCallback() noexcept = default;

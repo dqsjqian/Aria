@@ -310,7 +310,10 @@ private:
     // Safety fuse against runaway propagation (which should only happen
     // when there is a bug in a user-supplied recompute function).
     static constexpr int kMaxFlushRounds = 100; // no new node identities in successive rounds
-    static constexpr int absolute_flush_limit = 65'536; // bounds callbacks creating fresh nodes forever
+    // Bounds callbacks that create fresh nodes forever. Kept low enough that a
+    // runaway cascade fails fast instead of stalling the graph (UI) thread;
+    // real forward chains are far shorter.
+    static constexpr int absolute_flush_limit = 4'096;
 };
 
 // ------------------------------------------------------------------

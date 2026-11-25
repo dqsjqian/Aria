@@ -317,7 +317,7 @@ TEST_CASE("Static mount serves files, defaults to index.html and refuses travers
     REQUIRE(http.start());
     test_http::Client c(http.actual_port());
     REQUIRE(c.connected());
-    CHECK(c.get("/too-large.txt").status == 413);
+    CHECK(c.get("/too-large.txt").status == 500);
     auto home = c.get("/index.html");
     CHECK(home.status == 200);
     CHECK(home.body == "<html>home</html>");

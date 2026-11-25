@@ -179,7 +179,7 @@ requests on the pool but never stalls the network loop.
 | `port` | `9090` | 0 selects an available port |
 | `api_prefix` | `/aria` | REST/SSE path prefix |
 | `static_root` | empty | Optional static-file directory; use a trusted directory not writable by clients |
-| `StaticFileOptions::max_bytes` (optional second constructor argument) | 16 MiB | Per-file buffering limit; larger assets return 413 |
+| `StaticFileOptions::max_bytes` (optional second constructor argument) | 16 MiB | Per-file buffering limit; larger assets return 500 (a server-side limit, not a request error) |
 | `worker_threads` | `0` | Fixed pool; 0 detects CPU count, minimum 2; explicit counts must be ≥2 |
 | `max_sse_clients` | `64` | Maximum concurrent streams, independent of workers; 0 selects the default of 64 |
 | `max_pending_sse_bytes` | `4194304` | Positive per-client queued-byte limit; an overflowing stream closes and can reconnect for a fresh snapshot |

@@ -146,21 +146,31 @@ aria::async::Task<UserProfile> load_profile(int uid) {
 ```
 
 Inside a `CoroutineScope` (or `ViewModelScope`) every hop observes the scope's
-cancellation. A coroutine whose resumption is still queued when the scope is
-cancelled resumes immediately on the cancelling thread, and the `co_await`
-throws `OperationCancelled`. Destroying a ViewModel on the UI thread therefore
-does not wait for, or later resume into, a UI queue entry. Pass a token to
-observe a different cancellation, or `CancellationToken::none()` for a cleanup
-hop that must still happen after cancellation:
+cancellation: once the scope is cancelled, the `co_await` throws
+`OperationCancelled`. The throw, and everything that unwinds after it, still
+runs on the target executor's thread. A hop waiting in a UI queue resumes at
+once when the scope is cancelled or joined on that UI thread, so destroying a
+ViewModel there does not wait for, or later resume into, a UI queue entry. A
+cancellation from another thread leaves the hop queued; the UI thread's
+`cancel_and_join()` (or the queue itself) resumes it. Pass a token to observe a
+different cancellation, or `CancellationToken::none()` for a cleanup hop that
+must still happen after cancellation. `try_schedule_on` makes the same hop but
+yields `false` instead of throwing:
 
 ```cpp
 co_await aria::async::schedule_on(ui, aria::async::CancellationToken::none());
 loading = false;  // runs even though the scope was cancelled
 ```
 
-If an executor discards a queued resumption (it is closed or destroyed), the
-coroutine resumes on the discarding thread with `OperationCancelled` instead
-of leaking its frame.
+If an executor discards a queued resumption (it is closed or destroyed, or
+`MainThreadExecutor::clear()` is called), the coroutine resumes on the
+discarding thread with `OperationCancelled` instead of leaking its frame. Its
+unwinding code therefore runs during that teardown: destroy such executors while
+the objects those coroutines touch are still alive.
+
+Withdrawing a `CancellationCallback` waits for its callback if it is running on
+another thread. Never withdraw one while holding a lock that its callback
+acquires, or the two threads wait for each other.
 
 ---
 

@@ -389,7 +389,7 @@ Implications:
   throwing callbacks do not orphan their subscriptions.
 - Long forward cascades may exceed 100 rounds. After the first 100 rounds,
   100 consecutive rounds with no new node identity, or the absolute ceiling
-  of 65,536 rounds, cause a
+  of 4,096 rounds, cause a
   `CircularDependencyError` with the names of the still-pending
   nodes (up to 16). This safety net targets **real multi-node
   cycles** (A writes B, B writes C, C writes A) — not self-set.
@@ -683,10 +683,13 @@ Implications:
   the scope has either exited or been recorded as a leak via the
   async error sink — none silently outlive the VM.
 - A coroutine parked in an executor queue (`co_await schedule_on(ui)`)
-  does not need that queue to run: cancellation resumes it at once on
-  the destroying thread and the hop throws `OperationCancelled`. A VM
-  destroyed on the UI thread therefore neither blocks on its own UI
-  queue nor is later resumed into after destruction.
+  does not need that queue to run when the VM is destroyed on the UI
+  thread: cancellation (or `cancel_and_join`) on that thread resumes it
+  at once and the hop throws `OperationCancelled`. A VM destroyed on the
+  UI thread therefore neither blocks on its own UI queue nor is later
+  resumed into after destruction. The hop's continuation always runs on
+  its target executor's thread: a cancellation from another thread leaves
+  the hop queued until the UI thread joins or drains.
 - The 5-second timeout only fires if the user fails to probe with
   `throw_if_cancelled` / `co_await tok` and uses a non-cancellable
   await. That is a user contract violation; the framework's safety
@@ -732,8 +735,10 @@ Contract:
    cancel arrives).
 
 6. **Prompt hops**: tasks awaited inside the scope inherit its token;
-   `schedule_on` observes it (see L-37 and the async guide). Pass
-   `CancellationToken::none()` for a cleanup hop after cancellation.
+   `schedule_on` observes it on the target executor's thread (see L-37
+   and the async guide). Pass `CancellationToken::none()` for a cleanup
+   hop after cancellation, or use `try_schedule_on` to get `false`
+   instead of an exception.
 
 `CancellationSource::cancel()`'s own semantics:
 1. CAS `cancelled_` to true; on a race, only one winner runs the
@@ -772,6 +777,8 @@ that registers into the state's `invocation_sources` list.
   executor, a cancelled or superseded invocation reports Cancelled and
   writes neither `last_result` nor `last_error`: under `LatestOnly`, an
   older search that finishes late cannot overwrite the newer result.
+  Cancellation of the scope awaiting `co_execute` is reported the same
+  way, still on the UI executor; `co_execute` never throws.
 
 Implications:
 - After `AsyncCommand` is destroyed, in-flight coroutines may run

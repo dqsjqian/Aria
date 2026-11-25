@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -333,4 +334,166 @@ TEST_CASE("bounded waits on a long-lived token do not accumulate registrations")
     }
     long_lived.cancel();  // nothing stale left to run
     CHECK(long_lived.cancel_and_join(1s));
+}
+
+TEST_CASE("co_execute in a cancelled scope folds the cancellation on the UI thread") {
+    // Before the fix the hop back to the UI executor threw on the worker:
+    // OperationCancelled escaped co_execute (documented as never throwing)
+    // and the Invocation ledger wrote is_executing off the graph thread,
+    // which trips assert_on_graph_thread in debug builds.
+    MainThreadExecutor ui;
+    ui.drain();
+    ThreadPoolExecutor worker{1};
+    std::atomic<bool> started{false};
+    std::atomic<bool> release{false};
+    AsyncCommand<int> command{ui, worker, [&]() -> Task<int> {
+        started = true;
+        while (!release) {
+            std::this_thread::sleep_for(1ms);
+        }
+        co_return 1;
+    }};
+    bool folded = false;
+    bool escaped = false;
+    bool finished = false;
+    std::thread::id finished_on;
+    CoroutineScope scope;
+    scope.launch([&](CancellationToken) -> Task<void> {
+        try {
+            const auto result = co_await command.co_execute();
+            folded = result.cancelled();
+        } catch (const OperationCancelled&) {
+            escaped = true;
+        }
+        finished_on = std::this_thread::get_id();
+        finished = true;
+    });
+    REQUIRE(ui.pump_until([&] { return started.load(); }, 2s));
+    scope.cancel();
+    release = true;
+    REQUIRE(ui.pump_until([&] { return finished; }, 2s));
+    CHECK(folded);
+    CHECK_FALSE(escaped);
+    CHECK(finished_on == std::this_thread::get_id());
+    CHECK_FALSE(command.is_executing.peek());
+    CHECK(scope.cancel_and_join(1s));
+}
+
+TEST_CASE("schedule_on reached after cancellation throws on the target thread") {
+    MainThreadExecutor ui;
+    ui.drain();
+    ThreadPoolExecutor pool{1};
+    std::atomic<bool> on_pool{false};
+    bool done = false;
+    std::thread::id threw_on;
+    CoroutineScope scope;
+    scope.launch([&](CancellationToken token) -> Task<void> {
+        co_await schedule_on(pool);
+        on_pool = true;
+        while (!token.is_cancelled()) {
+            std::this_thread::sleep_for(1ms);
+        }
+        try {
+            co_await schedule_on(ui);  // already cancelled, issued off the UI thread
+        } catch (const OperationCancelled&) {
+            threw_on = std::this_thread::get_id();
+        }
+        done = true;
+    });
+    while (!on_pool) {
+        std::this_thread::sleep_for(1ms);
+    }
+    scope.cancel();
+    REQUIRE(ui.pump_until([&] { return done; }, 2s));
+    CHECK(threw_on == std::this_thread::get_id());
+    CHECK(scope.cancel_and_join(1s));
+}
+
+TEST_CASE("a UI hop cancelled from another thread is resumed by the UI thread's join") {
+    MainThreadExecutor ui;
+    ui.drain();
+    std::thread::id unwound_on;
+    auto scope = std::make_unique<CoroutineScope>();
+    scope->launch([&](CancellationToken) -> Task<void> {
+        try {
+            co_await schedule_on(ui);  // parked in the UI queue
+        } catch (const OperationCancelled&) {
+            unwound_on = std::this_thread::get_id();
+            throw;
+        }
+    });
+    // Cancellation on a foreign thread must not resume the hop there.
+    std::thread([&] { scope->cancel(); }).join();
+    CHECK(unwound_on == std::thread::id{});
+    const auto started = std::chrono::steady_clock::now();
+    CHECK(scope->cancel_and_join(2s));
+    CHECK(std::chrono::steady_clock::now() - started < 1s);
+    CHECK(unwound_on == std::this_thread::get_id());
+    scope.reset();
+    ui.drain();  // the stale queue entry is a no-op
+}
+
+TEST_CASE("a copied queued resumption resumes exactly once") {
+    SUBCASE("executor runs the original and keeps a copy") {
+        struct RunsOriginal final : IExecutor {
+            std::vector<std::function<void()>> kept;
+            void post(std::function<void()> fn) override {
+                kept.push_back(fn);
+                fn();
+            }
+        } executor;
+        bool hopped = false;
+        bool cancelled = false;
+        auto task = [&] -> Task<void> {
+            try {
+                co_await schedule_on(executor);
+                hopped = true;
+            } catch (const OperationCancelled&) {
+                cancelled = true;
+            }
+        };
+        auto running = task();
+        running.start();
+        CHECK(hopped);
+        executor.kept.clear();  // releasing the spent copy changes nothing
+        CHECK_FALSE(cancelled);
+    }
+
+    SUBCASE("executor drops the original and runs a copy later") {
+        struct RunsCopy final : IExecutor {
+            std::vector<std::function<void()>> kept;
+            void post(std::function<void()> fn) override { kept.push_back(fn); }
+        } executor;
+        bool hopped = false;
+        bool cancelled = false;
+        auto task = [&] -> Task<void> {
+            try {
+                co_await schedule_on(executor);
+                hopped = true;
+            } catch (const OperationCancelled&) {
+                cancelled = true;
+            }
+        };
+        auto running = task();
+        running.start();
+        CHECK_FALSE(hopped);
+        CHECK_FALSE(cancelled);  // the original's destruction is not a discard
+        REQUIRE(executor.kept.size() == 1);
+        executor.kept.front()();
+        CHECK(hopped);
+        CHECK_FALSE(cancelled);
+    }
+}
+
+TEST_CASE("try_schedule_on reports cancellation instead of throwing") {
+    MainThreadExecutor ui;
+    ui.drain();
+    CancellationSource source;
+    source.cancel();
+    bool hopped = true;
+    auto task = [&] -> Task<void> { hopped = co_await try_schedule_on(ui, source.token()); };
+    auto running = task();
+    running.start();  // already on the UI thread: completes in place
+    CHECK(running.done());
+    CHECK_FALSE(hopped);
 }

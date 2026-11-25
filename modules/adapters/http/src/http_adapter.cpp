@@ -933,7 +933,9 @@ HttpAdapter::Impl::RouteOutcome HttpAdapter::Impl::handle_static(
     if (length < 0) return error_outcome(500, "cannot determine file size");
     if (static_cast<std::uintmax_t>(length) > static_files.max_bytes ||
         length > (std::numeric_limits<std::streamsize>::max)()) {
-        return error_outcome(413, "static asset exceeds size limit");
+        // 413 describes a request body. An asset above the server's buffering
+        // limit is a server-side configuration limit.
+        return error_outcome(500, "static asset exceeds size limit");
     }
     std::string content(static_cast<std::size_t>(length), '\0');
     file.seekg(0);

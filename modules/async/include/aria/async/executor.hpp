@@ -291,6 +291,11 @@ public:
     MainThreadExecutor(MainThreadExecutor&&) = delete;
     MainThreadExecutor& operator=(MainThreadExecutor&&) = delete;
 
+    /// Pending callables are destroyed, not run. A queued `schedule_on` hop
+    /// is not dropped silently: destroying it resumes its coroutine on this
+    /// thread with OperationCancelled, so the frame unwinds. Destroy the
+    /// executor only while whatever those coroutines touch is still alive
+    /// (in particular, not from a late static destructor).
     ~MainThreadExecutor() override {
         std::deque<std::function<void()>> retired;
         {
@@ -423,12 +428,23 @@ public:
         return id == std::thread::id{} || id == std::this_thread::get_id();
     }
 
+    /// True only once an owner is bound and the caller is that thread.
+    /// Unlike is_owner_thread(), an executor nobody has pumped yet answers
+    /// false: no thread can be assumed to run its queue.
+    [[nodiscard]] bool owns_current_thread() const noexcept {
+        return owner_.load(std::memory_order_acquire) == std::this_thread::get_id();
+    }
+
     [[nodiscard]] std::size_t pending() const noexcept {
         std::lock_guard lk(m_);
         return queue_.size();
     }
 
     /// Drop all pending callables without running them. Owner-thread-only.
+    ///
+    /// A queued `schedule_on` hop is not dropped silently: destroying it
+    /// resumes its coroutine here, on the owner thread, and the `co_await`
+    /// throws OperationCancelled, so the frame unwinds instead of leaking.
     void clear() {
         bind_owner_();
         std::deque<std::function<void()>> retired;
@@ -436,8 +452,8 @@ public:
             std::lock_guard lk(m_);
             retired.swap(queue_);
         }
-        // Destroy user captures after unlocking: their destructors may post.
-
+        // Destroy user captures (and resume discarded hops) after unlocking:
+        // their destructors may post.
     }
 
 private:
@@ -475,40 +491,138 @@ private:
 
 namespace detail {
 
-/// Resumption for a hop that observes no cancellation. Running it resumes the
-/// coroutine. Destroying it unrun (the executor is closed, or destroyed with
-/// work queued) resumes the coroutine with `cancelled` set, so the frame and
-/// everything it owns unwind instead of staying suspended forever.
-/// `std::function` requires copyability: a copy takes over the single
-/// responsibility instead of duplicating it.
-class PlainResumption {
+/// Whether `exec` runs its queue on a single owner thread (Caps::MainThread).
+/// Only such an executor can be blocked by a thread waiting for its own
+/// queue, and only it can tell whether the caller is that thread.
+[[nodiscard]] inline bool thread_affine(const IExecutor& exec) noexcept {
+    return aria::has_caps(exec, aria::SchedulerCaps::MainThread);
+}
+
+/// True when the calling thread is the one `exec` runs its work on. A
+/// MainThreadExecutor nobody has pumped yet answers false; executors without
+/// thread affinity always answer false.
+[[nodiscard]] inline bool on_executor_thread(const IExecutor& exec) noexcept {
+    if (const auto* main = dynamic_cast<const MainThreadExecutor*>(&exec)) {
+        return main->owns_current_thread();
+    }
+    return thread_affine(exec) && exec.is_main_thread();
+}
+
+/// Gives a single-use resumption the copy semantics `std::function` needs.
+///
+/// Moving transfers the resumption. Copying shares it, allocating a shared
+/// block only then, so the usual move-only queueing stays allocation-free.
+/// Whichever copy is invoked first resumes the coroutine; when the last copy
+/// is destroyed without any having run, the hop is discarded (the coroutine
+/// resumes as cancelled). Copying one queued callable concurrently from
+/// several threads is not supported.
+///
+/// `Core` is a move-only, single-shot pair of `run()` and `discard()`;
+/// a moved-from or spent core does nothing.
+template<typename Core>
+class SharedOnCopy {
 public:
-    PlainResumption(std::coroutine_handle<> handle, bool* cancelled) noexcept
-        : handle_(handle), cancelled_(cancelled) {}
-    PlainResumption(const PlainResumption& other) noexcept
-        : handle_(std::exchange(other.handle_, {})), cancelled_(other.cancelled_) {}
-    PlainResumption(PlainResumption&& other) noexcept
-        : handle_(std::exchange(other.handle_, {})), cancelled_(other.cancelled_) {}
-    PlainResumption& operator=(const PlainResumption& other) noexcept {
+    explicit SharedOnCopy(Core core) noexcept : core_(std::move(core)) {}
+    SharedOnCopy(SharedOnCopy&& other) noexcept = default;
+    SharedOnCopy(const SharedOnCopy& other) : shared_(share_of(other)) {}
+    SharedOnCopy& operator=(SharedOnCopy&& other) noexcept {
         if (this != &other) {
-            discard();
-            handle_ = std::exchange(other.handle_, {});
-            cancelled_ = other.cancelled_;
+            release();
+            core_ = std::move(other.core_);
+            shared_ = std::move(other.shared_);
         }
         return *this;
     }
-    PlainResumption& operator=(PlainResumption&& other) noexcept {
-        return *this = static_cast<const PlainResumption&>(other);
+    SharedOnCopy& operator=(const SharedOnCopy& other) {
+        if (this != &other) {
+            SharedOnCopy copy{other};
+            *this = std::move(copy);
+        }
+        return *this;
     }
-    ~PlainResumption() { discard(); }
+    ~SharedOnCopy() { release(); }
 
     void operator()() {
+        if (!shared_) {
+            core_.run();
+            return;
+        }
+        if (!shared_->taken.exchange(true, std::memory_order_acq_rel)) {
+            shared_->core.run();
+        }
+    }
+
+private:
+    struct Shared {
+        explicit Shared(Core&& value) noexcept : core(std::move(value)) {}
+        Shared(const Shared&) = delete;
+        Shared& operator=(const Shared&) = delete;
+        Shared(Shared&&) = delete;
+        Shared& operator=(Shared&&) = delete;
+        // The last copy is gone. If none of them ran, the hop was discarded.
+        ~Shared() {
+            if (!taken.load(std::memory_order_acquire)) {
+                core.discard();
+            }
+        }
+        Core core;
+        std::atomic<bool> taken{false};
+    };
+
+    // Static indirection: the lazy share() only writes mutable bookkeeping,
+    // which bugprone-copy-constructor-mutates-argument cannot see through.
+    static const std::shared_ptr<Shared>& share_of(const SharedOnCopy& other) {
+        return other.share();
+    }
+
+    const std::shared_ptr<Shared>& share() const {
+        if (!shared_) {
+            // make_shared allocates before it moves the core, so a failure
+            // leaves this resumption intact.
+            shared_ = std::make_shared<Shared>(std::move(core_));
+        }
+        return shared_;
+    }
+
+    void release() noexcept {
+        if (shared_) {
+            shared_.reset();  // the last owner's ~Shared decides
+            return;
+        }
+        core_.discard();
+    }
+
+    mutable Core core_;
+    mutable std::shared_ptr<Shared> shared_;
+};
+
+/// Core of a hop that observes no cancellation. Running it resumes the
+/// coroutine. Discarding it (the executor is closed, or destroyed with work
+/// queued) resumes the coroutine with `cancelled` set, so the frame and
+/// everything it owns unwind instead of staying suspended forever.
+class PlainHop {
+public:
+    PlainHop() noexcept = default;  // spent
+    PlainHop(std::coroutine_handle<> handle, bool* cancelled) noexcept
+        : handle_(handle), cancelled_(cancelled) {}
+    PlainHop(PlainHop&& other) noexcept
+        : handle_(std::exchange(other.handle_, {})), cancelled_(other.cancelled_) {}
+    PlainHop& operator=(PlainHop&& other) noexcept {
+        // Only assigned once spent (SharedOnCopy releases first).
+        handle_ = std::exchange(other.handle_, {});
+        cancelled_ = other.cancelled_;
+        return *this;
+    }
+    PlainHop(const PlainHop&) = delete;
+    PlainHop& operator=(const PlainHop&) = delete;
+    ~PlainHop() = default;
+
+    void run() {
         if (auto handle = std::exchange(handle_, {})) {
             handle.resume();
         }
     }
 
-private:
     void discard() noexcept {
         auto handle = std::exchange(handle_, {});
         if (!handle) {
@@ -523,22 +637,29 @@ private:
         }
     }
 
-    mutable std::coroutine_handle<> handle_;
-    bool* cancelled_;
+private:
+    std::coroutine_handle<> handle_;
+    bool* cancelled_ = nullptr;
 };
 
-/// Shared state of a hop that also observes cancellation. Two parties race
-/// to resume the coroutine: the executor (running or discarding the queued
-/// resumption) and cancellation. Exactly one wins.
+using PlainResumption = SharedOnCopy<PlainHop>;
+
+/// Shared state of a hop on a thread-affine executor that also observes
+/// cancellation. Two parties race to resume the coroutine: the executor
+/// (running or discarding the queued resumption) and cancellation on the
+/// executor's own thread. Exactly one wins, and the continuation always runs
+/// on the executor's thread, except when the executor discards the hop.
 ///
-/// While await_suspend is still running ("preparing"), a winner on the
-/// preparing thread (an inline executor, a rejecting post, an already
-/// cancelled token) never resumes on that stack; await_suspend declines to
-/// suspend instead. A remote cancellation is likewise handed back to
-/// await_suspend, which may still be storing its registration in the frame.
-/// A remote executor may resume at once: after posting, await_suspend only
-/// touches this shared state, never the coroutine frame.
-struct CancellableHop {
+/// While await_suspend is still running ("preparing"), the executor running
+/// the resumption on the preparing thread (an executor that runs work in
+/// place) never resumes on that stack; await_suspend declines to suspend
+/// instead. A remote executor may resume at once: after posting,
+/// await_suspend only touches this shared state, never the coroutine frame.
+///
+/// Cancellation never resumes a preparing hop, nor one whose executor runs
+/// on another thread: such a hop parks on the token (see AffineWaiter) and
+/// throws OperationCancelled when its executor resumes it.
+struct CancellableHop final : AffineWaiter {
     enum class Phase : std::uint8_t {
         Preparing,
         Suspended,
@@ -546,31 +667,30 @@ struct CancellableHop {
         Cancelled,        // by cancellation or a discarding executor
         InlineResumed,    // continue in place
         InlineCancelled,  // continue in place, then throw
-        DeferredCancel,   // remote cancellation while preparing; in place
     };
+
+    CancellableHop(std::coroutine_handle<> coroutine, IExecutor& target,
+                   std::weak_ptr<CancellationState> token) noexcept
+        : handle(coroutine), exec(&target), token_state(std::move(token)) {}
 
     std::atomic<Phase> phase{Phase::Preparing};
     std::coroutine_handle<> handle;
+    IExecutor* exec;
+    std::weak_ptr<CancellationState> token_state;
     std::thread::id preparer = std::this_thread::get_id();
 
-    /// Returns true when the caller must resume `handle` now.
-    bool claim(bool from_executor, bool cancel) noexcept {
+    /// The executor runs (`cancel` false) or discards (`cancel` true) the
+    /// queued resumption. Returns true when the caller must resume now.
+    bool claim_executor(bool cancel) noexcept {
         Phase observed = phase.load(std::memory_order_acquire);
         for (;;) {
-            Phase next = Phase::Preparing;
-            bool resume_now = false;
-            if (observed == Phase::Preparing) {
-                if (std::this_thread::get_id() == preparer) {
-                    next = cancel ? Phase::InlineCancelled : Phase::InlineResumed;
-                } else if (from_executor) {
-                    next = cancel ? Phase::Cancelled : Phase::Resumed;
-                    resume_now = true;
-                } else {
-                    next = Phase::DeferredCancel;
-                }
-            } else if (observed == Phase::Suspended) {
+            Phase next = Phase::Resumed;
+            bool resume_now = true;
+            if (observed == Phase::Preparing && std::this_thread::get_id() == preparer) {
+                next = cancel ? Phase::InlineCancelled : Phase::InlineResumed;
+                resume_now = false;
+            } else if (observed == Phase::Preparing || observed == Phase::Suspended) {
                 next = cancel ? Phase::Cancelled : Phase::Resumed;
-                resume_now = true;
             } else {
                 return false;
             }
@@ -580,6 +700,15 @@ struct CancellableHop {
                 return resume_now;
             }
         }
+    }
+
+    /// Early cancellation on the executor's thread takes only a hop that is
+    /// fully suspended in the queue. Returns true when it must resume now.
+    bool claim_cancel() noexcept {
+        Phase expected = Phase::Suspended;
+        return phase.compare_exchange_strong(expected, Phase::Cancelled,
+                                             std::memory_order_acq_rel,
+                                             std::memory_order_acquire);
     }
 
     /// await_suspend's result: true keeps the coroutine suspended (or it was
@@ -594,46 +723,75 @@ struct CancellableHop {
         return observed == Phase::Resumed || observed == Phase::Cancelled;
     }
 
-    [[nodiscard]] bool was_cancelled() const noexcept {
+    [[nodiscard]] bool pending() const noexcept {
         const Phase observed = phase.load(std::memory_order_acquire);
-        return observed == Phase::Cancelled || observed == Phase::InlineCancelled ||
-               observed == Phase::DeferredCancel;
+        return observed == Phase::Preparing || observed == Phase::Suspended;
+    }
+
+    [[nodiscard]] bool claimed_as_cancelled() const noexcept {
+        const Phase observed = phase.load(std::memory_order_acquire);
+        return observed == Phase::Cancelled || observed == Phase::InlineCancelled;
+    }
+
+    void park(const std::shared_ptr<CancellableHop>& self) const {
+        if (const auto state = token_state.lock()) {
+            state->park(self);
+        }
+    }
+
+    /// The token's cancellation callback. On the executor's own thread a
+    /// queued hop resumes at once, so a thread tearing down its scope never
+    /// waits for its own queue. Anywhere else the hop parks.
+    static void on_cancelled(const std::shared_ptr<CancellableHop>& hop) {
+        if (!hop->pending()) {
+            return;
+        }
+        if (on_executor_thread(*hop->exec) && hop->claim_cancel()) {
+            schedule_deferred_resume(hop->handle);
+            return;
+        }
+        hop->park(hop);
+    }
+
+    bool resume_if_on_target_thread() noexcept override {
+        const Phase observed = phase.load(std::memory_order_acquire);
+        if (observed == Phase::Preparing) {
+            return false;  // look again on the next pass
+        }
+        if (observed != Phase::Suspended) {
+            return true;
+        }
+        if (!on_executor_thread(*exec)) {
+            return false;
+        }
+        if (claim_cancel()) {
+            schedule_deferred_resume(handle);
+        }
+        return true;
     }
 };
 
-/// The executor's side of a cancellable hop; see PlainResumption for the
-/// discard and copy semantics.
-class CancellableResumption {
+/// The executor's side of a cancellable hop.
+class QueuedHop {
 public:
-    explicit CancellableResumption(std::shared_ptr<CancellableHop> hop) noexcept
-        : hop_(std::move(hop)) {}
-    CancellableResumption(const CancellableResumption& other) noexcept
-        : hop_(std::exchange(other.hop_, nullptr)) {}
-    CancellableResumption(CancellableResumption&& other) noexcept
-        : hop_(std::exchange(other.hop_, nullptr)) {}
-    CancellableResumption& operator=(const CancellableResumption& other) noexcept {
-        if (this != &other) {
-            discard();
-            hop_ = std::exchange(other.hop_, nullptr);
-        }
-        return *this;
-    }
-    CancellableResumption& operator=(CancellableResumption&& other) noexcept {
-        return *this = static_cast<const CancellableResumption&>(other);
-    }
-    ~CancellableResumption() { discard(); }
+    QueuedHop() noexcept = default;  // spent
+    explicit QueuedHop(std::shared_ptr<CancellableHop> hop) noexcept : hop_(std::move(hop)) {}
+    QueuedHop(QueuedHop&& other) noexcept = default;
+    QueuedHop& operator=(QueuedHop&& other) noexcept = default;
+    QueuedHop(const QueuedHop&) = delete;
+    QueuedHop& operator=(const QueuedHop&) = delete;
+    ~QueuedHop() = default;
 
-    void operator()() {
+    void run() {
         auto hop = std::exchange(hop_, nullptr);
-        if (hop && hop->claim(true, false)) {
+        if (hop && hop->claim_executor(false)) {
             hop->handle.resume();
         }
     }
 
-private:
     void discard() noexcept {
         auto hop = std::exchange(hop_, nullptr);
-        if (!hop || !hop->claim(true, true)) {
+        if (!hop || !hop->claim_executor(true)) {
             return;
         }
         try {
@@ -644,8 +802,11 @@ private:
         }
     }
 
-    mutable std::shared_ptr<CancellableHop> hop_;
+private:
+    std::shared_ptr<CancellableHop> hop_;
 };
+
+using CancellableResumption = SharedOnCopy<QueuedHop>;
 
 class ScheduleAwaiter {
 public:
@@ -657,13 +818,33 @@ public:
 
     template<typename Promise>
     bool await_suspend(std::coroutine_handle<Promise> h) {
-        const CancellationToken* token =
-            explicit_token_ ? &*explicit_token_ : ambient_cancellation_of(h);
-        if (token == nullptr || !token->can_be_cancelled()) {
-            // The resumption may run (or be discarded) before post() returns,
-            // on this or another thread, so nothing here is touched after it.
+        return suspend(h);
+    }
+
+    /// The suspension logic itself, for wrapping awaiters that report the
+    /// hop's outcome differently.
+    template<typename Promise>
+    bool suspend(std::coroutine_handle<Promise> h) {
+        token_ = explicit_token_ ? &*explicit_token_ : ambient_cancellation_of(h);
+        if (token_ != nullptr && !token_->can_be_cancelled()) {
+            token_ = nullptr;
+        }
+        if (dynamic_cast<InlineExecutor*>(&exec_) != nullptr) {
+            // post() would resume the coroutine nested inside this call, on
+            // this very thread; continuing in place is the same hop without
+            // growing the stack. await_resume still observes the token.
+            return false;
+        }
+        if (token_ != nullptr && token_->is_cancelled() && on_executor_thread(exec_)) {
+            return false;  // already on the target thread: throw in place
+        }
+        if (token_ == nullptr || !thread_affine(exec_)) {
+            // No early resumption is possible: the executor runs the hop and
+            // await_resume observes the token there. The resumption may run
+            // (or be discarded) before post() returns, on this or another
+            // thread, so nothing here is touched after it.
             try {
-                exec_.post(PlainResumption{h, &plain_cancelled_});
+                exec_.post(PlainResumption{PlainHop{h, &plain_cancelled_}});
             } catch (...) {
                 // The failed post destroyed the resumption, which already
                 // resumed the coroutine as cancelled; propagating would
@@ -672,48 +853,87 @@ public:
             }
             return true;
         }
-        if (token->is_cancelled()) {
-            plain_cancelled_ = true;
-            return false;
-        }
-        auto hop = std::make_shared<CancellableHop>();
-        hop->handle = h;
+        auto hop = std::make_shared<CancellableHop>(
+            h, exec_, CancellationTokenAccess::state(*token_));
         shared_ = hop;
-        cancellation_ = CancellationCallback(*token, [hop] {
-            if (hop->claim(false, true)) {
-                schedule_deferred_resume(hop->handle);
-            }
-        });
+        if (token_->is_cancelled()) {
+            // Its executor's thread may be blocked joining this scope.
+            hop->park(hop);
+        } else {
+            cancellation_ = CancellationCallback(*token_, [hop] {
+                CancellableHop::on_cancelled(hop);
+            });
+        }
         // From here on only `hop` is used: a remote executor may resume and
         // destroy the frame as soon as the resumption is queued.
-        exec_.post(CancellableResumption{hop});
+        exec_.post(CancellableResumption{QueuedHop{hop}});
         return hop->commit();
     }
 
     void await_resume() const {
-        if (shared_ ? shared_->was_cancelled() : plain_cancelled_) {
+        if (resumed_cancelled()) {
             throw OperationCancelled{};
         }
+    }
+
+    /// True when the hop ended in cancellation: discarded by the executor,
+    /// or resumed while its token is cancelled.
+    [[nodiscard]] bool resumed_cancelled() const noexcept {
+        const bool discarded = shared_ ? shared_->claimed_as_cancelled() : plain_cancelled_;
+        return discarded || (token_ != nullptr && token_->is_cancelled());
     }
 
 private:
     IExecutor& exec_;
     std::optional<CancellationToken> explicit_token_;
+    const CancellationToken* token_ = nullptr;
     bool plain_cancelled_ = false;
     std::shared_ptr<CancellableHop> shared_;
     CancellationCallback cancellation_;
+};
+
+/// `schedule_on` that reports cancellation instead of throwing it.
+///
+/// Composes `ScheduleAwaiter` rather than deriving from it: `await_resume`
+/// must keep its exact name for the awaiter protocol, and a same-named member
+/// with different behaviour would shadow the base's.
+class TryScheduleAwaiter {
+public:
+    TryScheduleAwaiter(IExecutor& exec, std::optional<CancellationToken> token) noexcept
+        : inner_{exec, std::move(token)} {}
+
+    // NOLINTNEXTLINE(readability-convert-member-functions-to-static): awaiter protocol
+    [[nodiscard]] bool await_ready() const noexcept { return false; }
+
+    template<typename Promise>
+    bool await_suspend(std::coroutine_handle<Promise> h) {
+        return inner_.suspend(h);
+    }
+
+    /// False exactly where `schedule_on` would throw OperationCancelled.
+    [[nodiscard]] bool await_resume() const noexcept { return !inner_.resumed_cancelled(); }
+
+private:
+    ScheduleAwaiter inner_;
 };
 
 }  // namespace detail
 
 /// Resume the awaiting coroutine on `exec`.
 ///
-/// Inside a CoroutineScope the hop observes the scope's cancellation: if the
-/// scope is cancelled before or while the resumption waits in the executor
-/// queue, the coroutine resumes immediately on the cancelling thread and
-/// `co_await` throws OperationCancelled. Scope teardown on the executor's own
-/// thread therefore never waits for a queue it is blocking. Outside a scope
-/// the hop does not observe cancellation.
+/// Inside a CoroutineScope the hop observes the scope's cancellation: once
+/// the scope is cancelled, `co_await` throws OperationCancelled. The
+/// continuation, including that throw, still runs on `exec`'s thread:
+///
+///   * Already cancelled: on `exec`'s own thread the hop throws in place;
+///     anywhere else it is queued as usual and throws when `exec` runs it.
+///   * Cancelled while queued on a thread-affine executor (Caps::MainThread)
+///     from that executor's own thread: the coroutine resumes at once and
+///     throws, so scope teardown on that thread never waits for the queue it
+///     is blocking. Cancelled from another thread: the hop stays queued, and
+///     `CoroutineScope::cancel_and_join` on the executor's thread resumes it.
+///
+/// Outside a scope the hop does not observe cancellation.
 ///
 /// If the executor discards the resumption (it is closed or destroyed), the
 /// coroutine resumes on the discarding thread and `co_await` throws
@@ -727,6 +947,18 @@ inline detail::ScheduleAwaiter schedule_on(IExecutor& exec) {
 /// cancellation (cleanup that publishes final state on the UI executor).
 inline detail::ScheduleAwaiter schedule_on(IExecutor& exec, CancellationToken token) {
     return detail::ScheduleAwaiter{exec, std::move(token)};
+}
+
+/// Same hop as `schedule_on`, on the same thread, but `co_await` yields
+/// false instead of throwing OperationCancelled. For cleanup paths that must
+/// not throw (AsyncCommand reports such a hop as a Cancelled result).
+inline detail::TryScheduleAwaiter try_schedule_on(IExecutor& exec) {
+    return detail::TryScheduleAwaiter{exec, std::nullopt};
+}
+
+/// As above, observing `token` instead of the scope's cancellation.
+inline detail::TryScheduleAwaiter try_schedule_on(IExecutor& exec, CancellationToken token) {
+    return detail::TryScheduleAwaiter{exec, std::move(token)};
 }
 
 }  // namespace aria::async

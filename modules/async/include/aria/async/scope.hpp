@@ -8,9 +8,10 @@
 //   * Every coroutine launched into a scope is *owned* by the scope.
 //   * `cancel()` is non-blocking: it requests cancellation, no more.
 //     Launched coroutines observe it at their next probe and at every
-//     `schedule_on` hop: a hop waiting in an executor queue resumes at
-//     once on the cancelling thread and throws OperationCancelled, so a
-//     scope destroyed on its UI thread does not wait for that UI queue.
+//     `schedule_on` hop, which then throws OperationCancelled on the hop's
+//     target thread. A hop waiting in a UI queue resumes at once when the
+//     scope is cancelled or joined on that UI thread, so a scope destroyed
+//     there does not wait for the queue it is blocking.
 //   * `cancel_and_join()` (sync) and `co_await join()` (async) wait until
 //     every in-flight coroutine has exited. Tests, ViewModel teardown,
 //     app shutdown — all use one of these to drain.
@@ -44,6 +45,7 @@
 #include "aria/async/cancellation.hpp"
 #include "aria/async/task.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -139,20 +141,43 @@ public:
     /// leak diagnostic is emitted via the async error sink and the
     /// function returns; the scope is left with a non-zero inflight
     /// count. Returns true if everyone drained, false on timeout.
+    ///
+    /// A coroutine of this scope whose `schedule_on` hop waits in the queue
+    /// of an executor running on the calling thread cannot make progress
+    /// while this thread waits. If the cancellation came from another
+    /// thread, the hop parked itself on the scope's token; such hops are
+    /// resumed here (their `co_await` throws OperationCancelled), and the
+    /// wait re-checks in short slices for hops parked by a concurrent
+    /// canceller.
     bool cancel_and_join(std::chrono::milliseconds timeout =
                              std::chrono::milliseconds{5000}) noexcept {
         cancel();
-        std::unique_lock lk(state_->mu);
-        const bool drained = state_->cv.wait_for(lk, timeout, [this] {
-            return state_->inflight.load(std::memory_order_acquire) == 0;
-        });
+        const std::shared_ptr<detail::CancellationState> parked =
+            detail::CancellationTokenAccess::state(src_->token());
+        constexpr std::chrono::steady_clock::duration slice = std::chrono::milliseconds{10};
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        bool drained = false;
+        std::size_t leaked = 0;
+        for (;;) {
+            if (parked) {
+                parked->resume_parked_here();
+            }
+            std::unique_lock lk(state_->mu);
+            const auto now = std::chrono::steady_clock::now();
+            const auto wait = now >= deadline ? std::chrono::steady_clock::duration::zero()
+                                              : (std::min)(slice, deadline - now);
+            drained = state_->cv.wait_for(lk, wait, [this] {
+                return state_->inflight.load(std::memory_order_acquire) == 0;
+            });
+            if (drained || std::chrono::steady_clock::now() >= deadline) {
+                leaked = state_->inflight.load(std::memory_order_acquire);
+                break;
+            }
+        }
         if (!drained) {
-            const auto leaked =
-                state_->inflight.load(std::memory_order_acquire);
             // A bounded synchronous wait must not complete asynchronous
             // joiners early. Their shared state remains alive until the last
             // task exits and resumes them through decrement_inflight_.
-            lk.unlock();
             report_async_error(
                 std::string("CoroutineScope: dtor leaked ") +
                 std::to_string(leaked) +

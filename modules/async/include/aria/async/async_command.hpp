@@ -613,12 +613,13 @@ private:
         auto action = core_.action;
         Invocation inv{state};
 
-        co_await schedule_on(*state->ui);
         // Pre-flight cancellation check — if the command was cancelled
         // between accept_new_invocation() and our first hop onto the
-        // ui executor, surface that as Cancelled without ever invoking
-        // the user's action.
-        if (inv.cmd_tok().is_cancelled() || inv.inv_tok().is_cancelled()) {
+        // ui executor, or the awaiting scope was cancelled (the hop then
+        // reports it on the ui thread), surface that as Cancelled without
+        // ever invoking the user's action.
+        if (!co_await try_schedule_on(*state->ui) ||
+            inv.cmd_tok().is_cancelled() || inv.inv_tok().is_cancelled()) {
             co_return AsyncCommandResult<R>::cancelled_(
                 ::aria::Error::cancellation("AsyncCommand"));
         }
@@ -633,12 +634,14 @@ private:
             ex = std::current_exception();
         }
 
-        co_await schedule_on(*state->ui);
         // A newer LatestOnly invocation, an explicit cancellation or command
         // destruction may supersede this invocation after its action returned
         // or while it was hopping back. A superseded invocation must not
-        // publish its value or error over the newer state.
-        if (inv.cmd_tok().is_cancelled() || inv.inv_tok().is_cancelled()) {
+        // publish its value or error over the newer state. A cancelled
+        // awaiting scope ends the invocation the same way; the hop still
+        // lands on the ui thread, where the Invocation ledger is released.
+        if (!co_await try_schedule_on(*state->ui) ||
+            inv.cmd_tok().is_cancelled() || inv.inv_tok().is_cancelled()) {
             co_return AsyncCommandResult<R>::cancelled_(
                 ::aria::Error::cancellation("AsyncCommand"));
         }
@@ -769,8 +772,9 @@ private:
         auto action = core_.action;
         Invocation inv{state};
 
-        co_await schedule_on(*state->ui);
-        if (inv.cmd_tok().is_cancelled() || inv.inv_tok().is_cancelled()) {
+        // Same pre-flight rule as the value-returning command.
+        if (!co_await try_schedule_on(*state->ui) ||
+            inv.cmd_tok().is_cancelled() || inv.inv_tok().is_cancelled()) {
             co_return AsyncCommandResult<void>::cancelled_(
                 ::aria::Error::cancellation("AsyncCommand"));
         }
@@ -784,9 +788,9 @@ private:
             ex = std::current_exception();
         }
 
-        co_await schedule_on(*state->ui);
         // Same supersession rule as the value-returning command.
-        if (inv.cmd_tok().is_cancelled() || inv.inv_tok().is_cancelled()) {
+        if (!co_await try_schedule_on(*state->ui) ||
+            inv.cmd_tok().is_cancelled() || inv.inv_tok().is_cancelled()) {
             co_return AsyncCommandResult<void>::cancelled_(
                 ::aria::Error::cancellation("AsyncCommand"));
         }
