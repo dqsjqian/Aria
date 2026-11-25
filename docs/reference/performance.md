@@ -127,7 +127,7 @@ comparisons constant-time.
 
 ## 1.2.1 baseline versus 2.0 development
 
-Measured on an Apple M3 Pro with Apple Clang 21.0.0, C++20 Release,
+Measured on an Apple M3 Pro with Apple Clang 21.0.0, C++23 Release,
 `-O3 -DNDEBUG`, using the same benchmark sources and compiler flags against
 both complete production trees. The old revision is `aa039f6`; the measured
 2.0 snapshot is `2f22e17`, including the ABI 2 and collection fixes documented
