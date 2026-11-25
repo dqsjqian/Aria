@@ -16,6 +16,10 @@ All notable changes to **aria** are documented here.
 
 ## Unreleased
 
+## 3.4.0 — 2026-11-25
+
+- The HTTP adapter now builds against the Mira 1.3.0 release. The compiled
+  Aria ABI remains at version 2; rebuild header-based consumers with the new SDK.
 - List removal predicates and reconcile keys can read the same list; structural
   edits from a selector are rejected before they can invalidate its indices.
 - Large reactive read sets use an identity index. Long acyclic cascades can
@@ -63,6 +67,45 @@ Earlier fixes from the November 2026 review:
   `CMAKE_OSX_ARCHITECTURES`, so `scripts/build.py --platform web --test` on
   macOS shares the parent's OpenSSL artifact instead of trying to replace it
   inside the build lease (and plain CTest no longer rebuilds OpenSSL).
+
+Follow-up fixes from the same review:
+
+- **Behaviour change:** a `schedule_on` hop observing a cancelled scope now
+  throws `OperationCancelled` on the hop's target executor thread, never on
+  the worker or cancelling thread. Previously a hop issued from a worker after
+  cancellation threw on the worker: `AsyncCommand::co_execute` let
+  `OperationCancelled` escape (it is documented never to throw) and the
+  command's ledger wrote `is_executing` off the graph thread (a debug
+  assertion). A UI hop cancelled from another thread stays queued and is
+  resumed by `CoroutineScope::cancel_and_join()` on the UI thread; a hop
+  cancelled on its own executor thread still resumes at once.
+- New `try_schedule_on(executor[, token])`: the same hop, yielding `false`
+  instead of throwing. `AsyncCommand` uses it to report scope cancellation as
+  a Cancelled result.
+- Queued resumptions copied by an executor now share their single resumption:
+  whichever copy runs first resumes the coroutine, and the hop counts as
+  discarded only when every copy is destroyed unrun. Previously a copy took
+  the resumption away, so running the original did nothing and the copy's
+  destruction resumed the coroutine as cancelled.
+- `schedule_on` to an `InlineExecutor` continues in place instead of resuming
+  the coroutine nested inside `post()`.
+- Withdrawing a scoped cancellation callback is O(log n) (was a linear scan),
+  so many concurrent hops on one scope no longer degrade quadratically.
+- **Behaviour change:** the reactive graph's absolute flush ceiling is 4,096
+  rounds (was 65,536), so a runaway cascade fails fast instead of stalling
+  the UI thread. The non-progress guard is unchanged.
+- **Behaviour change:** a static asset above `StaticFileOptions::max_bytes`
+  is answered with 500 (a server-side limit) instead of 413, which describes
+  request bodies.
+- Documented: `MainThreadExecutor`'s destructor and `clear()` resume queued
+  hops as cancelled (their unwinding runs then), and withdrawing a
+  `CancellationCallback` must not happen under a lock its callback takes.
+
+Compatibility notes for the November review fixes: inside a
+`CoroutineScope`, `co_await schedule_on(...)` can throw
+`OperationCancelled`, and an executor that discards a queued hop resumes its
+coroutine as cancelled instead of leaking it. Code that relied on a hop never
+throwing, or on discarded work never running, must handle these.
 
 ## 3.3.0 — 2026-11-16
 
